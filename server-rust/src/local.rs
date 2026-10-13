@@ -66,6 +66,8 @@ pub struct LocalModels {
     embed: Arc<Process>,
     mock: Option<String>,
     client: reqwest::Client,
+    /// Per-request deadline of the memory model (LOCAL_CHAT_TIMEOUT_S, default 600 s: the 9B partly runs on the CPU).
+    chat_timeout: Duration,
 }
 fn env_path(name: &str, default: PathBuf) -> PathBuf {
     std::env::var_os(name).map(PathBuf::from).unwrap_or(default)
@@ -220,9 +222,17 @@ impl LocalModels {
             .join("ModularChat-local"),
         );
         let exe = env_path("LLAMA_SERVER", home.join("llama-cuda/llama-server.exe"));
+        // Memory model: Qwen3.5-9B (Q4_K_M, ~5.3 GiB) is markedly better at structured extraction than the 4B. It does not
+        // fit entirely in a 6 GiB GPU next to the desktop, so `--fit` keeps as many layers as fit in VRAM and the rest in RAM.
+        // Without the 9B file the previous 4B keeps working.
+        let models = home.join("models");
         let chat_model = env_path(
             "LOCAL_CHAT_MODEL",
-            home.join("models/Qwen3.5-4B-Q5_K_M.gguf"),
+            ["Qwen3.5-9B-Q4_K_M.gguf", "Qwen3.5-4B-Q5_K_M.gguf"]
+                .iter()
+                .map(|f| models.join(f))
+                .find(|p| p.is_file())
+                .unwrap_or_else(|| models.join("Qwen3.5-9B-Q4_K_M.gguf")),
         );
         let embed_model = env_path(
             "LOCAL_EMBED_MODEL",
@@ -245,7 +255,10 @@ impl LocalModels {
                 "Portas de modelos devem ser distintas e isoladas da produção.",
             ));
         }
-        let ctx = std::env::var("LOCAL_CHAT_CTX").unwrap_or("8192".into());
+        // Qwen3.5 is hybrid (few full-attention layers): 16k of q8 KV costs only a few hundred MiB and avoids the
+        // "prompt larger than the context" retries that shrank the extraction.
+        let ctx = std::env::var("LOCAL_CHAT_CTX").unwrap_or("16384".into());
+        let fit_margin = std::env::var("LOCAL_FIT_MARGIN_MIB").unwrap_or("768".into());
         let idle = std::env::var("LOCAL_IDLE_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -254,10 +267,17 @@ impl LocalModels {
         let enabled =
             std::env::var("MC_LOCAL_MODELS_ENABLED").as_deref() == Ok("1") || config.production;
         let mut args = Vec::new();
-        for layers in ["99", "24", "0"] {
-            let mut a = strings(&["-c", &ctx, "-ngl", layers]);
-            if layers != "0" {
-                a.extend(strings(&["-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0"]));
+        // 1st: automatic GPU/RAM split sized to the free VRAM (leaves `fit_margin` MiB for the desktop/other apps);
+        // 2nd: CPU only, if the GPU attempt does not come up.
+        for gpu in [true, false] {
+            let mut a = strings(&["-c", &ctx]);
+            if gpu {
+                a.extend(strings(&[
+                    "-ngl", "auto", "--fit", "on", "--fit-target", &fit_margin, "-fa", "on", "-ctk",
+                    "q8_0", "-ctv", "q8_0",
+                ]));
+            } else {
+                a.extend(strings(&["-ngl", "0", "--fit", "off"]));
             }
             a.extend(strings(&[
                 "--reasoning",
@@ -343,6 +363,12 @@ impl LocalModels {
             }),
             mock,
             client,
+            chat_timeout: Duration::from_secs(
+                std::env::var("LOCAL_CHAT_TIMEOUT_S")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(600),
+            ),
         })
     }
     pub fn chat_available(&self) -> bool {
@@ -389,8 +415,14 @@ impl LocalModels {
             .json(&body)
             .send()
             .await
-            .map_err(|_| {
-                Error::new(503, "Requisição local falhou.").extra("code", "LOCAL_UNAVAILABLE")
+            .map_err(|e| {
+                // A timeout means the model is alive but slow for this input: it must follow the normal retry flow
+                // (smaller context, then "failed") instead of LOCAL_UNAVAILABLE, which re-queued the same job forever.
+                if e.is_timeout() {
+                    Error::new(504, "Modelo local excedeu o prazo para esta entrada.")
+                } else {
+                    Error::new(503, "Requisição local falhou.").extra("code", "LOCAL_UNAVAILABLE")
+                }
             })?;
         if response.status().is_client_error() {
             // 4xx (usually 400: prompt larger than the model context) is NOT unavailability: repeating the same request
@@ -421,7 +453,7 @@ impl LocalModels {
         max_tokens: u64,
         temperature: f64,
     ) -> Result<Value> {
-        let data=self.post(&self.chat,"/v1/chat/completions",json!({"model":"local","messages":messages,"temperature":temperature,"max_tokens":max_tokens,"stream":false,"chat_template_kwargs":{"enable_thinking":false},"response_format":{"type":"json_schema","json_schema":{"name":"saida","strict":true,"schema":schema}}}),Duration::from_secs(240)).await?;
+        let data=self.post(&self.chat,"/v1/chat/completions",json!({"model":"local","messages":messages,"temperature":temperature,"max_tokens":max_tokens,"stream":false,"chat_template_kwargs":{"enable_thinking":false},"response_format":{"type":"json_schema","json_schema":{"name":"saida","strict":true,"schema":schema}}}),self.chat_timeout).await?;
         if data["choices"][0]["finish_reason"] == "length" {
             return Err(Error::new(
                 502,

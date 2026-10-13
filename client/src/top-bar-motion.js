@@ -3,7 +3,7 @@
 // Everything is a function of a single progress p (0 = dot only, 1 = bar open) that follows the finger: you can
 // hold it halfway, go back, pull past the end (rubber band) and let go; the spring decides open or closed. Like the side
 // menu, only transform/opacity written straight to the DOM (no React state per frame).
-import { clamp, rubber, springStep, VelocityTracker } from './drawer-motion.js';
+import { clamp, frameDt, rubber, springStep, VelocityTracker } from './drawer-motion.js';
 
 const RANGE = 130; // px of drag to go from 0 to 1
 const BUBBLE = 64; // bubble diameter (px) at its peak, before popping
@@ -18,6 +18,7 @@ export class TopBarMotion {
     this.p = 0;
     this.v = 0;
     this.raf = 0;
+    this.frame = 0;
     this.drag = null;
     this.items = [];
     this.tracker = new VelocityTracker();
@@ -77,7 +78,18 @@ export class TopBarMotion {
 
   stop() {
     cancelAnimationFrame(this.raf);
+    cancelAnimationFrame(this.frame);
     this.raf = 0;
+    this.frame = 0;
+  }
+
+  // Finger moves are coalesced into one write per display frame.
+  queueRender() {
+    if (this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      if (!this.dead) this.render();
+    });
   }
 
   // ---- drag (same interface as PanelMotion, y axis) ----
@@ -96,7 +108,7 @@ export class TopBarMotion {
     this.p = raw > 1 ? 1 + rubber((raw - 1) * RANGE, 40) / RANGE : Math.max(0, raw);
     this.tracker.push(this.p * RANGE);
     this.v = this.tracker.velocity() / RANGE;
-    this.render();
+    this.queueRender();
   }
   end() {
     if (!this.drag) return;
@@ -125,10 +137,10 @@ export class TopBarMotion {
     this.goal = goal;
     this.v = v0;
     this.setState(goal ? 'opening' : 'closing');
-    let last = performance.now();
+    let last = 0;
     const tick = (now) => {
       if (this.dead) return;
-      const dt = (now - last) / 1000;
+      const dt = frameDt(now, last);
       last = now;
       // a slightly loose spring: overshoots and comes back, like a bubble
       const s = springStep({ x: this.p, v: this.v }, goal, dt, 170, goal ? 15 : 22);

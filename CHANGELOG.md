@@ -5,6 +5,67 @@ without a published version; assessments do not represent implemented features.
 
 ## Unreleased
 
+### Response limits, local memory model and UI fluidity — 2026-10-13
+
+- Removed the yellow notice about the character ceiling being exceeded
+  (`ChatView.jsx`, obsolete string removed from `en.json`). When the server's
+  character ceiling is reached, the reply already ends at its last complete
+  sentence. The notice now appears only when the **provider** truncates by tokens,
+  i.e. when the reply is actually incomplete.
+- The size limit is now given to the model **before** the user's message. A new
+  `[PLANO DA RESPOSTA]` block (`context.rs`) is placed ahead of the message in the
+  final turn, after the story context. It states the size target/ceiling and the
+  visible token budget, the talk/narration composition, the monologue limit and
+  the turn pace, and tells the model to decide what fits before writing. The
+  `[Lembrete …]` after the message is shorter (language, format, where to start,
+  agency) and points back to the plan. The system prompt keeps the mandatory limit.
+- Stronger default local memory model (`local.rs`):
+  - default is now **Qwen3.5-9B-Q4_K_M**, with an automatic fallback to
+    `Qwen3.5-4B-Q5_K_M` when the 9B file is missing;
+  - GPU/RAM split is automatic through `--fit` (`-ngl auto`): it fills the VRAM
+    that fits, keeping a margin of 768 MiB (`LOCAL_FIT_MARGIN_MIB`), and puts the
+    rest in RAM; the second attempt is CPU only;
+  - context raised from 8192 to 16384 (`LOCAL_CHAT_CTX`);
+  - the per-request deadline is configurable with `LOCAL_CHAT_TIMEOUT_S` (default
+    600 s, previously a fixed 240 s). The 9B partly runs on the CPU on small GPUs
+    and is slower than the 4B; set `LOCAL_CHAT_MODEL` to the 4B file to go back.
+  - `scripts/download-memory-models.py` now downloads the 9B and the README
+    variables table was updated.
+- Fixed two bugs in the memory job queue:
+  - a timeout was treated as "model unavailable", so a slow extraction returned
+    the job to `pending` forever with no failure limit and blocked the queue on
+    every 30 s cycle. It is now a normal error: retry with a smaller context, then
+    `failed` after 3 attempts (`local.rs`);
+  - waiting for the model to load or become available consumed attempts, so jobs
+    ended up processed at reduced/minimal context or marked `failed`. A new
+    `DeferJob` operation (`jobs.rs`, `store/jobs.rs`, `store/mod.rs`) returns the
+    job to the queue and refunds the attempt.
+- UI fluidity:
+  - top bar (`top-bar-motion.js`, `glass.css`): the soap bubble no longer uses
+    `backdrop-filter`, and the bar's islands drop the blur while animating and get
+    it back at rest, since re-blurring every frame dropped the animation to a few
+    frames; finger movements are coalesced into one write per frame;
+  - `drawer-motion.js`: the first frame of every spring (drawer, sheets, top bar,
+    elastic) was a repeated frame because of a negative `dt`; `frameDt` now always
+    advances one frame. Drawer and sheet drags are also coalesced to one write per
+    frame;
+  - side drawer (`Staircase` in `drawer-motion.js`, `SettingsDrawer.jsx`): the
+    menu bubbles arrive one after another from top to bottom, following the
+    drawer's progress. They follow the finger, can be held halfway and play in
+    reverse when closing. Only transform and opacity are animated, only for items
+    on screen, and nothing is left applied at rest;
+  - `elastic.js`: when the finger reversed direction while stretched, the stretch
+    dropped to 0 in one frame (a jump of up to 48 px); it now returns with a spring
+    from where it is. In lists that do not scroll (the drawer menu) the stretch is
+    a continuous function of the finger through zero. Grabbing the content while a
+    spring is running continues from the current offset, and letting go no longer
+    cuts off a spring that is still running.
+- Tests: `server-rust/tests/context_contracts.rs` checks the order context → plan →
+  message → reminder; `tests/api.test.js` checks that the final turn starts with
+  `[PLANO DA RESPOSTA]` and that the message follows `[FIM DO PLANO]`;
+  `tests/drawer-motion.test.js` covers the staircase and the first frame of the
+  springs.
+
 ### Home screen and chat interface — 2026-10-13
 
 - Removed the purple dot over the "Go to end" arrow in the chat

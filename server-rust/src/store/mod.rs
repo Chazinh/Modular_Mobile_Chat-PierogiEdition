@@ -227,6 +227,11 @@ pub enum Request {
         status: String,
         error: Option<String>,
     },
+    /// Returns a claimed job to the queue without spending an attempt (the local model was unavailable, not the input).
+    DeferJob {
+        id: String,
+        error: String,
+    },
     RequeueJobs,
     ReleaseLegacyReview,
     RetryJobs(String),
@@ -328,6 +333,7 @@ impl Request {
             | Self::RecordUsage { .. }
             | Self::ClaimJob
             | Self::FinishJob { .. }
+            | Self::DeferJob { .. }
             | Self::RequeueJobs
             | Self::SaveEmbedding { .. }
             | Self::SaveEmbeddings(_)
@@ -931,6 +937,7 @@ impl Database {
             Request::FinishJob { id, status, error } => {
                 self.finish_job(&id, &status, error.as_deref())
             }
+            Request::DeferJob { id, error } => self.defer_job(&id, &error),
             Request::RequeueJobs => {
                 let n = self.exec(
                     "UPDATE jobs SET status='pending',updated_at=? WHERE status='running'",

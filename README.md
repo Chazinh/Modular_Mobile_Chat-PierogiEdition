@@ -37,7 +37,7 @@ Project changes and migration assessments are recorded in [CHANGELOG.md](CHANGEL
 | --- | --- |
 | Server | **Windows 10/11** (the vault uses DPAPI), [Rust](https://rustup.rs) stable (edition 2024), Node.js ≥ 24 (build/test scripts only) |
 | Generation | At least one OpenAI-compatible provider (API key if it requires one) |
-| Local memory (optional, recommended) | [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (CUDA build if you have an NVIDIA GPU) and two GGUF models (~3.5 GB) |
+| Local memory (optional, recommended) | [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (CUDA build if you have an NVIDIA GPU) and two GGUF models (~5.6 GB) |
 | Android app (optional) | JDK 21, Android SDK (API 36), a device with Android 7+ |
 
 ## Quick start (PC)
@@ -197,7 +197,10 @@ Then place the files where the server looks for them (defaults under `%USERPROFI
 | --- | --- |
 | `MC_LOCAL_HOME` | `%USERPROFILE%\ModularChat-local` |
 | `LLAMA_SERVER` | `<home>\llama-cuda\llama-server.exe` |
-| `LOCAL_CHAT_MODEL` | `<home>\models\Qwen3.5-4B-Q5_K_M.gguf` |
+| `LOCAL_CHAT_MODEL` | `<home>\models\Qwen3.5-9B-Q4_K_M.gguf` (falls back to `Qwen3.5-4B-Q5_K_M.gguf` if the 9B is absent) |
+| `LOCAL_CHAT_CTX` | `16384` |
+| `LOCAL_FIT_MARGIN_MIB` | `768` (VRAM left free by `--fit`; the rest of the model goes to RAM) |
+| `LOCAL_CHAT_TIMEOUT_S` | `600` |
 | `LOCAL_EMBED_MODEL` | `<home>\models\embeddinggemma-300M-Q8_0.gguf` |
 | `LOCAL_IDLE_MS` | `900000` |
 

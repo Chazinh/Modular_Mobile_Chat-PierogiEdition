@@ -44,7 +44,15 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
   // The panel is moved directly in the DOM (spring, rubber band, deformation): see drawer-motion.js.
   useLayoutEffect(() => {
     const panel = panelRef.current;
-    const motion = new PanelMotion({ panel, scrim: scrimRef.current, axis: 'x', closed: panel.offsetWidth + 24, onClosed: () => onCloseRef.current() });
+    // stagger: the bubbles of the current page arrive in a staircase, top to bottom, following the panel's progress
+    const motion = new PanelMotion({
+      panel,
+      scrim: scrimRef.current,
+      axis: 'x',
+      closed: panel.offsetWidth + 24,
+      onClosed: () => onCloseRef.current(),
+      stagger: () => panel.querySelector('.mc-elastic-wrapper')?.children,
+    });
     motionRef.current = motion;
     // if the finger was already pulling from the edge, the panel takes over the drag; otherwise it springs open
     if (!attachMotion(motion)) motion.open();

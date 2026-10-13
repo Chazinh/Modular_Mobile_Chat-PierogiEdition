@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rubber, unrubber, follow, springStep, deformation, releaseTarget, VelocityTracker, EDGE_PX, PanelMotion, pullEvent, attachMotion, detachMotion, resetPull } from '../client/src/drawer-motion.js';
+import { rubber, unrubber, follow, springStep, deformation, releaseTarget, VelocityTracker, EDGE_PX, PanelMotion, Staircase, frameDt, pullEvent, attachMotion, detachMotion, resetPull } from '../client/src/drawer-motion.js';
 
 test('borracha: cresce cada vez menos, nunca passa do limite e é invertível', () => {
   assert.equal(rubber(0, 84), 0);
@@ -106,5 +106,35 @@ test('gaveta: fechar na entrada não herda impulso de abertura e destruir impede
   } finally {
     if (originalRAF === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = originalRAF;
     if (originalCancel === undefined) delete globalThis.cancelAnimationFrame; else globalThis.cancelAnimationFrame = originalCancel;
+  }
+});
+
+test('primeiro quadro após soltar o dedo anda um quadro (sem dt negativo congelando a animação)', () => {
+  assert.equal(frameDt(1000, 0), 1 / 60);
+  assert.equal(frameDt(1000, 1005), 0, 'carimbo do rAF anterior ao agendamento não anda para trás');
+  assert.equal(frameDt(1016, 1000), 0.016);
+  assert.equal(frameDt(5000, 1000), 0.05, 'quadro longo limitado');
+});
+
+test('escadinha: itens chegam de cima para baixo seguindo o progresso e ficam limpos em repouso', () => {
+  const g = globalThis;
+  const saved = g.window;
+  g.window = { innerHeight: 800 };
+  try {
+    const items = [0, 1, 2, 3].map((i) => ({ style: {}, getBoundingClientRect: () => ({ top: i * 60, bottom: i * 60 + 50, height: 50 }) }));
+    const offscreen = { style: {}, getBoundingClientRect: () => ({ top: 900, bottom: 950, height: 50 }) };
+    const stair = new Staircase(() => [...items, offscreen]);
+    const shift = (el) => Number(/translate3d\(([\d.]+)px/.exec(el.style.transform || 'translate3d(0px')[1]);
+    stair.render(0);
+    assert.ok(items.every((el) => shift(el) === 64 && el.style.willChange), 'fechada: todos recuados');
+    assert.equal(offscreen.style.transform, undefined, 'fora da tela não é animado');
+    stair.render(0.4);
+    for (let i = 1; i < items.length; i++) assert.ok(shift(items[i]) > shift(items[i - 1]), `degrau ${i}: o de baixo atrasa`);
+    stair.render(1);
+    assert.ok(items.every((el) => el.style.transform === '' && el.style.opacity === ''), 'aberta: posição natural');
+    stair.release();
+    assert.ok(items.every((el) => el.style.willChange === '' && el.style.transition === ''), 'repouso sem camadas extras');
+  } finally {
+    g.window = saved;
   }
 });

@@ -92,7 +92,14 @@ impl Runner {
         let (status, error, continue_work) = match outcome {
             Ok(status) => (status, None, true),
             Err(e) if e.extra["code"] == "LOCAL_UNAVAILABLE" => {
-                (String::from("pending"), Some(e.message), false)
+                self.state.lock().await.last_error = Some(e.message.clone());
+                self.store
+                    .call(Request::DeferJob {
+                        id: s(&job, "id"),
+                        error: e.message,
+                    })
+                    .await?;
+                return Ok(false);
             }
             Err(e) => {
                 let status = if job["attempts"].as_u64().unwrap_or(1) >= 3 {

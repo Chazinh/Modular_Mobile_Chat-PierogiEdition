@@ -263,7 +263,8 @@ test('envio: confirmação (ack) chega ANTES da inferência; resposta em streami
   assert.match(req.body.messages[0].content, /Mira é uma maga arrogante/);
   const last = req.body.messages.at(-1);
   assert.equal(last.role, 'user');
-  assert.match(last.content, /^Olá, Mira\./);
+  assert.match(last.content, /^\[PLANO DA RESPOSTA/, 'os limites chegam antes da mensagem');
+  assert.match(last.content, /\[FIM DO PLANO\]\n\nOlá, Mira\./);
   assert.match(last.content, /não escreva nada por Alex/);
   const chat = (await j('GET', `/api/chats/${c.id}`)).body;
   assert.deepEqual(chat.history.map((m) => m.role), ['user', 'assistant']);

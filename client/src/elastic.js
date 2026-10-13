@@ -7,7 +7,7 @@
 // screens get every frame and never two writes in one), offsets snap to device pixels, the elements to move are
 // measured once per gesture, and the compositor layer is kept for the whole gesture. Creating and dropping that
 // layer every time the stretch crossed zero is what made the glass bubbles flicker.
-import { rubber, unrubber, springStep, clamp } from './drawer-motion.js';
+import { rubber, unrubber, springStep, clamp, frameDt } from './drawer-motion.js';
 
 const SCROLLER = '.overflow-y-auto, .mc-scroll, .mc-sheet-body';
 const LIMIT = 48; // maximum soft offset (px) while pulling
@@ -63,10 +63,10 @@ function settle(el, x, v) {
   stop(el);
   const a = { raf: 0, x };
   anim.set(el, a);
-  let last = performance.now();
+  let last = 0;
   let s = { x, v };
   const tick = (now) => {
-    const dt = (now - last) / 1000;
+    const dt = frameDt(now, last);
     last = now;
     s = springStep(s, 0, dt, 340, 36);
     if (Math.abs(s.x) < 0.3 && Math.abs(s.v) < 8) {
@@ -141,12 +141,40 @@ export function installElastic() {
     while (g.samples.length > 2 && now - g.samples[0][0] > 90) g.samples.shift();
     const { top, bottom } = edges(g.el);
     let over = 0, dir = 0;
-    if (top && y > g.anchor && (!bottom || g.dir >= 0)) { over = y - g.anchor; dir = 1; }
+    if (top && bottom) {
+      // content shorter than the list: no native scroll at all, so the stretch is one continuous function of the
+      // finger through zero (up and down repeatedly never re-anchors or jumps)
+      over = Math.abs(y - g.anchor);
+      dir = Math.sign(y - g.anchor);
+    } else if (top && y > g.anchor) { over = y - g.anchor; dir = 1; }
     else if (bottom && y < g.anchor) { over = g.anchor - y; dir = -1; }
-    else g.anchor = y; // native scrolling in progress (or returning from the stretch): the anchor follows the finger
+    const el = g.el;
+    if (!dir) {
+      // Native scrolling took over (the finger turned back while stretched and the browser started scrolling).
+      // The old code wrote 0 in the same frame: a jump of up to LIMIT px, the vertical "flick". The remaining
+      // stretch now springs back from where it is while the native scroll carries on.
+      g.anchor = y;
+      if (g.dir && info(el).x !== 0) {
+        drop();
+        settle(el, info(el).x, 0);
+      }
+      g.over = 0;
+      g.dir = 0;
+      if (!anim.has(el)) queue(el, 0);
+      return;
+    }
+    if (anim.has(el)) {
+      // back at the edge while that spring is still running: take over from the current offset, no jump
+      const current = info(el).x;
+      stop(el);
+      if (Math.sign(current) === dir) {
+        g.anchor = y - dir * unrubber(Math.abs(current), LIMIT);
+        over = Math.abs(y - g.anchor);
+      }
+    }
     g.over = over;
     g.dir = dir;
-    queue(g.el, over > 0 ? dir * rubber(over, LIMIT) : 0);
+    queue(el, dir * rubber(over, LIMIT));
   }, { passive: true, capture: true });
 
   const end = () => {
@@ -157,7 +185,8 @@ export function installElastic() {
     g = null;
     drop();
     if (over <= 0) {
-      rest(el);
+      // a spring already returning the content keeps going; cutting it to 0 here was another jump
+      if (!anim.has(el)) rest(el);
       return;
     }
     const [t0, y0] = samples[0];

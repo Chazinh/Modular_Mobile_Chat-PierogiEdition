@@ -26,13 +26,12 @@ const STATUS_NOTE = {
   error: 'A geração falhou depois de começar. O trecho recebido foi salvo.',
 };
 
-// A reply that stopped at a size limit: says which limit and what to do instead of leaving a silent stub.
+// Only a reply the provider really truncated (token limit) gets a notice; the server's own character ceiling
+// already ends the text at its last complete sentence, so no warning is shown for it.
 function lengthNotice(m) {
   const finish = m.usage?.finish;
   if (finish === 'length' || finish === 'max_tokens') return tr("O provedor encerrou a resposta pelo limite de tokens. Toque em Continuar para completá-la.");
-  const cut = m.usage?.length?.hardCharacters ?? m.usage?.length?.maxCharacters;
-  if (!cut) return tr(STATUS_NOTE.length);
-  return tr("A resposta passou do teto de {0} caracteres e foi encerrada na última frase completa. Toque em Continuar para seguir ou aumente o tamanho em Estilo e limites.", [Number(cut).toLocaleString('pt-BR')]);
+  return null;
 }
 
 export const fmtTokens = (n) => (n == null ? '–' : n >= 10000 ? `${(n / 1000).toFixed(1)}k` : String(n));
@@ -824,7 +823,7 @@ const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, on
         <SceneText text={m.content} />
         {m.edited && <span className="mt-1 block text-right text-[11px] text-textMuted">{tr("editada")}</span>}
         </div>
-        {m.status === 'length' && (
+        {m.status === 'length' && lengthNotice(m) && (
           <div role="status" className="mt-2 flex items-start gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs leading-snug text-yellow-200">
             <AlertTriangle size={14} className="mt-px shrink-0" />
             <span>{lengthNotice(m)}</span>

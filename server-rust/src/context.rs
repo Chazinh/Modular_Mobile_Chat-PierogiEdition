@@ -190,8 +190,14 @@ pub fn assemble(
     } else {
         "tudo na mensagem acima já aconteceu como escrito: comece DEPOIS dela, sem reescrevê-la"
     };
+    // The size/turn budget goes BEFORE the current message: the model reads the limits first and composes the reply
+    // inside them, instead of discovering the ceiling only after reading (and mentally drafting) the turn.
+    let plan_block = format!(
+        "[PLANO DA RESPOSTA — leia antes da mensagem abaixo e monte a resposta dentro destes limites desde a primeira linha]\n{size_target}\nComposição: {dialogue}% falas / {}% narração. {style_detail}\n{turn_control}\nDecida primeiro quantas reações e falas cabem neste orçamento; depois escreva, terminando numa frase completa antes do teto.\n[FIM DO PLANO]",
+        100 - dialogue
+    );
     let anchor = format!(
-        "[Lembrete: responda integralmente em português do Brasil (pt-BR), sem alternar idiomas; {format_short}; {where_to}; preserve autor original de citações/imitações e separe comentários; não escreva nada por {persona}; composição desta resposta: {dialogue}% falas / {}% narração. {style_detail} {size_target} {turn_control}]",
+        "[Lembrete: responda integralmente em português do Brasil (pt-BR), sem alternar idiomas; {format_short}; {where_to}; preserve autor original de citações/imitações e separe comentários; não escreva nada por {persona}; siga o PLANO DA RESPOSTA acima (tamanho, composição {dialogue}/{} e turnos).]",
         100 - dialogue
     );
     let tail = if reading.is_empty() {
@@ -468,9 +474,9 @@ pub fn assemble(
             messages.push(json!({"role":"user","content":CONTINUE}));
         }
         let head = if live.is_empty() {
-            String::new()
+            format!("{plan_block}\n\n")
         } else {
-            format!("{live}\n\n")
+            format!("{live}\n\n{plan_block}\n\n")
         };
         if let Some(last) = messages.last_mut().filter(|m| m["role"] == "user") {
             last["content"] = json!(format!("{head}{}\n\n{tail}", s(last, "content")));

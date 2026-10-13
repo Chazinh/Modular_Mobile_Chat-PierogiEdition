@@ -120,6 +120,7 @@ fn native_context_order_reading_and_anchor_match_the_node_assembly() {
     let pos = [
         at("[CONTEXTO ATUAL DA HISTÓRIA"),
         at("[PROVENIÊNCIA DE CITAÇÕES RECENTES"),
+        at("[PLANO DA RESPOSTA"),
         at(&current[..30]),
         at("[LEITURA DA MENSAGEM ACIMA"),
         at("[Lembrete"),

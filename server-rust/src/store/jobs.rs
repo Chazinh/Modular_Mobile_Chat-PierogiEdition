@@ -177,6 +177,19 @@ impl Database {
         )?;
         Ok(json!(true))
     }
+    /// The claim already counted an attempt; an unavailable model is not the input's fault, so the attempt is
+    /// refunded. Otherwise each wait for the model to load pushed the job to the reduced/minimal context and to "failed".
+    pub(super) fn defer_job(&self, jid: &str, error: &str) -> Result<Value> {
+        self.exec(
+            "UPDATE jobs SET status='pending',attempts=MAX(attempts-1,0),error=?,updated_at=? WHERE id=? AND status='running'",
+            &[
+                json!(crate::rules::clip(error, 500)),
+                json!(now()),
+                json!(jid),
+            ],
+        )?;
+        Ok(json!(true))
+    }
     pub(super) fn job_input(&self, jid: &str) -> Result<Value> {
         let job = self.one("SELECT * FROM jobs WHERE id=?", &[json!(jid)])?;
         if job.is_null() {

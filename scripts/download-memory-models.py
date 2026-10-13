@@ -6,7 +6,7 @@ import urllib.request
 
 dest = pathlib.Path(__file__).resolve().parents[1] / 'data' / 'model-staging'
 dest.mkdir(parents=True, exist_ok=True)
-models = [('unsloth/Qwen3.5-4B-GGUF', 'Qwen3.5-4B-Q5_K_M.gguf'),
+models = [('unsloth/Qwen3.5-9B-GGUF', 'Qwen3.5-9B-Q4_K_M.gguf'),
           ('ggml-org/embeddinggemma-300M-GGUF', 'embeddinggemma-300M-Q8_0.gguf')]
 manifest = []
 for repo, name in models:

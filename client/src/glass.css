@@ -311,3 +311,11 @@ button.mc-glass-pill:active::after { opacity: .55; }
 }
 /* while the bubble animates, the buttons are moved frame by frame: no bounce transition in the way */
 .mc-bar-animating [data-bar-item] { transition: none !important; }
+/* Frame rate: a backdrop blur under an element that is scaled/faded every frame is recomputed every frame
+   (on a phone GPU that dropped the bubble animation to a few frames). While the bar animates, its islands are
+   plain glass gradients; the blur comes back once they are at rest. The soap bubble never needed blur. */
+.mc-glass-pill.mc-bar-bubble,
+.mc-bar-animating .mc-glass-pill {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
