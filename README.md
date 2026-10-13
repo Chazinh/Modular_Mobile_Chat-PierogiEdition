@@ -1,4 +1,5 @@
-<img width="1018" height="1545" alt="image" src="https://github.com/user-attachments/assets/a87f68f9-2364-4ebb-8e28-84ea6cd85004" />
+<img width="1018" height="1545" alt="image" src="https://github.com/user-attachments/assets/643d8d69-cc95-4d62-a7ce-e21896ccfbe0" />
+
 
 
 # modularchat-pierogiedition
