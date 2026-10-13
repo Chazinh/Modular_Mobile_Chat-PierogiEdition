@@ -49,16 +49,31 @@ without a published version; assessments do not represent implemented features.
     elastic) was a repeated frame because of a negative `dt`; `frameDt` now always
     advances one frame. Drawer and sheet drags are also coalesced to one write per
     frame;
-  - side drawer (`Staircase` in `drawer-motion.js`, `SettingsDrawer.jsx`): each
-    menu bubble, from top to bottom, waits for its turn (55 ms after the row
-    above it), stays invisible at the starting point and then chases the panel with
-    its own critically damped spring. While pulling or releasing, the rows appear
-    one by one from top to bottom in a smooth cascade, continuous on every frame,
-    with no jumps and never ahead of the panel; when closing, everything moves
-    together. Only transform and opacity are animated, only for rows on screen, and
-    nothing is left applied at rest. Earlier versions tied the delay to the opening
-    progress (64 px) or to a 32 ms delay line, and were imperceptible or stepped,
-    so they were replaced;
+  - side drawer (`Staircase` in `drawer-motion.js`, `SettingsDrawer.jsx`,
+    `drawer.css`): the menu bubbles move as a chain of springs (critically damped,
+    about 60 ms of lag per link):
+    - when pulling open, the **top** row leads and each row below chases the one
+      above it; when retracting, the **bottom** row leads and each row above chases
+      the one below, so the top leaves last and the menu is only unmounted when the
+      last row is out;
+    - the tip of the staircase is always the top or the bottom, never the middle,
+      even when the direction is reversed mid-gesture; the leader only switches
+      once the finger has really turned (about 20 px), not on every jitter;
+    - while a finger holds the menu, the staircase is never unmounted mid-gesture,
+      even when every bubble has caught up with the panel at one end. It used to be
+      unmounted and remounted several times per second during quick back-and-forth
+      drags (rows measured again, the widened box toggled, causing relayouts and
+      bubbles jumping to the panel); it now unmounts only after release;
+    - each bubble's opacity follows its own position (fainter near "closed");
+    - no clipping: while moving, the list's clip box is widened beyond the panel
+      (`mc-stair-free` class, without changing the rows' layout and without a
+      scrollbar), so bubbles outside the panel are not cut by a straight edge;
+    - only transform and opacity are animated, only for rows on screen, and
+      nothing is left applied at rest.
+
+    Earlier versions (delay tied to the opening progress, then a 32 ms delay line
+    and a per-row wait of 55 ms) were imperceptible or stepped, so they were
+    replaced;
   - `elastic.js`: when the finger reversed direction while stretched, the stretch
     dropped to 0 in one frame (a jump of up to 48 px); it now returns with a spring
     from where it is. In lists that do not scroll (the drawer menu) the stretch is

@@ -85,22 +85,32 @@ const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-r
 // after letting go); a missing previous timestamp counts as one frame instead.
 export const frameDt = (now, last) => (last ? clamp((now - last) / 1000, 0, 0.05) : 1 / 60);
 
-// "Staircase": the items of a side panel appear one after another, top to bottom. Each row waits its turn (`delay`
-// ms after the row above it, counted from the start of the gesture/animation), hidden where the panel started, and
-// then chases the panel with its own critically damped spring (continuous every frame: no replayed samples, no
-// steps), so the rows clearly surface one by one instead of arriving together. Only while OPENING
-// (a row never runs ahead of the panel): closing moves everything together. Only transform/opacity, only the rows
-// on screen; at rest (fully open or closed) no inline styles or extra layers remain.
+// "Staircase": the rows of a side panel move as a chain of springs (critically damped, ~60 ms of lag per link).
+// The leader follows the direction of the panel: while OPENING the top row chases the panel and each row below
+// chases the one above (the staircase surfaces from the top); while CLOSING the bottom row leads and each row above
+// chases the one below (it retracts from the base). The extreme of the staircase is therefore always the top or the
+// base, never the middle. No turns to wait for, nothing freezes when the direction changes, continuous every frame.
+// The leader only switches after the panel has really turned (`turnPx` of travel), not on every jitter of the finger.
+// While a finger HOLDS the panel the chain is never torn down, even when every row has caught up at an end (open or
+// closed): tearing it down and rebuilding it mid-gesture re-measured the rows, toggled the widened clipping box (a
+// relayout) and snapped every row onto the panel, which is what broke fast back-and-forth swipes. A row's opacity follows its own position (rows still
+// near "closed" are faint). While the chain moves, the scroller gets the `mc-stair-free` class, which widens its
+// clipping box beyond the panel (CSS) so rows trailing outside the panel are not cut by a straight line. Only
+// transform/opacity, only the rows on screen; at rest (fully open or closed) no inline styles or extra layers remain.
 export class Staircase {
-  constructor(getItems, { k = 210, falloff = 0.1, delay = 55, max = 14 } = {}) {
-    Object.assign(this, { getItems, k, falloff, delay, max });
-    this.t0 = 0;
+  constructor(getItems, { k = 1100, turnPx = 20, max = 14 } = {}) {
+    Object.assign(this, { getItems, k, turnPx, max });
+    this.dragging = false;
+    this.pivot = 0; // furthest progress reached in the current direction (for the turn hysteresis)
     this.items = null;
+    this.scroller = null;
     this.st = [];
     this.p = 0;
     this.closed = 1;
     this.last = 0;
     this.raf = 0;
+    this.onDone = null;
+    this.dir = 1; // +1 opening (top leads), -1 closing (base leads)
   }
   collect() {
     const h = window.innerHeight;
@@ -111,61 +121,78 @@ export class Staircase {
     }).slice(0, this.max);
     // every row starts where the panel was when the gesture/animation began
     this.st = this.items.map(() => ({ x: this.p, v: 0 }));
+    this.pivot = this.p;
+    this.scroller = this.items[0]?.parentElement?.parentElement || null;
+    this.scroller?.classList?.add('mc-stair-free');
     for (const el of this.items) {
       el.style.willChange = 'transform, opacity';
       el.style.transition = 'none'; // .mc-row's press transition would smear the per-frame writes
     }
   }
   push(p, closed, now = performance.now()) {
-    if (!this.items) {
-      this.collect();
-      this.t0 = now; // the turns are counted from here
+    if (!this.items) this.collect();
+    // the leader (top or base) only switches after the panel has really turned around, not on every jitter
+    const turn = this.turnPx / Math.max(1, closed);
+    if (this.dir >= 0) {
+      this.pivot = Math.max(this.pivot, p);
+      if (p < this.pivot - turn) { this.dir = -1; this.pivot = p; }
+    } else {
+      this.pivot = Math.min(this.pivot, p);
+      if (p > this.pivot + turn) { this.dir = 1; this.pivot = p; }
     }
     this.p = p;
     this.closed = closed;
     this.draw(now);
     if (!this.raf && typeof requestAnimationFrame === 'function') this.raf = requestAnimationFrame(this.loop);
   }
-  // advances every row's spring to `now`; returns true while some row is still behind the panel
+  // advances the chain to `now`; returns true while some row is still moving
   draw(now) {
     const dt = this.last ? clamp((now - this.last) / 1000, 0, 0.05) : 1 / 60;
     this.last = now;
-    let behind = false;
-    (this.items || []).forEach((el, i) => {
+    const k = this.k, c = 2 * Math.sqrt(k);
+    let moving = false;
+    let target = this.p; // the leader chases the panel; every other row chases its neighbour towards the leader
+    const items = this.items || [];
+    const order = items.map((_, i) => (this.dir >= 0 ? i : items.length - 1 - i));
+    order.forEach((i) => {
+      const el = items[i];
       const s = this.st[i];
-      if (this.p <= s.x) {
-        s.x = this.p; // closing (or caught up): the row goes with the panel
-        s.v = 0;
-      } else if (now - this.t0 < i * this.delay) {
-        // not its turn yet: stays where the panel started, hidden
-      } else if (dt > 0) {
-        const k = this.k / (1 + i * this.falloff);
-        const r = springStep(s, this.p, dt, k, 2 * Math.sqrt(k));
-        s.x = Math.min(r.x, this.p);
+      if (dt > 0) {
+        const r = springStep(s, target, dt, k, c);
+        s.x = clamp(r.x, 0, 1);
         s.v = r.v;
       }
-      const offset = (this.p - s.x) * this.closed; // px behind the panel
-      if (offset < 0.5) {
+      const offset = (this.p - s.x) * this.closed; // px from the panel (+ trailing to the right, - left behind)
+      if (Math.abs(offset) < 0.5 && Math.abs(s.v) * this.closed < 8 && Math.abs(target - s.x) * this.closed < 0.5) {
         s.x = this.p;
         s.v = 0;
         el.style.transform = '';
         el.style.opacity = '';
       } else {
-        behind = true;
+        moving = true;
         el.style.transform = `translate3d(${offset.toFixed(2)}px,0,0)`;
-        el.style.opacity = (1 - clamp(offset / (this.closed * 0.45), 0, 1)).toFixed(3); // waiting rows are invisible
+        el.style.opacity = clamp(s.x * 1.5, 0, 1).toFixed(3); // faint near "closed", solid near "open"
       }
+      target = s.x;
     });
-    return behind;
+    return moving;
   }
-  // keeps the rows gliding after the finger stops or the panel's spring settles
+  // (re)starts the frame loop, e.g. when the finger lifts with every row already caught up
+  kick() {
+    if (this.items && !this.raf && typeof requestAnimationFrame === 'function') this.raf = requestAnimationFrame(this.loop);
+  }
+  // keeps the chain flowing after the finger stops or the panel's spring settles
   loop = () => {
     this.raf = 0;
     if (!this.items) return;
     if (this.draw(performance.now())) {
-      this.raf = requestAnimationFrame(this.loop);
-    } else if (this.p >= 1 || this.p <= 0) {
+      if (typeof requestAnimationFrame === 'function') this.raf = requestAnimationFrame(this.loop);
+    } else if (!this.dragging && (this.p >= 1 || this.p <= 0)) {
+      // at rest at an end and no finger on the panel: tear down (never mid-gesture)
+      const done = this.onDone;
+      this.onDone = null;
       this.release();
+      done?.();
     }
   };
   release() {
@@ -177,6 +204,8 @@ export class Staircase {
       el.style.willChange = '';
       el.style.transition = '';
     }
+    this.scroller?.classList?.remove('mc-stair-free');
+    this.scroller = null;
     this.items = null;
     this.st = [];
     this.last = 0;
@@ -240,6 +269,7 @@ export class PanelMotion {
     this.tracker.reset();
     this.tracker.push(this.x);
     this.panel.classList.add('mc-dragging');
+    if (this.stagger) this.stagger.dragging = true;
   }
   move(finger) {
     if (this.dead || !this.drag) return;
@@ -253,6 +283,10 @@ export class PanelMotion {
     if (this.dead || !this.drag) return;
     this.drag = null;
     this.panel.classList.remove('mc-dragging');
+    if (this.stagger) {
+      this.stagger.dragging = false;
+      this.stagger.kick();
+    }
     const v = this.tracker.velocity();
     this.v = v;
     this.settle(releaseTarget(this.x, v, this.closed), v);
@@ -305,6 +339,11 @@ export class PanelMotion {
     this.raf = requestAnimationFrame(this.tick);
   };
   finish(target) {
+    // closing: the menu is only removed after the last row has left (staircase top to bottom)
+    if (target === 'closed' && this.stagger?.items && !this.dead) {
+      this.stagger.onDone = () => this.onClosed?.();
+      return;
+    }
     if (target === 'closed') this.onClosed?.();
     else this.onOpened?.();
   }

@@ -116,41 +116,80 @@ test('primeiro quadro após soltar o dedo anda um quadro (sem dt negativo congel
   assert.equal(frameDt(5000, 1000), 0.05, 'quadro longo limitado');
 });
 
-test('escadinha: ao abrir, cada linha de cima para baixo persegue o painel com mola mais macia e todas alcançam', () => {
+test('escadinha: abrindo o topo lidera, retraindo a base lidera, e nada congela ao inverter', () => {
   const g = globalThis;
   const saved = { window: g.window, raf: g.requestAnimationFrame };
   g.window = { innerHeight: 800 };
   g.requestAnimationFrame = undefined; // the test drives the frames
   try {
-    const items = [0, 1, 2, 3].map((i) => ({ style: {}, getBoundingClientRect: () => ({ top: i * 60, bottom: i * 60 + 50, height: 50 }) }));
-    const offscreen = { style: {}, getBoundingClientRect: () => ({ top: 900, bottom: 950, height: 50 }) };
+    const classes = new Set();
+    const scroller = { classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c) } };
+    const wrapper = { parentElement: scroller };
+    const items = [0, 1, 2, 3].map((i) => ({ style: {}, parentElement: wrapper, getBoundingClientRect: () => ({ top: i * 60, bottom: i * 60 + 50, height: 50 }) }));
+    const offscreen = { style: {}, parentElement: wrapper, getBoundingClientRect: () => ({ top: 900, bottom: 950, height: 50 }) };
     const stair = new Staircase(() => [...items, offscreen]);
-    const shift = (el) => Number(/translate3d\(([\d.]+)px/.exec(el.style.transform || 'translate3d(0px')[1]);
-    stair.push(0, 400, 1000);
-    for (let t = 1016, p = 0.15; p <= 1; t += 16, p += 0.15) stair.push(Math.min(1, p), 400, t);
-    for (let i = 1; i < items.length; i++) assert.ok(shift(items[i]) >= shift(items[i - 1]), `degrau ${i}: o de baixo nunca adianta`);
-    assert.ok(shift(items[0]) < shift(items[1]) && shift(items[1]) < shift(items[2]), 'escada visível de cima para baixo');
-    for (let i = 1; i < items.length; i++) assert.ok(Number(items[i].style.opacity || 1) <= Number(items[i - 1].style.opacity || 1), `degrau ${i}: surge depois do de cima`);
-    assert.ok(Math.abs(shift(items[3]) - stair.p * 400) < 0.01, 'a última linha ainda espera a vez, no ponto de partida');
-    assert.equal(items[3].style.opacity, '0.000', 'esperando a vez fica invisível');
-    assert.ok(items.every((el) => el.style.willChange), 'camada só durante o movimento');
+    const off = (el) => Number(/translate3d\((-?[\d.]+)px/.exec(el.style.transform || 'translate3d(0px')[1]);
+    let t = 1000;
+    stair.push(0, 400, t);
+    for (const p of [0.2, 0.4, 0.6, 0.8, 1]) stair.push(p, 400, (t += 16));
+    for (let i = 1; i < items.length; i++) assert.ok(off(items[i]) > off(items[i - 1]), `abrindo, degrau ${i}: o de baixo atrasa mais`);
+    assert.ok(classes.has('mc-stair-free'), 'caixa de recorte alargada durante o movimento');
     assert.equal(offscreen.style.transform, undefined, 'fora da tela não é animado');
-    // smooth: between consecutive frames no row jumps more than the panel itself moved
-    let prev = items.map(shift);
-    for (let t = 1200; t < 1260; t += 16) {
-      stair.draw(t);
-      const now = items.map(shift);
-      assert.ok(now.every((x, i) => x <= prev[i] + 0.01), 'com o painel parado as linhas só se aproximam, sem saltos para trás');
-      prev = now;
-    }
-    let t = 1260;
-    while (stair.draw(t) && t < 4000) t += 16;
-    assert.ok(t < 4000, 'todas as linhas alcançam o painel');
-    assert.ok(items.every((el) => el.style.transform === '' && el.style.opacity === ''), 'aberta: posição natural');
-    stair.push(0.4, 400, t + 16);
-    assert.ok(items.every((el) => el.style.transform === ''), 'ao fechar tudo vai junto');
+    // reversing mid-way: every row keeps moving at once (no turn to wait for)
+    const before = items.map(off);
+    stair.push(0.7, 400, (t += 16));
+    stair.push(0.4, 400, (t += 16));
+    assert.ok(items.every((el, i) => off(el) !== before[i]), 'ao inverter nenhuma linha congela');
+    // back to fully open and settled, then closing: the rows below stay behind (left of the panel), top to bottom
+    stair.push(1, 400, (t += 16));
+    while (stair.draw((t += 16)) && t < 6000);
+    stair.push(0.6, 400, (t += 16));
+    stair.push(0.2, 400, (t += 16));
+    for (let i = 1; i < items.length; i++) assert.ok(off(items[i]) > off(items[i - 1]), `fechando, degrau ${i}: a base sai primeiro, o topo fica para trás`);
+    while (stair.draw((t += 16)) && t < 6000);
+    assert.ok(t < 6000, 'a corrente assenta');
+    assert.ok(items.every((el) => el.style.transform === '' && el.style.opacity === ''), 'em repouso nada fica de fora');
     stair.release();
-    assert.ok(items.every((el) => el.style.willChange === '' && el.style.transition === ''), 'repouso sem camadas extras');
+    assert.ok(!classes.has('mc-stair-free') && items.every((el) => el.style.willChange === '' && el.style.transition === ''), 'repouso sem camadas extras');
+  } finally {
+    g.window = saved.window;
+    g.requestAnimationFrame = saved.raf;
+  }
+});
+
+test('escadinha: segurando o menu, encostar nas pontas não desmonta a escada no meio do gesto', () => {
+  const g = globalThis;
+  const saved = { window: g.window, raf: g.requestAnimationFrame };
+  g.window = { innerHeight: 800 };
+  g.requestAnimationFrame = undefined;
+  try {
+    let relayouts = 0;
+    const scroller = { classList: { add() { relayouts++; }, remove() { relayouts++; } } };
+    const wrapper = { parentElement: scroller };
+    const items = Array.from({ length: 10 }, (_, i) => ({ style: {}, parentElement: wrapper, getBoundingClientRect: () => ({ top: i * 60, bottom: i * 60 + 50, height: 50 }) }));
+    const stair = new Staircase(() => items);
+    const off = (el) => Number(/translate3d\((-?[\d.]+)px/.exec(el.style.transform || 'translate3d(0px')[1]);
+    let t = 1000;
+    stair.push(1, 400, t);
+    stair.dragging = true;
+    const chain = stair.items;
+    relayouts = 0;
+    // fast swipes that reach the open end and stay there until every row has caught up, many times
+    for (let k = 0; k < 6; k++) {
+      for (const p of [0.7, 0.4, 0.7, 1]) stair.push(p, 400, (t += 16));
+      for (let f = 0; f < 60; f++) stair.draw((t += 16));
+      stair.loop(); // every row caught up at the open end: the old code tore the chain down here
+      stair.push(1, 400, (t += 16));
+    }
+    assert.equal(stair.items, chain, 'a escada não é desmontada nem remontada enquanto o dedo segura o menu');
+    assert.equal(relayouts, 0, 'sem alternar a caixa alargada (relayout) no meio do gesto');
+    // smooth: with the finger moving back, every row starts from where it was (no snap onto the panel)
+    stair.push(0.6, 400, (t += 16));
+    assert.ok(items.some((el) => off(el) !== 0), 'as linhas continuam de onde estavam');
+    stair.dragging = false;
+    stair.push(1, 400, (t += 16));
+    while (stair.draw((t += 16)) && t < 9000);
+    assert.ok(items.every((el) => el.style.transform === ''), 'ao soltar tudo assenta');
   } finally {
     g.window = saved.window;
     g.requestAnimationFrame = saved.raf;

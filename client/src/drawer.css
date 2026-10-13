@@ -49,6 +49,16 @@
    not chain its scroll to the chat behind nor show the native overscroll on top of the elastic one. */
 .mc-elastic-wrapper { will-change: transform; backface-visibility: hidden; }
 .mc-drawer-panel .overflow-y-auto { overscroll-behavior: contain; }
+/* While the rows move in a staircase (drawer-motion.js), the scroller's clipping box is widened far beyond the panel
+   (negative margin + equal padding: the content box and the layout of the rows do not change), so rows trailing to
+   the left or right of the panel are not cut by a straight line across the screen. */
+.mc-drawer-panel .mc-stair-free {
+  margin-inline: -100vw;
+  padding-inline: 100vw;
+  overflow-x: hidden;
+  scrollbar-width: none; /* the widened box would draw its scrollbar at the screen edge */
+}
+.mc-drawer-panel .mc-stair-free::-webkit-scrollbar { display: none; }
 
 /* ---- glass rows and button ---- */
 .mc-row {
