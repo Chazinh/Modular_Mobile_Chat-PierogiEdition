@@ -1,19 +1,14 @@
-ㅤㅤㅤㅤㅤㅤㅤHi! ><
+<p align="center">Hi! &gt;&lt;</p>
 
-ㅤㅤㅤㅤㅤㅤㅤㅤ<img width="671" height="318" alt="image" src="https://github.com/user-attachments/assets/1ba91d5f-9995-4cd1-975d-8217168f8048" />
+<p align="center">
+  <img width="671" alt="Pierogi Edition presentation" src="https://github.com/user-attachments/assets/1ba91d5f-9995-4cd1-975d-8217168f8048" />
+</p>
 
-
-ㅤㅤㅤ<img width="1018" height="1545" alt="image" src="https://github.com/user-attachments/assets/643d8d69-cc95-4d62-a7ce-e21896ccfbe0" />
-
-
+<p align="center">
+  <img width="1018" alt="ModularChat presentation" src="https://github.com/user-attachments/assets/643d8d69-cc95-4d62-a7ce-e21896ccfbe0" />
+</p>
 
 # modularchat-pierogiedition
-
-<p align="center">Hi! &gt;&lt;</p>
-<p align="center">
-  <img src="client/public/icons/pierogi-dark-512.png" width="320" alt="Pierogi dark icon" />
-  <img src="client/public/icons/pierogi-light-512.png" width="320" alt="Pierogi light icon" />
-</p>
 
 A self-hosted character chat. Your **PC runs the server** and keeps all memory encrypted on disk; your **phone (Android app) or any browser** reads and writes the conversation. Text generation goes to any **OpenAI-compatible model provider** you configure (9Router, OpenRouter, a local llama.cpp/vLLM/Ollama server, …), and long-term memory is built **locally** by small GGUF models.
 
@@ -227,9 +222,9 @@ keyAlias=...
 keyPassword=...
 ```
 
-Keep the keystore safe: Android refuses updates signed with a different key. Install `client/android/app/build/outputs/apk/release/app-release.apk` (or `adb install -r <apk>`), open it, enter `http://<PC LAN IP>:3000` and the pairing code.
+Keep the keystore safe: Android refuses updates signed with a different key. Install `client/android/app/build/outputs/apk/release/app-release.apk` (or `adb install -r <apk>`), open it, enter the PC's **local HTTPS address** and the pairing code. You can also configure an optional internet HTTPS address for the same PC. Pair for the first time on the local network.
 
-If the phone cannot reach the PC, run `open-firewall.ps1` once as Administrator (allows the port only on Private networks and the local subnet). The LAN connection is plain HTTP: use it on a network you trust.
+See [OPERACAO.md](OPERACAO.md) for the HTTPS gateway, certificate trust and firewall setup. For a private local CA, generate the host-specific trust resources before building the APK. The Rust backend can run on loopback HTTP behind the HTTPS gateway; Android connects to the gateway over HTTPS.
 
 ## Tests
 

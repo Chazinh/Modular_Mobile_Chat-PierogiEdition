@@ -6,9 +6,22 @@ implementadas.
 
 ## Não lançado
 
+### Apresentação do README — 2026-10-13
+
+- Incorporada a estrutura visual fornecida: saudação e duas imagens originais
+  centralizadas, seguidas pelo título e pela documentação atualizada. Removida
+  a apresentação duplicada e os espaços Unicode usados como alinhamento.
+- Mantidos os recursos e as instruções atuais de idiomas, controles, host,
+  provedores, GLM e avaliação Rust. Corrigido o trecho Android que ainda orientava
+  conexão HTTP direta, alinhando-o ao gateway HTTPS e à confiança no certificado.
+- Reconciliado o README após conflito de integração: removidos marcadores e
+  trechos de diff incorporados ao texto; recuperados os exemplos completos de
+  provedores/presets, a estrutura do projeto e as notas de segurança, mantendo
+  as imagens originais, os dois idiomas e a orientação HTTPS.
+
 ### Idiomas e controles visuais — 2026-10-13
 
-- Portada do RoleplayChat a tradução da interface para português brasileiro e
+- Adicionada a tradução da interface para português brasileiro e
   inglês, com atualização imediata, preferência local `mc.language`, sincronização
   entre abas e textos de biometria Android. Conteúdo das conversas, fichas,
   presets e regras de idioma das respostas não são alterados pela preferência.
