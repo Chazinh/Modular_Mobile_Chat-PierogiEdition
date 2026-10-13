@@ -5,6 +5,7 @@
 <p align="center">
   <img src="client/public/icons/pierogi-dark-512.png" width="320" alt="Pierogi dark icon" />
   <img src="client/public/icons/pierogi-light-512.png" width="320" alt="Pierogi light icon" />
+  <img width="1018" height="1545" alt="image" src="https://github.com/user-attachments/assets/643d8d69-cc95-4d62-a7ce-e21896ccfbe0" />
 </p>
 
 A self-hosted character chat. Your **PC runs the server** and keeps all memory encrypted on disk; your **phone (Android app) or any browser** reads and writes the conversation. Text generation goes to any **OpenAI-compatible model provider** you configure (9Router, OpenRouter, a local llama.cpp/vLLM/Ollama server, …), and long-term memory is built **locally** by small GGUF models.
