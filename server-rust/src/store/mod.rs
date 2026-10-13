@@ -341,6 +341,8 @@ impl Request {
             | Self::MaybeQueueCuration(_)
             | Self::ApplyExtraction(_)
             | Self::FindDevice(_)
+            // diagnostic evidence from the router log: re-checkable, so it never forces a full vault rewrite
+            | Self::ProviderCheck { .. }
             | Self::Context(_) => Durability::Derived,
             Self::FlushVersion { .. } => Durability::Checkpoint,
             _ => Durability::Immediate,
@@ -522,9 +524,9 @@ impl Store {
 pub(super) struct Database {
     pub db: Connection,
     pub dir: PathBuf,
-    /// Timeline views already derived (Arc: returning them does not copy the whole tree on every message).
-    /// The third field is the approximate serialized size: the cache is also bounded in bytes.
-    pub timeline_cache: std::cell::RefCell<Vec<(String, std::sync::Arc<Value>, usize)>>,
+    /// Timelines already derived (Arc: returning them does not copy the whole tree on every message),
+    /// bounded in entries and in approximate serialized bytes.
+    pub(super) timeline_cache: std::cell::RefCell<Vec<std::sync::Arc<context::Timeline>>>,
     pub(super) vault: Option<crate::privacy::Vault>,
     /// Deadline to write the derived state still only in memory (`None`: the vault on disk is up to date).
     deadline: Option<Instant>,
@@ -639,6 +641,18 @@ impl Database {
                     &[],
                 )?;
             }
+            // Additive migration: a message used to keep the whole diagnostic usage (style before/candidate, repair call,
+            // provider request shape). It now keeps only what the UI reads; the full record stays in `generations`.
+            if this
+                .one("SELECT value FROM meta WHERE key='usage_summary_v1'", &[])?
+                .is_null()
+            {
+                this.summarize_usage("versions", "1=1", &[])?;
+                this.exec(
+                    "INSERT INTO meta(key,value) VALUES('usage_summary_v1','1')",
+                    &[],
+                )?;
+            }
             this.auto_prune()?;
             this.exec(
                 "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4')",
@@ -715,11 +729,20 @@ impl Database {
             Err(e) => {
                 let count = FAILURES.fetch_add(1, Relaxed);
                 if count.is_multiple_of(60) {
-                    eprintln!(
-                        "Aviso: falha ao gravar o cofre ({}); nova tentativa em 1 s ({} falha(s) seguidas).",
-                        e.message,
-                        count + 1
-                    );
+                    // Without a subscriber (library use, mc-contract) the warning still reaches stderr.
+                    if tracing::dispatcher::has_been_set() {
+                        tracing::warn!(
+                            failures = count + 1,
+                            error = %e.message,
+                            "falha ao gravar o cofre; nova tentativa em 1 s"
+                        );
+                    } else {
+                        eprintln!(
+                            "Aviso: falha ao gravar o cofre ({}); nova tentativa em 1 s ({} falha(s) seguidas).",
+                            e.message,
+                            count + 1
+                        );
+                    }
                 }
                 self.mark_dirty(DERIVED_DELAY);
             }
@@ -1098,18 +1121,32 @@ impl Database {
         let mut rows = st.query(rusqlite::params_from_iter(vals))?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in cols.iter().enumerate() {
-                let v = match row.get_ref(i)? {
-                    ValueRef::Null => Value::Null,
-                    ValueRef::Integer(n) => json!(n),
-                    ValueRef::Real(n) => json!(n),
-                    ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
-                    ValueRef::Blob(b) => json!(b),
-                };
-                obj.insert(name.clone(), v);
-            }
-            out.push(Value::Object(obj));
+            out.push(Value::Object(row_object(&cols, row, None)?));
+        }
+        Ok(out)
+    }
+    /// Like `rows`, but the BLOB column `vector` (little-endian `f32`s, see `rules::vector_blob`) is decoded straight
+    /// from the SQLite buffer into `Vec<f32>` instead of going through `Value`, where every byte would become a node.
+    /// The column is left out of the row object. `None` when it is NULL, not a BLOB or does not hold `dim` finite floats.
+    pub(super) fn rows_with_vector(
+        &self,
+        sql: &str,
+        args: &[Value],
+        vector: &str,
+        dim: usize,
+    ) -> Result<Vec<(Value, Option<Vec<f32>>)>> {
+        let mut st = self.db.prepare_cached(sql)?;
+        let cols: Vec<String> = st.column_names().iter().map(|x| x.to_string()).collect();
+        let at = cols.iter().position(|c| c == vector);
+        let vals: Vec<_> = args.iter().map(sql_value).collect();
+        let mut rows = st.query(rusqlite::params_from_iter(vals))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let decoded = match at.map(|i| row.get_ref(i)).transpose()? {
+                Some(ValueRef::Blob(b)) => rules::decode_vector(b, dim),
+                _ => None,
+            };
+            out.push((Value::Object(row_object(&cols, row, at)?), decoded));
         }
         Ok(out)
     }
@@ -1203,6 +1240,28 @@ impl Database {
             .collect();
         Ok(json!({"schema":"4","conversations":counts["conversations"],"jobs":jobs}))
     }
+}
+/// One result row as a JSON object; the column at `skip` (if any) is left out.
+fn row_object(
+    cols: &[String],
+    row: &rusqlite::Row<'_>,
+    skip: Option<usize>,
+) -> Result<serde_json::Map<String, Value>> {
+    let mut obj = serde_json::Map::new();
+    for (i, name) in cols.iter().enumerate() {
+        if skip == Some(i) {
+            continue;
+        }
+        let v = match row.get_ref(i)? {
+            ValueRef::Null => Value::Null,
+            ValueRef::Integer(n) => json!(n),
+            ValueRef::Real(n) => json!(n),
+            ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
+            ValueRef::Blob(b) => json!(b),
+        };
+        obj.insert(name.clone(), v);
+    }
+    Ok(obj)
 }
 fn sql_value(v: &Value) -> SqlValue {
     match v {

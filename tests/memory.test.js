@@ -109,7 +109,7 @@ test('reanálise da ficha remove registros errados não confirmados e preserva o
     const r = await t.store.call('replaceCardCast', c.id, [{ name: 'Mira Solano', kind: 'main', aliases: ['Mira'], description: 'maga' }], { persona: { name: 'Alex', description: 'Eu' } });
     assert.equal(r.removed, 2);
     const names = (await t.store.call('listCast', c.id)).map((x) => x.name).sort();
-    assert.deepEqual(names, ['Celestial', 'Mira Solano', 'Mark', 'Alex']);
+    assert.deepEqual(names, ['Alex', 'Celestial', 'Mark', 'Mira Solano']);
   } finally {
     await t.cleanup();
   }

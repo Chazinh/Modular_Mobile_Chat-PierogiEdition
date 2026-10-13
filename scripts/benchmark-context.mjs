@@ -6,9 +6,10 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createHash,randomUUID } from 'node:crypto';
 import { RustStore } from '../tests/rust-store.js';
+import { rustExe } from '../tests/rust-target.js';
 const out=process.env.MC_BENCHMARK_OUT || path.join(os.tmpdir(),'mc-context-benchmark.json');
 const fixtureDir=process.env.MC_BENCHMARK_FIXTURE_DIR;
-const rustExecutable=process.env.MC_CONTRACT_EXE||path.resolve('server-rust/target/debug/mc-contract.exe');
+const rustExecutable=process.env.MC_CONTRACT_EXE||rustExe('mc-contract');
 const percentile=(a,p)=>a.slice().sort((x,y)=>x-y)[Math.ceil(a.length*p)-1];
 const results=[],fixtureHashes={};
 for(const count of [100,720,2000]){

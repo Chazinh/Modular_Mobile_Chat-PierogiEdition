@@ -84,52 +84,125 @@ impl Database {
             json!({"id":r["id"],"name":r["name"],"persona":r["persona"],"routeId":route,"model":route,"presetId":preset,"effort":effort,"thinkingEnabled":thinking_enabled,"temperature":r["temperature"],"avatar":r["avatar"],"pinned":n(r,"pinned")!=0,"archived":n(r,"archived")!=0,"settings":settings,"revision":r["revision"],"characterRev":r["character_rev"],"prompt":s(&ch,"text"),"createdAt":r["created_at"],"updatedAt":r["updated_at"],"deletedAt":r["deleted_at"],"headInteractionId":r["head_interaction_id"],"personaProfile":persona}),
         )
     }
+    /// Position of `id` among its siblings (same parent), or `Null` when it has none.
+    fn branch_of(siblings: &[String], id: &Value) -> Value {
+        if siblings.len() < 2 {
+            return Value::Null;
+        }
+        json!({"index":siblings.iter().position(|x|id==x.as_str()).unwrap_or(0)+1,"count":siblings.len(),"ids":siblings})
+    }
     pub(super) fn sibling(&self, i: &Value) -> Result<Value> {
         let siblings=self.rows("SELECT id FROM interactions WHERE conv_id=? AND parent_id IS ? AND deleted_at IS NULL ORDER BY created_at,rowid",&[i["conv_id"].clone(),i["parent_id"].clone()])?;
-        if siblings.len() < 2 {
-            return Ok(Value::Null);
-        }
-        Ok(
-            json!({"index":siblings.iter().position(|r|r["id"]==i["id"]).unwrap_or(0)+1,"count":siblings.len(),"ids":siblings.iter().map(|r|r["id"].clone()).collect::<Vec<_>>()}),
-        )
+        let ids = siblings.iter().map(|r| s(r, "id")).collect::<Vec<_>>();
+        Ok(Self::branch_of(&ids, &i["id"]))
+    }
+    fn user_message_with(i: &Value, branch: Value) -> Value {
+        json!({"id":i["id"],"role":"user","content":i["user_text"],"ts":i["user_ts"].as_str().unwrap_or(i["created_at"].as_str().unwrap_or_default()),"interactionId":i["id"],"edited":n(i,"user_edited")!=0,"branch":branch})
     }
     pub(super) fn user_message(&self, i: &Value) -> Result<Value> {
-        Ok(
-            json!({"id":i["id"],"role":"user","content":i["user_text"],"ts":i["user_ts"].as_str().unwrap_or(i["created_at"].as_str().unwrap_or_default()),"interactionId":i["id"],"edited":n(i,"user_edited")!=0,"branch":self.sibling(i)?}),
+        Ok(Self::user_message_with(i, self.sibling(i)?))
+    }
+    /// The selected version of each part (the newest one when none is selected) with how many versions the part has:
+    /// one row per part, no per-part queries. `usage_json` only when `full`.
+    fn part_sql(full: bool, from: &str) -> String {
+        format!(
+            "SELECT pt.id pid,pt.idx pidx,pt.interaction_id iid,v.id vid,v.content,v.finished_at,v.created_at vcreated,v.status,v.origin,v.route_id,v.preset_id,v.effort,{} (SELECT count(*) FROM versions c WHERE c.part_id=pt.id) vcount {from}",
+            if full { "v.usage_json," } else { "" }
         )
     }
-    pub(super) fn part_messages(&self, i: &Value) -> Result<Vec<Value>> {
-        let mut out = Vec::new();
-        for p in self.rows(
-            "SELECT * FROM parts WHERE interaction_id=? AND deleted_at IS NULL ORDER BY idx",
-            &[i["id"].clone()],
-        )? {
-            let mut v = self.one(
-                "SELECT * FROM versions WHERE id=?",
-                &[p["selected_version_id"].clone()],
-            )?;
-            if v.is_null() {
-                v=self.one("SELECT * FROM versions WHERE part_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",&[p["id"].clone()])?;
+    const PART_JOIN: &'static str = "JOIN versions v ON v.id=COALESCE((SELECT id FROM versions WHERE id=pt.selected_version_id),(SELECT id FROM versions WHERE part_id=pt.id ORDER BY created_at DESC,rowid DESC LIMIT 1))";
+    fn part_message(r: &Value, flags: Vec<Value>, full: bool) -> Value {
+        json!({"id":r["pid"],"role":"assistant","content":r["content"],"ts":r["finished_at"].as_str().unwrap_or(r["vcreated"].as_str().unwrap_or_default()),"interactionId":r["iid"],"partIndex":r["pidx"],"versionId":r["vid"],"versionCount":r["vcount"],"status":r["status"],"origin":r["origin"],"edited":r["origin"]=="edit","model":r["route_id"],"presetId":r["preset_id"],"effort":r["effort"],"usage":if full{parsed(r,"usage_json",Value::Null)}else{Value::Null},"flags":flags})
+    }
+    /// Open review flags by version (the flag rows keep their `id,kind,detail,evidence,source` fields).
+    fn open_flags(
+        &self,
+        sql: &str,
+        args: &[Value],
+    ) -> Result<std::collections::HashMap<String, Vec<Value>>> {
+        let mut by_version = std::collections::HashMap::<String, Vec<Value>>::new();
+        for mut flag in self.rows(sql, args)? {
+            let version = s(&flag, "version_id");
+            if let Some(map) = flag.as_object_mut() {
+                map.remove("version_id");
             }
-            if v.is_null() {
-                continue;
-            }
-            let count = self.one(
-                "SELECT count(*) n FROM versions WHERE part_id=?",
-                &[p["id"].clone()],
-            )?;
-            let flags=self.rows("SELECT id,kind,detail,evidence,source FROM review_flags WHERE version_id=? AND status='open'",&[v["id"].clone()])?;
-            out.push(json!({"id":p["id"],"role":"assistant","content":v["content"],"ts":v["finished_at"].as_str().unwrap_or(v["created_at"].as_str().unwrap_or_default()),"interactionId":i["id"],"partIndex":p["idx"],"versionId":v["id"],"versionCount":count["n"],"status":v["status"],"origin":v["origin"],"edited":v["origin"]=="edit","model":v["route_id"],"presetId":v["preset_id"],"effort":v["effort"],"usage":parsed(&v,"usage_json",Value::Null),"flags":flags}));
+            by_version.entry(version).or_default().push(flag);
         }
-        Ok(out)
+        Ok(by_version)
+    }
+    /// Replies of one interaction. `full` adds the stored usage and the open flags (the conversation listing only
+    /// needs `content` and `status`).
+    fn parts_of(&self, i: &Value, full: bool) -> Result<Vec<Value>> {
+        let rows = self.rows(
+            &Self::part_sql(
+                full,
+                &format!("FROM parts pt {} WHERE pt.interaction_id=? AND pt.deleted_at IS NULL ORDER BY pt.idx", Self::PART_JOIN),
+            ),
+            &[i["id"].clone()],
+        )?;
+        let flags = if full && !rows.is_empty() {
+            let marks = vec!["?"; rows.len()].join(",");
+            self.open_flags(
+                &format!("SELECT version_id,id,kind,detail,evidence,source FROM review_flags WHERE status='open' AND version_id IN ({marks}) ORDER BY rowid"),
+                &rows.iter().map(|r| r["vid"].clone()).collect::<Vec<_>>(),
+            )?
+        } else {
+            Default::default()
+        };
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let found = flags.get(&s(r, "vid")).cloned().unwrap_or_default();
+                Self::part_message(r, found, full)
+            })
+            .collect())
+    }
+    pub(super) fn part_messages(&self, i: &Value) -> Result<Vec<Value>> {
+        self.parts_of(i, true)
     }
     pub(super) fn messages(&self, c: &str) -> Result<Vec<Value>> {
+        let path = self.path(c)?;
+        // The whole path in a handful of queries (replies with their selected version, open flags and sibling
+        // groups) instead of several per interaction and per reply.
+        let mut parts = std::collections::HashMap::<String, Vec<Value>>::new();
+        for r in self.rows(
+            &format!(
+                "{PATH_CTE} {}",
+                Self::part_sql(
+                    true,
+                    &format!("FROM p JOIN parts pt ON pt.interaction_id=p.id AND pt.deleted_at IS NULL {} ORDER BY pt.idx", Self::PART_JOIN),
+                )
+            ),
+            &[json!(c)],
+        )? {
+            parts.entry(s(&r, "iid")).or_default().push(r);
+        }
+        let flags = self.open_flags(
+            "SELECT version_id,id,kind,detail,evidence,source FROM review_flags WHERE conv_id=? AND status='open' ORDER BY rowid",
+            &[json!(c)],
+        )?;
+        let mut groups = std::collections::HashMap::<Option<String>, Vec<String>>::new();
+        for r in self.rows(
+            "SELECT id,parent_id FROM interactions WHERE conv_id=? AND deleted_at IS NULL ORDER BY created_at,rowid",
+            &[json!(c)],
+        )? {
+            groups
+                .entry(r["parent_id"].as_str().map(str::to_owned))
+                .or_default()
+                .push(s(&r, "id"));
+        }
         let mut out = Vec::new();
-        for i in self.path(c)? {
+        for i in &path {
             if !i["user_text"].is_null() {
-                out.push(self.user_message(&i)?);
+                let group = groups
+                    .get(&i["parent_id"].as_str().map(str::to_owned))
+                    .map_or(&[][..], Vec::as_slice);
+                out.push(Self::user_message_with(i, Self::branch_of(group, &i["id"])));
             }
-            out.extend(self.part_messages(&i)?);
+            for r in parts.remove(&s(i, "id")).unwrap_or_default() {
+                let found = flags.get(&s(&r, "vid")).cloned().unwrap_or_default();
+                out.push(Self::part_message(&r, found, true));
+            }
         }
         Ok(out)
     }
@@ -148,7 +221,7 @@ impl Database {
                     count += 1;
                 }
                 let parts = self
-                    .part_messages(&i)?
+                    .parts_of(&i, false)?
                     .into_iter()
                     .filter(|m| m["status"] != "generating")
                     .collect::<Vec<_>>();

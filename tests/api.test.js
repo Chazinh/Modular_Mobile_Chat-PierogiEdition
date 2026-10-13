@@ -106,7 +106,8 @@ test('Sonnet low e configuração global: uma revisão na mesma rota ajusta tama
     router.set({...DEFAULTS(),correctionText:null,correctionStatus:null});
   }
 });
-const waitFor = async (fn, ms = 5000) => {
+// The provider check retries the router log for up to ~6 s (0/100/400/1500/4000 ms); under a loaded suite 5 s was not enough.
+const waitFor = async (fn, ms = 10000) => {
   const t0 = Date.now();
   for (;;) {
     const v = await fn();

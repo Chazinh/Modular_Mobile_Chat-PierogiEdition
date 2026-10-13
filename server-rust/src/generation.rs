@@ -13,9 +13,10 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, broadcast, watch};
+use tracing::{info, warn};
 
 #[derive(Clone, Default)]
 pub struct Locks(Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>);
@@ -35,8 +36,104 @@ impl Locks {
 #[derive(Default)]
 pub struct Output {
     pub buffer: String,
+    /// UTF-16 length of `buffer`, kept in step by `append`/`replace` (never rescanned per wake).
+    pub units: usize,
+    /// Bumped when the text is replaced instead of appended: cursors that cached a byte position must rescan.
+    pub epoch: u64,
     pub context: Value,
+    /// Bumped on every change of `context`; each consumer sends the report only when it moved.
+    pub context_rev: u64,
     pub final_event: Option<Value>,
+}
+impl Output {
+    fn new(buffer: String, context: Value, final_event: Option<Value>) -> Self {
+        Self {
+            units: rules::utf16_len(&buffer),
+            buffer,
+            epoch: 0,
+            context_rev: u64::from(!context.is_null()),
+            context,
+            final_event,
+        }
+    }
+    fn append(&mut self, text: &str) {
+        self.buffer.push_str(text);
+        self.units += rules::utf16_len(text);
+    }
+    fn replace(&mut self, text: String) {
+        self.units = rules::utf16_len(&text);
+        self.buffer = text;
+        self.epoch += 1;
+    }
+    fn set_context(&mut self, value: Value) {
+        self.context = value;
+        self.context_rev += 1;
+    }
+}
+/// Where one consumer (an SSE stream) is in the output: the UTF-16 offset it already received, the matching byte
+/// position (valid while the text is only appended to) and the last context report it was sent.
+#[derive(Clone, Copy, Default)]
+pub struct Cursor {
+    offset: usize,
+    byte: usize,
+    epoch: u64,
+    context_rev: u64,
+}
+/// Byte index of the first char that starts at or after the UTF-16 `offset`.
+fn start_byte(text: &str, offset: usize) -> usize {
+    let at = rules::byte_at(text, offset);
+    if rules::utf16_len(&text[..at]) == offset {
+        at
+    } else {
+        // the offset splits a surrogate pair: that char was already (partly) delivered
+        at + text[at..].chars().next().map_or(0, char::len_utf8)
+    }
+}
+/// Context report as stored and streamed: counters only. The ID lists of the memories/episodes that went into the
+/// prompt are diagnostics (nothing in the client reads them) and stay out unless `MC_DEBUG_CONTEXT=1`.
+fn public_report(report: &Value) -> Value {
+    let mut out = report.clone();
+    if !crate::config::debug_context()
+        && let Some(map) = out.as_object_mut()
+    {
+        for (list, count) in [
+            ("memoriesIncluded", "memoriesCount"),
+            ("episodesIncluded", "episodesCount"),
+        ] {
+            if let Some(items) = map.remove(list) {
+                map.insert(count.into(), json!(items.as_array().map_or(0, Vec::len)));
+            }
+        }
+    }
+    out
+}
+/// Ack of a generation that is already persisted: identifiers, mode and status. The text itself travels as the
+/// `delta` of the same stream, so `content`/`usage` are not repeated here.
+fn replay_ack(old: &Value) -> Value {
+    let mut ack = serde_json::Map::new();
+    for key in [
+        "generationId",
+        "convId",
+        "opId",
+        "mode",
+        "status",
+        "interactionId",
+        "partId",
+        "versionId",
+        "error",
+        "userMessage",
+        "revision",
+    ] {
+        if let Some(value) = old.get(key) {
+            ack.insert(key.into(), value.clone());
+        }
+    }
+    ack.insert("replay".into(), json!(true));
+    Value::Object(ack)
+}
+/// Upstream error text is cut before it is stored or sent to the client.
+fn clipped(text: &str) -> &str {
+    rules::clip(text, 300)
 }
 pub struct Generation {
     pub id: String,
@@ -67,29 +164,31 @@ impl Generation {
             let _ = rx.wait_for(|v| *v).await;
         }
     }
-    pub async fn snapshot(&self, offset: usize, ack: bool) -> Vec<Value> {
+    pub async fn snapshot(&self, cursor: &mut Cursor, ack: bool) -> Vec<Value> {
         let state = self.output.lock().await;
         let mut events = Vec::new();
         if ack {
             events.push(json!({"ack":self.ack}));
+            // the ack already carries the first report; later ones go out as `context` events only when they change
+            cursor.context_rev = u64::from(!self.ack["context"].is_null());
         }
-        let length = rules::utf16_len(&state.buffer);
-        if length > offset {
-            let delta = state
-                .buffer
-                .chars()
-                .scan(0usize, |n, c| {
-                    let start = *n;
-                    *n += c.len_utf16();
-                    Some((start, c))
-                })
-                .filter(|(start, _)| *start >= offset)
-                .map(|(_, c)| c)
-                .collect::<String>();
-            events.push(json!({"delta":delta,"offset":length,"resumed":ack}));
+        if state.units > cursor.offset {
+            let from = if cursor.epoch == state.epoch && cursor.byte <= state.buffer.len() {
+                cursor.byte
+            } else {
+                start_byte(&state.buffer, cursor.offset)
+            };
+            events.push(json!({"delta":&state.buffer[from..],"offset":state.units,"resumed":ack}));
+            *cursor = Cursor {
+                offset: state.units,
+                byte: state.buffer.len(),
+                epoch: state.epoch,
+                context_rev: cursor.context_rev,
+            };
         }
-        if !state.context.is_null() {
+        if !state.context.is_null() && state.context_rev > cursor.context_rev {
             events.push(json!({"context":state.context}));
+            cursor.context_rev = state.context_rev;
         }
         if let Some(final_event) = &state.final_event {
             events.push(final_event.clone());
@@ -110,6 +209,14 @@ pub struct Manager {
     recent: Arc<Mutex<HashMap<String, Arc<Generation>>>>,
     start_gate: Arc<Mutex<()>>,
     slots: Arc<Semaphore>,
+    validation: Arc<Mutex<ValidationCache>>,
+}
+/// `route-validation.json` as last read: reloaded only when the file's modification time changes.
+#[derive(Default)]
+struct ValidationCache {
+    loaded: bool,
+    modified: Option<SystemTime>,
+    value: Arc<Value>,
 }
 impl Manager {
     pub fn new(
@@ -133,14 +240,30 @@ impl Manager {
             recent: Arc::default(),
             start_gate: Arc::default(),
             slots,
+            validation: Arc::default(),
         }
     }
-    pub fn validation(&self) -> Value {
-        std::fs::read(self.config.data_dir.join("route-validation.json"))
+    /// Route validation data. A turn only stats the file (async); it is read and parsed again when the file changed.
+    pub async fn validation(&self) -> Arc<Value> {
+        let file = self.config.data_dir.join("route-validation.json");
+        let modified = tokio::fs::metadata(&file)
+            .await
             .ok()
-            .filter(|v| v.len() < 2 * 1024 * 1024)
-            .and_then(|v| serde_json::from_slice(&v).ok())
-            .unwrap_or(json!({"routes":{}}))
+            .and_then(|m| m.modified().ok());
+        let mut cache = self.validation.lock().await;
+        if !cache.loaded || cache.modified != modified {
+            cache.value = Arc::new(
+                tokio::fs::read(&file)
+                    .await
+                    .ok()
+                    .filter(|v| v.len() < 2 * 1024 * 1024)
+                    .and_then(|v| serde_json::from_slice(&v).ok())
+                    .unwrap_or(json!({"routes":{}})),
+            );
+            cache.modified = modified;
+            cache.loaded = true;
+        }
+        cache.value.clone()
     }
     pub async fn busy(&self) -> Vec<String> {
         self.active.lock().await.keys().cloned().collect()
@@ -201,18 +324,12 @@ impl Manager {
                         part: s(&old, "partId"),
                         interaction: s(&old, "interactionId"),
                         mode: s(&old, "mode"),
-                        ack: {
-                            let mut ack = old.clone();
-                            ack["replay"] = json!(true);
-                            ack
-                        },
-                        output: Mutex::new(Output {
-                            buffer: s(&old, "content"),
-                            context: Value::Null,
-                            final_event: Some(
-                                json!({"done":true,"status":old["status"],"replay":true}),
-                            ),
-                        }),
+                        ack: replay_ack(&old),
+                        output: Mutex::new(Output::new(
+                            s(&old, "content"),
+                            Value::Null,
+                            Some(json!({"done":true,"status":old["status"],"replay":true})),
+                        )),
                         wake,
                         cancel,
                         ended: Notify::new(),
@@ -272,7 +389,7 @@ impl Manager {
         if data["current"].is_null() {
             return Err(Error::new(400, "Nada para responder."));
         }
-        let validation = self.validation();
+        let validation = self.validation().await;
         let mut plan = presets::request(&conv, vec![], &validation);
         let length = presets::apply_length(&mut plan, &data["globalSettings"]);
         let calibration = self
@@ -288,16 +405,13 @@ impl Manager {
         req.effort = conv["effort"].as_str().map(str::to_owned);
         req.request = json!({"controls":plan.controls,"capacity":plan.capacity,"length":length,"presetVersion":presets::PRESET_VERSION,"systemMode":plan.system_mode});
         let begin = self.store.call(Request::BeginTurn(req)).await?;
-        self.store
-            .call(Request::SetContext {
-                generation_id: s(&begin, "generationId"),
-                value: ctx.report.clone(),
-            })
-            .await?;
+        // No SetContext here: `run` always stores the (possibly enriched) report moments later, and nothing reads
+        // `context_json` back (it is diagnostic only), so a crash in between loses nothing recoverable.
+        let report = public_report(&ctx.report);
         let (wake, _) = broadcast::channel(32);
         let (cancel, _) = watch::channel(false);
         let ack = json!({"opId":begin["opId"],"generationId":begin["generationId"],"mode":mode,"interactionId":begin["interactionId"],"partId":begin["partId"],"userMessage":begin["userMessage"],"revision":begin["revision"],
-            "preset":{"id":conv["presetId"],"label":presets::by_id(&s(&conv,"presetId"))["label"],"routeId":conv["routeId"],"effort":conv["effort"]},"controls":plan.controls,"capacity":plan.capacity,"context":ctx.report,"length":length});
+            "preset":{"id":conv["presetId"],"label":presets::by_id(&s(&conv,"presetId"))["label"],"routeId":conv["routeId"],"effort":conv["effort"]},"controls":plan.controls,"capacity":plan.capacity,"context":report,"length":length});
         let g = Arc::new(Generation {
             id: s(&begin, "generationId"),
             conv: s(&conv, "id"),
@@ -306,10 +420,7 @@ impl Manager {
             interaction: s(&begin, "interactionId"),
             mode,
             ack,
-            output: Mutex::new(Output {
-                context: ctx.report.clone(),
-                ..Output::default()
-            }),
+            output: Mutex::new(Output::new(String::new(), report, None)),
             wake,
             cancel,
             ended: Notify::new(),
@@ -354,15 +465,26 @@ impl Manager {
             ctx = full;
             plan.body["messages"] = json!(ctx.messages);
         }
+        let report = public_report(&ctx.report);
         let _ = self
             .store
             .call(Request::SetContext {
                 generation_id: g.id.clone(),
-                value: ctx.report.clone(),
+                value: report.clone(),
             })
             .await;
-        g.output.lock().await.context = ctx.report.clone();
-        let _ = g.wake.send(());
+        // Consumers already got the first report in the ack: only a different one is published.
+        let changed = {
+            let mut output = g.output.lock().await;
+            let changed = output.context != report;
+            if changed {
+                output.set_context(report);
+            }
+            changed
+        };
+        if changed {
+            let _ = g.wake.send(());
+        }
         let (
             mut filter,
             mut finish,
@@ -391,8 +513,9 @@ impl Manager {
             let response = request
                 .send()
                 .await
-                .map_err(|e| Error::new(502, format!("Upstream: {e}")))?;
+                .map_err(|e| Error::new(502, format!("Upstream: {}", clipped(&e.to_string()))))?;
             if !response.status().is_success() {
+                warn!(generation = %g.id, http = response.status().as_u16(), "provedor respondeu com erro");
                 return Err(Error::new(
                     502,
                     format!(
@@ -407,19 +530,35 @@ impl Manager {
             let mut event = String::new();
             let mut checkpoint = tokio::time::interval(Duration::from_secs(2));
             checkpoint.tick().await;
+            // UTF-16 length of the text at the last checkpoint: a tick without new text neither clones nor stores it
+            let mut flushed = 0usize;
             let mut idle_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
             loop {
                 let chunk = tokio::select! {
                     _=g.cancelled()=>break,
-                    _=checkpoint.tick()=>{self.store.call(Request::FlushVersion{version_id:g.version.clone(),text:g.output.lock().await.buffer.clone()}).await?;continue;},
+                    _=checkpoint.tick()=>{
+                        let grown = {
+                            let output = g.output.lock().await;
+                            (output.units != flushed).then(|| (output.units, output.buffer.clone()))
+                        };
+                        if let Some((units, text)) = grown {
+                            self.store.call(Request::FlushVersion{version_id:g.version.clone(),text}).await?;
+                            flushed = units;
+                        }
+                        continue;
+                    },
                     _=tokio::time::sleep_until(idle_deadline)=>return Err(Error::new(504,"O provedor ficou sem responder.")),
                     value=stream.next()=>value,
                 };
                 let Some(chunk) = chunk else {
                     break;
                 };
-                let chunk =
-                    chunk.map_err(|e| Error::new(502, format!("Fluxo interrompido: {e}")))?;
+                let chunk = chunk.map_err(|e| {
+                    Error::new(
+                        502,
+                        format!("Fluxo interrompido: {}", clipped(&e.to_string())),
+                    )
+                })?;
                 idle_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
                 buffer.extend_from_slice(&chunk);
                 // Every individual event/line is bounded, including hidden reasoning.
@@ -455,9 +594,11 @@ impl Manager {
                     if !value["error"].is_null() {
                         return Err(Error::new(
                             502,
-                            value["error"]["message"]
-                                .as_str()
-                                .unwrap_or("Erro do provedor."),
+                            clipped(
+                                value["error"]["message"]
+                                    .as_str()
+                                    .unwrap_or("Erro do provedor."),
+                            ),
                         ));
                     }
                     if !value["usage"].is_null() {
@@ -493,6 +634,7 @@ impl Manager {
         };
         let result = tokio::select! {_=g.cancelled()=>Ok(()),v=consume=>v};
         if let Err(e) = result {
+            warn!(generation = %g.id, code = e.status, "geração falhou no provedor");
             error = Some(e.message);
         }
         if self.delta(&g, &filter.flush()).await {
@@ -519,7 +661,7 @@ impl Manager {
             let trimmed = rules::trim_to_sentence(&visible);
             if trimmed.len() < visible.len() {
                 visible = trimmed.to_owned();
-                g.output.lock().await.buffer = visible.clone();
+                g.output.lock().await.replace(visible.clone());
             }
         }
         let size = rules::reply_size(&data["globalSettings"]);
@@ -584,7 +726,7 @@ impl Manager {
                 style_report["usage"] = result["usage"].clone();
                 if accept {
                     visible = candidate;
-                    g.output.lock().await.buffer = visible.clone();
+                    g.output.lock().await.replace(visible.clone());
                     style_report["accepted"] = json!(true);
                     style_report["after"] = after;
                 } else {
@@ -592,7 +734,7 @@ impl Manager {
                     style_report["candidate"] = after;
                 }
             } else if let Some(Err(err)) = repaired {
-                style_report["error"] = json!(err.to_string());
+                style_report["error"] = json!(clipped(&err.to_string()));
             }
             stopped = *g.cancel.borrow();
             if stopped {
@@ -640,6 +782,15 @@ impl Manager {
                 json!({"done":true,"status":"error","error":format!("Falha na persistência final; checkpoint preservado: {}",e.message)})
             }
         };
+        // Metadata only: never the text, the prompt or the memories.
+        info!(
+            generation = %g.id,
+            status = final_event["status"].as_str().unwrap_or("error"),
+            ms = g.created.elapsed().as_millis() as u64,
+            input = usage["input"].as_u64().unwrap_or(0),
+            output = usage["output"].as_u64().unwrap_or(0),
+            "geração encerrada"
+        );
         self.active.lock().await.remove(&g.conv);
         // Release capacity before publishing done; its consumer may send immediately.
         drop(_permit);
@@ -731,11 +882,11 @@ impl Manager {
             return false;
         }
         let mut state = g.output.lock().await;
-        let left = g.bot_limit.saturating_sub(rules::utf16_len(&state.buffer));
+        let left = g.bot_limit.saturating_sub(state.units);
         let accepted = rules::clip(text, left);
-        let capped = accepted.len() < text.len()
-            || rules::utf16_len(&state.buffer) + rules::utf16_len(accepted) >= g.bot_limit;
-        state.buffer.push_str(accepted);
+        let capped =
+            accepted.len() < text.len() || state.units + rules::utf16_len(accepted) >= g.bot_limit;
+        state.append(accepted);
         drop(state);
         let _ = g.wake.send(());
         capped
@@ -790,16 +941,12 @@ impl Manager {
             part: s(&old, "partId"),
             interaction: s(&old, "interactionId"),
             mode: s(&old, "mode"),
-            ack: {
-                let mut ack = old.clone();
-                ack["replay"] = json!(true);
-                ack
-            },
-            output: Mutex::new(Output {
-                buffer: s(&old, "content"),
-                context: old["context"].clone(),
-                final_event: Some(json!({"done":true,"status":old["status"],"replay":true})),
-            }),
+            ack: replay_ack(&old),
+            output: Mutex::new(Output::new(
+                s(&old, "content"),
+                old["context"].clone(),
+                Some(json!({"done":true,"status":old["status"],"replay":true})),
+            )),
             wake,
             cancel,
             ended: Notify::new(),
@@ -820,28 +967,31 @@ impl Manager {
             + 'static,
         >,
     > {
-        {
+        let cursor = {
             let state = g.output.lock().await;
-            if rules::suffix(&state.buffer, from).is_none() {
+            let Some(rest) = rules::suffix(&state.buffer, from) else {
                 return Err(Error::new(400, "Offset UTF-16 inválido."));
+            };
+            Cursor {
+                offset: from,
+                byte: state.buffer.len() - rest.len(),
+                epoch: state.epoch,
+                context_rev: 0,
             }
-        }
+        };
         let wake = g.wake.subscribe();
         let stream = futures_util::stream::unfold(
-            (g, wake, from, true, false, Vec::<Value>::new()),
-            move |(g, mut wake, mut offset, mut ack, mut done, mut events)| async move {
+            (g, wake, cursor, true, false, Vec::<Value>::new()),
+            move |(g, mut wake, mut cursor, mut ack, mut done, mut events)| async move {
                 loop {
                     if !events.is_empty() {
                         let event = events.remove(0);
-                        if event["offset"].is_number() {
-                            offset = event["offset"].as_u64().unwrap() as usize;
-                        }
                         if event["done"] == true {
                             done = true;
                         }
                         return Some((
                             Ok(axum::response::sse::Event::default().data(event.to_string())),
-                            (g, wake, offset, ack, done, events),
+                            (g, wake, cursor, ack, done, events),
                         ));
                     }
                     if done {
@@ -850,7 +1000,7 @@ impl Manager {
                     if !ack {
                         let _ = wake.recv().await;
                     }
-                    events = g.snapshot(offset, ack).await;
+                    events = g.snapshot(&mut cursor, ack).await;
                     if replay {
                         for event in &mut events {
                             if event["ack"].is_object() {

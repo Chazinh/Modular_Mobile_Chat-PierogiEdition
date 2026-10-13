@@ -3,6 +3,76 @@ use crate::{Error, Result, n, parsed, rules, s};
 use serde_json::{Value, json};
 /// Retention of the automatic pruning of operational records.
 const LOG_RETENTION_DAYS: i64 = 14;
+/// What the UI reads from a response's `usage` (token counters and their method, finish reason, size/style verdict,
+/// provider check). The full diagnostic (style before/candidate, the repair call's usage and error, the provider
+/// request shape) lives only in `generations.usage_json`. Idempotent: a summary summarizes to itself.
+pub(super) fn usage_summary(usage: &Value) -> Value {
+    fn pick(from: &Value, keys: &[&str]) -> serde_json::Map<String, Value> {
+        keys.iter()
+            .filter_map(|k| from.get(*k).map(|v| ((*k).to_owned(), v.clone())))
+            .collect()
+    }
+    if !usage.is_object() {
+        return usage.clone();
+    }
+    let mut out = pick(
+        usage,
+        &[
+            "input",
+            "output",
+            "reasoning",
+            "method",
+            "visibleEstimate",
+            "finish",
+            "reasoningHidden",
+            "length",
+        ],
+    );
+    if let Some(style) = usage.get("style").filter(|v| v.is_object()) {
+        let mut slim = pick(style, &["attempted", "accepted"]);
+        if let Some(after) = style.get("after").filter(|v| v.is_object()) {
+            slim.insert(
+                "after".into(),
+                Value::Object(pick(
+                    after,
+                    &[
+                        "characters",
+                        "ok",
+                        "sizeOk",
+                        "ratioOk",
+                        "languageOk",
+                        "monologueOk",
+                        "maxMonologueCharacters",
+                        "longestMonologueCharacters",
+                    ],
+                )),
+            );
+        }
+        out.insert("style".into(), Value::Object(slim));
+    }
+    if let Some(provider) = usage.get("provider").filter(|v| v.is_object()) {
+        out.insert(
+            "provider".into(),
+            Value::Object(pick(
+                provider,
+                &[
+                    "checkedAt",
+                    "provider",
+                    "model",
+                    "effortExpected",
+                    "effortSent",
+                    "effortOk",
+                    "thinkingEnabled",
+                    "thinkingOk",
+                    "notFound",
+                    "verification",
+                    "usage",
+                ],
+            )),
+        );
+    }
+    Value::Object(out)
+}
 impl Database {
     pub(super) fn seed_personas(&self) -> Result<Value> {
         let rows = self.rows(
@@ -102,13 +172,50 @@ impl Database {
             &[json!(cutoff)],
         )?;
         let generations=self.exec("UPDATE generations SET request_json=NULL,context_json=NULL WHERE started_at<? AND status!='running' AND (request_json IS NOT NULL OR context_json IS NOT NULL)",&[json!(cutoff)])?;
+        // The full diagnostic usage of an old generation shrinks to the same summary its message keeps.
+        let usage = self.summarize_usage(
+            "generations",
+            "started_at<?2 AND status!='running'",
+            &[json!(cutoff)],
+        )?;
         let flags = self.exec(
             "DELETE FROM review_flags WHERE status!='open' AND resolved_at<?",
             &[json!(cutoff)],
         )?;
         Ok(
-            json!({"jobs":jobs,"operations":operations,"generationsTrimmed":generations,"flags":flags}),
+            json!({"jobs":jobs,"operations":operations,"generationsTrimmed":generations,"usageTrimmed":usage,"flags":flags}),
         )
+    }
+    /// Replaces the full diagnostic `usage_json` of `table` rows (those still holding `style.before`, which a summary
+    /// never has) with `usage_summary`. `filter` may use `?2..` for `args`. Idempotent; processed in batches by rowid.
+    pub(super) fn summarize_usage(
+        &self,
+        table: &str,
+        filter: &str,
+        args: &[Value],
+    ) -> Result<usize> {
+        let sql = format!(
+            "SELECT rowid r,id,usage_json FROM {table} WHERE rowid>?1 AND usage_json IS NOT NULL AND instr(usage_json,'\"before\"')>0 AND {filter} ORDER BY rowid LIMIT 500"
+        );
+        let (mut after, mut changed) = (0i64, 0usize);
+        loop {
+            let mut bind = vec![json!(after)];
+            bind.extend_from_slice(args);
+            let batch = self.rows(&sql, &bind)?;
+            let Some(last) = batch.last() else { break };
+            after = n(last, "r");
+            for row in &batch {
+                let full = parsed(row, "usage_json", Value::Null);
+                if !full.is_object() {
+                    continue;
+                }
+                changed += self.exec(
+                    &format!("UPDATE {table} SET usage_json=? WHERE id=?"),
+                    &[json!(usage_summary(&full).to_string()), row["id"].clone()],
+                )?;
+            }
+        }
+        Ok(changed)
     }
     fn purge_part(&self, id: &str) -> Result<()> {
         for v in self.rows("SELECT id FROM versions WHERE part_id=?", &[json!(id)])? {

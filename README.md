@@ -237,7 +237,7 @@ npm test                                            # Node tests driving the Rus
 node scripts/verify-mobile-ui.mjs                   # UI regression in headless Edge (needs client/dist)
 ```
 
-`npm test` uses the debug executables in `server-rust/target/debug` (`cargo build --manifest-path server-rust/Cargo.toml --bins`); set `MC_CONTRACT_EXE`/`MC_SERVER_EXE` to use others. `scripts/validate-routes.mjs` makes a few real, paid calls to check that each preset's effort reaches the provider (9Router request log).
+`npm test` uses the debug executables in cargo's `debug` build directory (`server-rust/target/debug` unless `CARGO_TARGET_DIR` or a `.cargo/config.toml` moves it) (`cargo build --manifest-path server-rust/Cargo.toml --bins`); set `MC_CONTRACT_EXE`/`MC_SERVER_EXE` to use others. `scripts/validate-routes.mjs` makes a few real, paid calls to check that each preset's effort reaches the provider (9Router request log).
 
 ## Rust migration policy
 

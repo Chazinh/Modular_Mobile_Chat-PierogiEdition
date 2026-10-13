@@ -68,7 +68,7 @@ impl Database {
     }
     pub(super) fn cast(&self, c: &str) -> Result<Value> {
         self.conv(c, false)?;
-        Ok(json!(self.rows("SELECT * FROM characters WHERE conv_id=? ORDER BY (kind='user') DESC,confirmed DESC,name",&[json!(c)])?.iter().map(cast_view).collect::<Vec<_>>()))
+        Ok(json!(self.rows("SELECT * FROM characters WHERE conv_id=? ORDER BY (kind='user' AND active=1) DESC,(kind='user') DESC,confirmed DESC,name",&[json!(c)])?.iter().map(cast_view).collect::<Vec<_>>()))
     }
     pub(super) fn resolve_cast(&self, c: &str, name: &str) -> Result<Value> {
         let key = rules::key(name);
@@ -310,9 +310,14 @@ impl Database {
         )?;
         self.exec(
             "UPDATE versions SET usage_json=? WHERE id=?",
-            &[json!(usage.to_string()), g["version_id"].clone()],
+            &[
+                json!(super::maintenance::usage_summary(&usage).to_string()),
+                g["version_id"].clone(),
+            ],
         )?;
-        Ok(json!({"convId":g["conv_id"],"revision":self.bump(&s(&g,"conv_id"))?}))
+        // No revision bump: this is diagnostic evidence, not a content change. A bump made every client reload the
+        // conversation and (as an immediate write) rewrote the whole vault for it.
+        Ok(json!({"convId":g["conv_id"],"revision":self.conv(&s(&g,"conv_id"), true)?["revision"]}))
     }
 }
 fn cast_view(r: &Value) -> Value {

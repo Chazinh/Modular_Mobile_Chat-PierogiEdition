@@ -55,7 +55,8 @@ pub fn assemble(
         .as_u64()
         .unwrap_or(96000)
         .clamp(1, soft as u64) as usize;
-    let pairs = data["pairs"].as_array().cloned().unwrap_or_default();
+    // The ladder below repeats up to ~10 times: everything it reads from `data`/`retrieval` is borrowed, not cloned.
+    let pairs = array(&data["pairs"]);
     let available = &pairs[pairs.len().saturating_sub(maximum)..];
     let mut ladder = vec![
         preferred,
@@ -172,13 +173,10 @@ pub fn assemble(
             && current["priorParts"]
                 .as_array()
                 .is_some_and(|a| !a.is_empty());
-    let present = data["scene"]["present"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let present = array(&data["scene"]["present"]);
     // Same assembly as the former Node server: live state BEFORE the current message; AFTER it, the deterministic reading of
     // quotes (exact matches only) and the reminder. The provenance JSON goes in the live state.
-    let recent_sources = crate::provenance::sources(&pairs);
+    let recent_sources = crate::provenance::sources(pairs);
     let provenance = crate::provenance::block(&current_user, &recent_sources);
     let reading = if continuation || current_user.is_empty() {
         String::new()
@@ -205,14 +203,9 @@ pub fn assemble(
     } else {
         format!("{reading}\n{anchor}")
     };
-    let pinned = data["pinned"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .take(12)
-        .collect::<Vec<_>>();
-    let pinned_ids: HashSet<_> = pinned.iter().map(|m| s(m, "id")).collect();
+    let pinned = array(&data["pinned"]);
+    let pinned = &pinned[..pinned.len().min(12)];
+    let pinned_ids: HashSet<&str> = pinned.iter().map(id_of).collect();
     let (mut quota, mut secondary, mut timeline_mode, mut level) = (8usize, true, 0usize, 0usize);
     let mut compression = Vec::<String>::new();
     loop {
@@ -222,63 +215,54 @@ pub fn assemble(
             .first()
             .map(|p| n(p, "seq"))
             .unwrap_or(n(current, "seq"));
-        let candidates = retrieval["candidates"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|m| n(m, "sourceSeq") < window && !pinned_ids.contains(&s(m, "id")))
-            .collect::<Vec<_>>();
-        let memories = candidates
+        let memories = array(&retrieval["candidates"])
             .iter()
+            .filter(|m| n(m, "sourceSeq") < window && !pinned_ids.contains(id_of(m)))
             .filter(|m| m["type"] == "memory")
             .take(quota)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut knowledge = pinned.clone();
-        knowledge.extend(memories.iter().cloned());
+            .collect::<Vec<&Value>>();
+        let mut knowledge: Vec<&Value> = pinned.iter().collect();
+        knowledge.extend(memories.iter().copied());
         if secondary && !present.is_empty() {
-            for m in retrieval["privateMemories"]
-                .as_array()
-                .into_iter()
-                .flatten()
+            for m in array(&retrieval["privateMemories"])
+                .iter()
                 .filter(|m| n(m, "sourceSeq") < window)
                 .take(4)
             {
                 if !knowledge.iter().any(|k| k["id"] == m["id"]) {
-                    knowledge.push(m.clone());
+                    knowledge.push(m);
                 }
             }
         }
         let mut live = Vec::new();
-        let episodes = data["episodes"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
+        let episodes = array(&data["episodes"])
+            .iter()
             .filter(|e| n(e, "toSeq") < window)
-            .collect::<Vec<_>>();
+            .collect::<Vec<&Value>>();
         let covered = episodes
             .iter()
-            .flat_map(|e| {
-                e["interactionIds"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .collect::<HashSet<_>>();
+            .flat_map(|e| array(&e["interactionIds"]).iter())
+            .filter_map(Value::as_str)
+            .collect::<HashSet<&str>>();
+        // (from, to, text) of each timeline entry, still borrowed from `data`
         let mut timeline = episodes
             .iter()
-            .map(|e| json!({"fromSeq":e["fromSeq"],"toSeq":e["toSeq"],"text":e["summary"]}))
+            .map(|e| (&e["fromSeq"], &e["toSeq"], &e["summary"]))
             .collect::<Vec<_>>();
-        timeline.extend(data["notes"].as_array().into_iter().flatten().filter(|note|n(note,"seq")<window&&!covered.contains(&s(note,"interactionId"))).map(|note|json!({"fromSeq":note["seq"],"toSeq":note["seq"],"text":note["summary"]})));
-        timeline.sort_by_key(|t| n(t, "fromSeq"));
+        timeline.extend(
+            array(&data["notes"])
+                .iter()
+                .filter(|note| {
+                    n(note, "seq") < window
+                        && !covered.contains(note["interactionId"].as_str().unwrap_or_default())
+                })
+                .map(|note| (&note["seq"], &note["seq"], &note["summary"])),
+        );
+        timeline.sort_by_key(|t| t.0.as_i64().unwrap_or_default());
         let timeline_total = timeline.len();
         if timeline_mode == 2 && timeline.len() > 8 {
-            timeline = std::iter::once(timeline[0].clone())
-                .chain(timeline[timeline.len() - 6..].iter().cloned())
+            timeline = std::iter::once(timeline[0])
+                .chain(timeline[timeline.len() - 6..].iter().copied())
                 .collect();
         }
         if !timeline.is_empty() {
@@ -286,16 +270,17 @@ pub fn assemble(
                 "[LINHA DO TEMPO ANTERIOR]\n{}",
                 timeline
                     .iter()
-                    .map(|t| format!(
-                        "- turnos {}–{}: {}",
-                        t["fromSeq"],
-                        t["toSeq"],
-                        if timeline_mode == 0 {
-                            s(t, "text")
-                        } else {
-                            rules::clip(&s(t, "text"), 240).to_owned()
-                        }
-                    ))
+                    .map(|(from, to, text)| {
+                        let text = text.as_str().unwrap_or_default();
+                        format!(
+                            "- turnos {from}–{to}: {}",
+                            if timeline_mode == 0 {
+                                text
+                            } else {
+                                rules::clip(text, 240)
+                            }
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -317,22 +302,23 @@ pub fn assemble(
         let mut who = present
             .iter()
             .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+            .collect::<Vec<&str>>();
         if !who.iter().any(|n| rules::key(n) == rules::key(persona)) {
-            who.push(persona.into());
+            who.push(persona);
         }
         if !knowledge.is_empty() {
             let mut lines = vec!["[CONHECIMENTO POR PERSONAGEM — sem metagaming]".into()];
             for name in who {
+                let name_key = rules::key(name);
                 // Grouped by state (knows / believes / does NOT know): the label appears once per person,
                 // not once per memory, without losing who knows what.
                 let (mut knows, mut believes, mut unaware) = (Vec::new(), Vec::new(), Vec::new());
                 for (i, m) in knowledge.iter().enumerate() {
                     let rows = m["knowledge"].as_array();
-                    let k = rows.into_iter().flatten().find(|k| {
-                        rules::key(k["name"].as_str().unwrap_or_default()) == rules::key(&name)
-                    });
+                    let k = rows
+                        .into_iter()
+                        .flatten()
+                        .find(|k| rules::key(k["name"].as_str().unwrap_or_default()) == name_key);
                     let state = k.and_then(|k| k["state"].as_str()).unwrap_or(
                         if m["visibility"] == "public" {
                             "knows"
@@ -374,7 +360,7 @@ pub fn assemble(
                     .map(|(i, m)| format!(
                         "[M{}] ({}{}) {}: {}",
                         i + 1,
-                        if pinned_ids.contains(&s(m, "id")) {
+                        if pinned_ids.contains(id_of(m)) {
                             "fixada, "
                         } else {
                             ""
@@ -387,10 +373,7 @@ pub fn assemble(
                     .join("\n")
             ));
         }
-        let rels = data["relationships"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let rels = array(&data["relationships"]);
         if !rels.is_empty() {
             live.push(format!(
                 "[RELAÇÕES]\n{}",
@@ -405,7 +388,7 @@ pub fn assemble(
                     .join("\n")
             ));
         }
-        let threads = data["threads"].as_array().cloned().unwrap_or_default();
+        let threads = array(&data["threads"]);
         if !threads.is_empty() {
             live.push(format!(
                 "[THREADS ABERTAS]\n{}",
@@ -418,7 +401,7 @@ pub fn assemble(
             ));
         }
         if secondary {
-            let raw = retrieval["raw"].as_array().cloned().unwrap_or_default();
+            let raw = array(&retrieval["raw"]);
             if !raw.is_empty() {
                 live.push(format!(
                     "[TRECHOS ORIGINAIS ANTIGOS CITADOS]\n{}",
@@ -445,14 +428,11 @@ pub fn assemble(
         } else {
             vec![json!({"role":"system","content":system})]
         };
-        let uncovered = data["unprocessed"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
+        let uncovered = array(&data["unprocessed"])
+            .iter()
             .filter(|p| n(p, "seq") < window)
-            .collect::<Vec<_>>();
-        for pair in uncovered.iter().chain(selected) {
+            .collect::<Vec<&Value>>();
+        for pair in uncovered.iter().copied().chain(selected) {
             if !pair["user"].is_null() {
                 messages.push(json!({"role":"user","content":pair["user"]}));
             }
@@ -464,10 +444,7 @@ pub fn assemble(
             messages.push(json!({"role":"user","content":current_user}));
         }
         if continuation {
-            let parts = current["priorParts"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let parts = array(&current["priorParts"]);
             if !parts.is_empty() {
                 messages.push(json!({"role":"assistant","content":parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n\n")}));
             }
@@ -553,6 +530,15 @@ pub fn assemble(
             raw_estimate,
         });
     }
+}
+
+/// Items of a JSON array (empty when absent or not an array), borrowed.
+fn array(v: &Value) -> &[Value] {
+    v.as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+/// `id` as text (empty when absent), the way `s(m, "id")` reads it, without allocating.
+fn id_of(m: &Value) -> &str {
+    m["id"].as_str().unwrap_or_default()
 }
 
 /// Scene without what only the server needs: the interaction ID and each character's normalized key

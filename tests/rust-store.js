@@ -2,10 +2,11 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
+import { rustExe } from './rust-target.js';
 export class RustStore {
   pending = new Map(); seq = 0;
   constructor(file) {
-    const exe=process.env.MC_CONTRACT_EXE || path.resolve('server-rust/target/debug/mc-contract.exe');
+    const exe=process.env.MC_CONTRACT_EXE || rustExe('mc-contract');
     this.process=spawn(exe,[path.dirname(file)],{windowsHide:true,stdio:['pipe','pipe','pipe']});
     this.readyPromise=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});
     this.errors='';this.process.stderr.on('data',c=>this.errors+=c.toString().slice(0,2000));

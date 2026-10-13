@@ -13,6 +13,14 @@ struct State {
     running: bool,
     last_error: Option<String>,
 }
+/// Parsed once; every reviewed chunk reuses it.
+fn review_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::from_str(include_str!("review-schema.json"))
+            .expect("bundled review schema must be valid JSON")
+    })
+}
 #[derive(Clone)]
 pub struct Runner {
     store: Store,
@@ -107,6 +115,14 @@ impl Runner {
                 } else {
                     "pending"
                 };
+                // Kind and outcome only: the error text may quote model output.
+                tracing::warn!(
+                    kind = job["kind"].as_str().unwrap_or("?"),
+                    attempts = job["attempts"].as_u64().unwrap_or(0),
+                    code = e.status,
+                    next = status,
+                    "tarefa de memória falhou"
+                );
                 self.state.lock().await.last_error = Some(e.message.clone());
                 (status.into(), Some(e.message), true)
             }
@@ -222,7 +238,7 @@ impl Runner {
                     .local
                     .chat_json(
                         review::messages(&input, &text, &prefix, &secrets),
-                        serde_json::from_str(include_str!("review-schema.json")).unwrap(),
+                        review_schema().clone(),
                         700,
                         0.1,
                     )

@@ -26,6 +26,8 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{Notify, broadcast};
 use tower_http::services::{ServeDir, ServeFile};
 
+/// Route ids and when they were fetched.
+type ModelsCache = Arc<std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>>>;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
@@ -37,6 +39,8 @@ pub struct AppState {
     pub events: broadcast::Sender<Value>,
     pub locks: Locks,
     pub validation: Value,
+    /// Route list as last fetched from the providers (see `models`).
+    models_cache: ModelsCache,
     client: reqwest::Client,
     worker: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -94,6 +98,7 @@ impl AppState {
             events,
             locks,
             validation,
+            models_cache: Arc::default(),
             client,
             worker,
         };
@@ -114,16 +119,29 @@ impl AppState {
         let _ = self.local.stop().await;
         let _ = self.store.call(Request::Close).await;
     }
+    /// Routes for `/presets` and `/models`: the providers are asked at most once per minute.
     async fn models(&self) -> Result<Vec<String>> {
+        const TTL: Duration = Duration::from_secs(60);
+        if let Some((at, ids)) = self.models_cache.lock().unwrap().as_ref()
+            && at.elapsed() < TTL
+        {
+            return Ok(ids.clone());
+        }
+        self.fresh_models().await
+    }
+    /// Always asks the providers (`/status` reports whether they answer right now) and refreshes the cache.
+    async fn fresh_models(&self) -> Result<Vec<String>> {
         let Some(providers) = &self.config.providers else {
             return Ok(Vec::new());
         };
-        Ok(providers
+        let ids: Vec<String> = providers
             .models(&self.client)
             .await?
             .into_iter()
             .filter(|id| presets::for_route(id)["id"] != "generic")
-            .collect())
+            .collect();
+        *self.models_cache.lock().unwrap() = Some((std::time::Instant::now(), ids.clone()));
+        Ok(ids)
     }
     fn changed(&self, c: &str, kind: &str, value: &Value) {
         let _ = self
@@ -404,7 +422,7 @@ async fn dispatch(
             json!({"ok":true,"name":"modularchat","version":2,"release":"2.7.2","runtime":"rust","encrypted":state.store.encrypted})
         }
         ["status"] if get => {
-            let models = state.models().await;
+            let models = state.fresh_models().await;
             json!({"db":state.store.call(Request::Status).await?,"local":state.local.status().await,"jobs":state.runner.state().await,"router":match models{Ok(m)=>json!({"ok":true,"models":m.len()}),Err(e)=>json!({"ok":false,"error":e.message})},"generating":state.generation.busy_ids().await,"time":crate::now()})
         }
         ["pair", "info"] if get => {

@@ -8,24 +8,33 @@ pub(super) struct Eligibility {
     pub selected: HashSet<String>,
     pub max_seq: i64,
 }
-impl Database {
-    pub(super) fn eligibility(&self, c: &str, before: i64) -> Result<Eligibility> {
-        let rows=self.rows(&format!("{PATH_CTE} SELECT i.id,i.seq,v.id version_id FROM p active JOIN interactions i ON i.id=active.id LEFT JOIN parts p ON p.interaction_id=i.id AND p.deleted_at IS NULL LEFT JOIN versions v ON v.id=p.selected_version_id AND v.status!='generating' WHERE i.deleted_at IS NULL AND i.seq<?2"),&[json!(c),json!(before)])?;
+impl Eligibility {
+    /// The rows of `active_path` with seq below `before` (one path query serves several cuts).
+    pub(super) fn from_path(rows: &[Value], before: i64) -> Self {
         let mut seq = HashMap::new();
         let mut selected = HashSet::new();
         let mut max_seq = 0;
-        for r in rows {
-            seq.insert(s(&r, "id"), n(&r, "seq"));
-            max_seq = max_seq.max(n(&r, "seq"));
+        for r in rows.iter().filter(|r| n(r, "seq") < before) {
+            seq.insert(s(r, "id"), n(r, "seq"));
+            max_seq = max_seq.max(n(r, "seq"));
             if r["version_id"].is_string() {
-                selected.insert(s(&r, "version_id"));
+                selected.insert(s(r, "version_id"));
             }
         }
-        Ok(Eligibility {
+        Self {
             seq,
             selected,
             max_seq,
-        })
+        }
+    }
+}
+impl Database {
+    pub(super) fn eligibility(&self, c: &str, before: i64) -> Result<Eligibility> {
+        Ok(Eligibility::from_path(&self.active_path(c, before)?, before))
+    }
+    /// Active path rows (interaction, seq, selected version) before `before`, for one or more `Eligibility` cuts.
+    pub(super) fn active_path(&self, c: &str, before: i64) -> Result<Vec<Value>> {
+        self.rows(&format!("{PATH_CTE} SELECT i.id,i.seq,v.id version_id FROM p active JOIN interactions i ON i.id=active.id LEFT JOIN parts p ON p.interaction_id=i.id AND p.deleted_at IS NULL LEFT JOIN versions v ON v.id=p.selected_version_id AND v.status!='generating' WHERE i.deleted_at IS NULL AND i.seq<?2"),&[json!(c),json!(before)])
     }
     pub(super) fn memories_at(&self, c: &str, eligible: &Eligibility) -> Result<Vec<Value>> {
         let rows = self
@@ -134,7 +143,7 @@ impl Database {
             .collect();
         let (relationships, threads) = self.story_at(c, &eligible)?;
         Ok(
-            json!({"sync":self.sync_lag(c)?,"scene":self.scene_at(c,i64::MAX)?,"timeline":(*self.timeline(c,i64::MAX,None)?).clone(),"memories":memories.iter().take(200).map(|m|memory_view(m,knowledge.get(&s(m,"id")))).collect::<Vec<_>>(),"relationships":relationships,"threads":threads,"episodes":self.rows("SELECT id,from_seq,to_seq,summary,interaction_ids_json FROM episodes WHERE conv_id=? AND validity='ok' ORDER BY from_seq",&[json!(c)])?,"flags":flags,"jobs":jobs}),
+            json!({"sync":self.sync_lag(c)?,"scene":self.scene_at(c,i64::MAX)?,"timeline":self.timeline(c,i64::MAX,None)?.view(),"memories":memories.iter().take(200).map(|m|memory_view(m,knowledge.get(&s(m,"id")))).collect::<Vec<_>>(),"relationships":relationships,"threads":threads,"episodes":self.rows("SELECT id,from_seq,to_seq,summary,interaction_ids_json FROM episodes WHERE conv_id=? AND validity='ok' ORDER BY from_seq",&[json!(c)])?,"flags":flags,"jobs":jobs}),
         )
     }
     pub(super) fn story_at(
@@ -331,7 +340,9 @@ impl Database {
     pub(super) fn apply_extraction(&self, p: &Value) -> Result<Value> {
         let c = s(p, "convId");
         let iid = s(p, "interactionId");
-        let eligible = self.eligibility(&c, i64::MAX)?;
+        // Interactions/parts/versions do not change inside this request: one path query serves all three cuts.
+        let path = self.active_path(&c, i64::MAX)?;
+        let eligible = Eligibility::from_path(&path, i64::MAX);
         if !eligible.seq.contains_key(&iid) {
             return Ok(json!({"skipped":true,"reason":"interaction-missing"}));
         }
@@ -438,7 +449,7 @@ impl Database {
                 self.exec("INSERT INTO character_states(id,conv_id,interaction_id,seq,entity_key,entity_name,location,position,holding_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",&[json!(id()),json!(c),json!(iid),json!(seq),json!(rules::key(&name)),json!(name),ch["location"].clone(),ch["position"].clone(),json!(ch["holding"].as_array().cloned().unwrap_or_default()).to_string().into(),json!(now())])?;
             }
         }
-        let past = self.eligibility(&c, seq + 1)?;
+        let past = Eligibility::from_path(&path, seq + 1);
         let mut existing = self.memories_at(&c, &past)?;
         let mut created = Vec::new();
         for f in ext["facts"].as_array().into_iter().flatten() {
@@ -550,7 +561,7 @@ impl Database {
                 existing.push(json!({"id":mid,"kind":kind,"subject":subject,"content":content}));
             }
         }
-        let before = self.eligibility(&c, seq)?;
+        let before = Eligibility::from_path(&path, seq);
         for r in ext["relationships"]
             .as_array()
             .into_iter()

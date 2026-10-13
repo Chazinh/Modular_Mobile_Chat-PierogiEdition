@@ -1,4 +1,4 @@
-use super::{Database, FinishRequest, PATH_CTE, TurnMode, TurnRequest};
+use super::{Database, FinishRequest, PATH_CTE, TurnMode, TurnRequest, maintenance::usage_summary};
 use crate::{Error, Result, id, n, now, parsed, rules, s};
 use serde_json::{Value, json};
 
@@ -221,10 +221,11 @@ impl Database {
                 &[
                     json!(text),
                     json!(status),
+                    // the message keeps the summary the UI reads; the full diagnostic stays in `generations`
                     if p.usage.is_null() {
                         Value::Null
                     } else {
-                        json!(p.usage.to_string())
+                        json!(usage_summary(&p.usage).to_string())
                     },
                     json!(now()),
                     g["version_id"].clone(),

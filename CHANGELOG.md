@@ -5,6 +5,89 @@ without a published version; assessments do not represent implemented features.
 
 ## Unreleased
 
+### Server logs, memory and CPU diet — 2026-10-13
+
+With the encrypted vault, the whole SQLite database lives in memory and every
+`Immediate` write serializes, encrypts and rewrites all of it, so every byte of
+diagnostic data kept in the database costs RAM permanently and I/O on each write.
+The response-plan order is unchanged: `[PLANO DA RESPOSTA]` still goes before the
+current message.
+
+- Server-sent events:
+  - the context report is now sent only in the `ack`, and the `context` event is
+    emitted only when the report changes (before, it was repeated on every text
+    delta and twice in the first frame);
+  - the replay `ack` no longer carries `content` or `usage`, only IDs, mode,
+    status and revision;
+  - the delta is sliced by a remembered UTF-16 → byte offset instead of rescanning
+    the whole buffer on every wake, which was O(n²) over a full reply;
+  - the 2 s checkpoint only writes when the text has grown.
+- Vault writes: `ProviderCheck` is now `Derived` and no longer bumps the
+  revision, so it does not trigger an extra full vault rewrite and a conversation
+  reload on the client after each reply. The redundant first `SetContext` per turn
+  was removed.
+- Embeddings: the vector BLOB is decoded straight to `f32` (`rows_with_vector`)
+  instead of being turned into one JSON `Value` per byte, which made a 4 KB vector
+  take about 130 KB while searching.
+- `router_log`: filters in SQL (`model`, `instr`, `LIMIT 20`) and parses the logged
+  requests with a typed struct and `RawValue`, instead of loading up to 60 rows of
+  up to 512 KB as full `Value` trees on each of up to 5 attempts.
+- Permanent database size:
+  - `versions.usage_json` now stores only a UI summary; the full diagnostic data
+    stays in `generations` and is pruned along with `request_json`/`context_json`.
+    The idempotent `usage_summary_v1` migration slims existing rows, and the prune
+    also summarizes;
+  - the context report stores only counts; the lists of included memory/episode
+    IDs, the embedding model and the sync data are kept only with
+    `MC_DEBUG_CONTEXT=1`;
+  - upstream error messages are clipped to 300 characters, as `jobs.error`
+    already was. `vault-check` prints only the error category.
+- Logging: `tracing` now emits a few events without conversation content (default
+  filter `warn,modularchat_server=info`). The main binary writes logs to stderr and
+  leaves stdout for the banner and the `snapshot`/`vault-check` JSON. A vault write
+  failure still reaches stderr (`eprintln!`) when there is no `tracing` subscriber.
+- CPU and allocations:
+  - `context::assemble` no longer clones pairs, candidates, episodes, relationships
+    and threads on each step of the compression ladder; a test over 6,000 random
+    cases produced output byte-identical to the previous version;
+  - the message list no longer runs N+1 queries or `SELECT *`;
+  - `route-validation.json` is read again only when its modification time changes;
+  - the review schema is parsed once (`OnceLock`);
+  - `/models` and `/presets` cache the upstream `/models` answer for 60 s.
+- Fixed `retrieve` being very slow on long conversations: the `active` CTE built
+  from `json_each` was recomputed on every join comparison. It is now
+  `MATERIALIZED`, which took the search from 25 s to 57 ms with 720 turns in a debug
+  build and keeps it well inside the 6 s limit on context enrichment.
+- `listCast` returns the **active** user persona first.
+- `Cargo.toml`: `serde_json` with the `raw_value` feature.
+- Memory extraction no longer gets slower on every turn (`store/context.rs`,
+  `store/memory.rs`, `store/mod.rs`):
+  - the timeline cache keeps the snapshots under a chained fingerprint
+    (`Timeline`), so a new turn reuses the snapshots already in memory and only
+    derives the new one, instead of rereading and reparsing all of them;
+  - the context receives only the timeline summary (`summary()`); the full view
+    (`view()`) is built only for the memory screen, with the same output as before;
+  - eligibility went from 3 queries on the per-extraction path to 1
+    (`active_path` + `Eligibility::from_path`);
+  - a 720-turn simulation dropped from 87 s to 34 s in a debug build.
+- The Rust build directory can live outside the project. The tests,
+  `scripts/benchmark-context.mjs` and `start-server.ps1` find the executables
+  through `cargo metadata` (new `tests/rust-target.js`), which honors
+  `CARGO_TARGET_DIR` and `build.target-dir` in a `.cargo/config.toml`; the
+  `MC_CONTRACT_EXE`/`MC_SERVER_EXE` overrides still win and the default remains
+  `server-rust/target`. This lets a cloud-sync client be kept away from the files
+  the linker writes, which caused intermittent LNK1104/LNK1201 errors. The README
+  was updated.
+- Tests: new `server-rust/tests/log_diet.rs`; `tests/memory.test.js` expects a
+  sorted list to match the sorted result; the `waitFor` in `tests/api.test.js` was
+  raised from 5 s to 10 s because the provider check retries for about 6 s.
+- Removed the stray `package.json` at the repository root, a loose copy of
+  `Modular-Mobile-Chat/package.json` whose scripts pointed to paths that do not
+  exist at the root.
+- Not done: the duplicated candidate fields (`content`/`text`, `sourceSeq`/`seq`,
+  `sourceInteractionId`/`interactionId`) are still read by `context.rs`, the tests
+  and the extraction prompt.
+
 ### Response limits, local memory model and UI fluidity — 2026-10-13
 
 - Removed the yellow notice about the character ceiling being exceeded

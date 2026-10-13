@@ -6,8 +6,15 @@ use modularchat_server::{
 use std::{future::IntoFuture, path::PathBuf, time::Duration};
 #[tokio::main]
 async fn main() {
+    // Without RUST_LOG: our own events at `info`, dependencies only from `warn` up.
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("warn,modularchat_server=info")
+            }),
+        )
+        // stdout stays reserved for the banner and the JSON of the snapshot/vault-check commands.
+        .with_writer(std::io::stderr)
         .init();
     if let Err(e) = run().await {
         eprintln!("ModularChat: {}", e.message);
@@ -34,6 +41,18 @@ async fn shutdown_signal() {
         }
     }
     let _ = tokio::signal::ctrl_c().await;
+}
+/// Short class of a job error: the text before the first `:`, kept only when it looks like a fixed message
+/// (short and without quotes or brackets that would signal quoted content); otherwise `outro`. Empty stays empty.
+fn error_category(message: &str) -> String {
+    let head = message.split(':').next().unwrap_or_default().trim();
+    if head.is_empty() {
+        return String::new();
+    }
+    if head.chars().count() > 48 || head.contains(['"', '\'', '«', '“', '‘', '{', '[', '\n']) {
+        return "outro".into();
+    }
+    head.to_owned()
 }
 async fn run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -83,10 +102,11 @@ async fn run() -> Result<()> {
             [],
             |r| r.get(0),
         )?;
-        // Memory queue diagnostics: jobs by type/state and the error (short, no conversation content) of failed ones.
+        // Memory queue diagnostics: jobs by type/state and only the category of the error of failed ones
+        // (the stored message can quote model output, so it is never printed).
         let mut jobs = Vec::new();
-        if let Ok(mut st) = db.prepare("SELECT kind,status,attempts,substr(coalesce(error,''),1,160) FROM jobs WHERE status IN ('failed','pending','running','blocked') ORDER BY created_at LIMIT 40")
-            && let Ok(rows) = st.query_map([], |r| Ok(serde_json::json!({"kind":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"attempts":r.get::<_,i64>(2)?,"error":r.get::<_,String>(3)?})))
+        if let Ok(mut st) = db.prepare("SELECT kind,status,attempts,coalesce(error,'') FROM jobs WHERE status IN ('failed','pending','running','blocked') ORDER BY created_at LIMIT 40")
+            && let Ok(rows) = st.query_map([], |r| Ok(serde_json::json!({"kind":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"attempts":r.get::<_,i64>(2)?,"error":error_category(&r.get::<_,String>(3)?)})))
         {
             jobs.extend(rows.flatten());
         }

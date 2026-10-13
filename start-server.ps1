@@ -29,7 +29,15 @@ function Get-FileSha256([string]$Path) {
 
 # The executable runs from a per-build staging copy so `cargo build` can replace the original while it runs.
 $appHome = Join-Path $env:LOCALAPPDATA 'ModularChat'
-$build = Join-Path $PSScriptRoot 'server-rust\target\release\modularchat-server.exe'
+# The build directory may live outside the project (CARGO_TARGET_DIR or build.target-dir in a .cargo/config.toml).
+$targetDir = $env:CARGO_TARGET_DIR
+if (-not $targetDir) {
+  # cargo reads .cargo/config.toml from the working directory upward, so ask from the project folder.
+  Push-Location $PSScriptRoot
+  try { $targetDir = (& cargo metadata --format-version 1 --no-deps --offline --manifest-path (Join-Path $PSScriptRoot 'server-rust\Cargo.toml') 2>$null | ConvertFrom-Json).target_directory } catch { } finally { Pop-Location }
+}
+if (-not $targetDir) { $targetDir = Join-Path $PSScriptRoot 'server-rust\target' }
+$build = Join-Path $targetDir 'release\modularchat-server.exe'
 if ($Exe) { $server = (Resolve-Path -LiteralPath $Exe).Path } else {
   if (-not (Test-Path -LiteralPath $build)) { throw 'Build the server first: cargo build --release --manifest-path server-rust/Cargo.toml' }
   $hash = (Get-FileSha256 $build).Substring(0, 16)

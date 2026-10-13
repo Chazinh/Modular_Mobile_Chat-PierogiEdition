@@ -182,7 +182,7 @@ impl Database {
             "sync":{"lag":unprocessed.len(),"lastSyncedSeq":last_synced,"synced":unprocessed.is_empty()},
             "relationships":relationships,"threads":threads,"pathLength":path.len(),"episodes":episodes,
             "notes":notes.iter().map(|note|json!({"interactionId":note["interaction_id"],"seq":note["seq"],"summary":note["summary"]})).collect::<Vec<_>>(),
-            "globalSettings":global_settings,"pinned":pinned.iter().take(12).map(|m|memory_view(m,knowledge.get(&s(m,"id")))).collect::<Vec<_>>(),"timeline":{"version":timeline["version"],"basis":timeline["basis"],"anchors":timeline["anchors"],"current":timeline["current"]}}),
+            "globalSettings":global_settings,"pinned":pinned.iter().take(12).map(|m|memory_view(m,knowledge.get(&s(m,"id")))).collect::<Vec<_>>(),"timeline":timeline.summary()}),
         )
     }
     pub(super) fn timeline(
@@ -190,7 +190,7 @@ impl Database {
         c: &str,
         before: i64,
         supplied: Option<&[Value]>,
-    ) -> Result<std::sync::Arc<Value>> {
+    ) -> Result<std::sync::Arc<Timeline>> {
         let prompt = s(
             &self.one(
                 "SELECT text FROM character_revisions WHERE conv_id=? ORDER BY rev DESC LIMIT 1",
@@ -232,26 +232,35 @@ impl Database {
             source["fingerprint"] = json!(prefix);
         }
         let key = format!("{c}:{before}:{prefix}");
-        if let Some((_, value, _)) = self
-            .timeline_cache
-            .borrow()
-            .iter()
-            .find(|(k, _, _)| k == &key)
-        {
-            return Ok(value.clone());
+        if let Some(hit) = self.timeline_cache.borrow().iter().find(|t| t.key == key) {
+            return Ok(hit.clone());
         }
-        let fingerprints = sources
+        // Each fingerprint chains the prompt and every earlier source, so the same fingerprint is always the
+        // same snapshot: snapshots already held by a cached timeline of this conversation are reused as they are,
+        // and only the rest is read from the database (or derived). A new turn costs one snapshot instead of a
+        // reread and reparse of the whole path.
+        let mut known = HashMap::<String, (std::sync::Arc<Value>, usize)>::new();
+        for t in self.timeline_cache.borrow().iter().filter(|t| t.conv == c) {
+            for (fingerprint, snapshot, size) in &t.snapshots {
+                known
+                    .entry(fingerprint.clone())
+                    .or_insert_with(|| (snapshot.clone(), *size));
+            }
+        }
+        let unknown = sources
             .iter()
-            .map(|s| s["fingerprint"].clone())
+            .map(|v| v["fingerprint"].clone())
+            .filter(|f| !known.contains_key(f.as_str().unwrap_or_default()))
             .collect::<Vec<_>>();
-        let stored=self.rows("SELECT fingerprint,snapshot_json FROM narrative_snapshots WHERE conv_id=? AND fingerprint IN (SELECT value FROM json_each(?))",&[json!(c),json!(json!(fingerprints).to_string())])?;
-        let existing = stored
-            .iter()
-            .map(|v| (s(v, "fingerprint"), parsed(v, "snapshot_json", Value::Null)))
-            .collect::<HashMap<_, _>>();
+        if !unknown.is_empty() {
+            for row in self.rows("SELECT fingerprint,snapshot_json FROM narrative_snapshots WHERE conv_id=? AND fingerprint IN (SELECT value FROM json_each(?))",&[json!(c),json!(json!(unknown).to_string())])? {
+                let size = row["snapshot_json"].as_str().map(str::len).unwrap_or(0);
+                known.insert(s(&row, "fingerprint"), (std::sync::Arc::new(parsed(&row, "snapshot_json", Value::Null)), size));
+            }
+        }
         let missing = sources
             .iter()
-            .filter(|v| !existing.contains_key(&s(v, "fingerprint")))
+            .filter(|v| !known.contains_key(&s(v, "fingerprint")))
             .map(|v| v["id"].clone())
             .collect::<Vec<_>>();
         let mut parts = HashMap::<String, Vec<Value>>::new();
@@ -261,35 +270,45 @@ impl Database {
                 if row["version_id"].is_string()&&row["content"].as_str().is_some_and(|s|!s.is_empty()){list.push(json!({"id":row["version_id"],"role":"assistant","text":row["content"]}));}
             }
         }
-        let mut snapshots = Vec::<Value>::new();
+        let mut snapshots = Vec::<(String, std::sync::Arc<Value>, usize)>::with_capacity(sources.len());
         let mut records = Vec::new();
         for source in &mut sources {
             let fingerprint = s(source, "fingerprint");
-            let snapshot = if let Some(snapshot) = existing.get(&fingerprint) {
-                snapshot.clone()
+            let entry = if let Some((snapshot, size)) = known.get(&fingerprint) {
+                (fingerprint, snapshot.clone(), *size)
             } else {
                 source["parts"] = json!(parts.remove(&s(source, "id")).unwrap_or_default());
                 let snapshot = crate::narrative::derive_snapshots(
                     &prompt,
                     std::slice::from_ref(source),
-                    snapshots.last(),
+                    snapshots.last().map(|(_, v, _)| v.as_ref()),
                 )
                 .remove(0);
-                records.push(json!({"fingerprint":fingerprint,"id":source["id"],"seq":source["seq"],"snapshot_json":snapshot.to_string(),"created_at":now()}));
-                snapshot
+                let text = snapshot.to_string();
+                let size = text.len();
+                records.push(json!({"fingerprint":fingerprint,"id":source["id"],"seq":source["seq"],"snapshot_json":text,"created_at":now()}));
+                (fingerprint, std::sync::Arc::new(snapshot), size)
             };
-            snapshots.push(snapshot);
+            snapshots.push(entry);
         }
         if !records.is_empty() {
             self.exec("INSERT OR IGNORE INTO narrative_snapshots(fingerprint,conv_id,interaction_id,seq,snapshot_json,created_at) SELECT json_extract(value,'$.fingerprint'),?,json_extract(value,'$.id'),json_extract(value,'$.seq'),json_extract(value,'$.snapshot_json'),json_extract(value,'$.created_at') FROM json_each(?)",&[json!(c),json!(json!(records).to_string())])?;
             self.exec("DELETE FROM narrative_snapshots WHERE conv_id=? AND rowid NOT IN(SELECT rowid FROM narrative_snapshots WHERE conv_id=? ORDER BY rowid DESC LIMIT 4096)",&[json!(c),json!(c)])?;
         }
-        let result = std::sync::Arc::new(crate::narrative::view(&prompt, &snapshots));
+        let size = snapshots.iter().map(|(_, _, n)| n).sum::<usize>();
+        let result = std::sync::Arc::new(Timeline {
+            key,
+            conv: c.to_owned(),
+            anchors: json!(crate::narrative::evidence(&prompt, true)),
+            prompt,
+            snapshots,
+            size,
+        });
         let mut cache = self.timeline_cache.borrow_mut();
-        cache.push((key, result.clone(), json_size(&result)));
-        // At most 8 views and ~16 MB: long conversations cannot hold memory without a bound.
+        cache.push(result.clone());
+        // At most 8 entries and ~16 MB: long conversations cannot hold memory without a bound.
         while cache.len() > 8
-            || (cache.len() > 1 && cache.iter().map(|e| e.2).sum::<usize>() > TIMELINE_CACHE_BYTES)
+            || (cache.len() > 1 && cache.iter().map(|e| e.size).sum::<usize>() > TIMELINE_CACHE_BYTES)
         {
             cache.remove(0);
         }
@@ -309,7 +328,9 @@ impl Database {
                 .collect::<Vec<_>>()
         )
         .to_string();
-        let owners = "WITH active AS(SELECT json_extract(value,'$.id') id,json_extract(value,'$.seq') seq FROM json_each(?1)),owners AS(SELECT 'memory' kind,m.id owner_id,coalesce(a.seq,0) seq,m.content text,m.subject,m.importance,m.confidence,m.visibility,m.kind memory_kind,m.source_interaction_id iid,0 start_offset,0 end_offset,NULL source_id,NULL role,0 from_seq FROM memories m LEFT JOIN active a ON a.id=m.source_interaction_id WHERE m.conv_id=?2 AND m.status!='rejected' AND m.review_state='ok' AND (m.source_interaction_id IS NULL OR a.id IS NOT NULL) AND coalesce(a.seq,0)<?3 AND NOT EXISTS(SELECT 1 FROM memory_replacements r JOIN memories replacement ON replacement.id=r.new_id LEFT JOIN active ra ON ra.id=replacement.source_interaction_id WHERE r.old_id=m.id AND replacement.status!='rejected' AND (replacement.source_interaction_id IS NULL OR ra.id IS NOT NULL)) UNION ALL SELECT 'episode',e.id,e.to_seq,e.summary,NULL,0,0,NULL,NULL,NULL,0,0,NULL,NULL,e.from_seq FROM episodes e WHERE e.conv_id=?2 AND e.to_seq<?3 AND e.to_seq<?4 AND NOT EXISTS(SELECT 1 FROM json_each(e.interaction_ids_json) j WHERE j.value NOT IN (SELECT id FROM active)) UNION ALL SELECT 'chunk',t.id,a.seq,t.text,NULL,0,0,NULL,NULL,a.id,t.start_offset,t.end_offset,t.owner_id,CASE WHEN t.kind='user' THEN 'user' ELSE 'assistant' END,0 FROM text_chunks t JOIN active a ON a.id=CASE WHEN t.kind='user' THEN t.owner_id ELSE (SELECT p.interaction_id FROM parts p JOIN versions v ON v.id=p.selected_version_id WHERE v.id=t.owner_id AND p.deleted_at IS NULL AND v.status!='generating') END WHERE t.conv_id=?2 AND a.seq<?3)".to_string();
+        // MATERIALIZED: `active` is decoded from JSON once and gets an automatic index. Inlined, every join probe
+        // re-ran json_each/json_extract over the whole path (720 turns: 25 s in debug, past the store deadline).
+        let owners = "WITH active AS MATERIALIZED(SELECT json_extract(value,'$.id') id,json_extract(value,'$.seq') seq FROM json_each(?1)),owners AS(SELECT 'memory' kind,m.id owner_id,coalesce(a.seq,0) seq,m.content text,m.subject,m.importance,m.confidence,m.visibility,m.kind memory_kind,m.source_interaction_id iid,0 start_offset,0 end_offset,NULL source_id,NULL role,0 from_seq FROM memories m LEFT JOIN active a ON a.id=m.source_interaction_id WHERE m.conv_id=?2 AND m.status!='rejected' AND m.review_state='ok' AND (m.source_interaction_id IS NULL OR a.id IS NOT NULL) AND coalesce(a.seq,0)<?3 AND NOT EXISTS(SELECT 1 FROM memory_replacements r JOIN memories replacement ON replacement.id=r.new_id LEFT JOIN active ra ON ra.id=replacement.source_interaction_id WHERE r.old_id=m.id AND replacement.status!='rejected' AND (replacement.source_interaction_id IS NULL OR ra.id IS NOT NULL)) UNION ALL SELECT 'episode',e.id,e.to_seq,e.summary,NULL,0,0,NULL,NULL,NULL,0,0,NULL,NULL,e.from_seq FROM episodes e WHERE e.conv_id=?2 AND e.to_seq<?3 AND e.to_seq<?4 AND NOT EXISTS(SELECT 1 FROM json_each(e.interaction_ids_json) j WHERE j.value NOT IN (SELECT id FROM active)) UNION ALL SELECT 'chunk',t.id,a.seq,t.text,NULL,0,0,NULL,NULL,a.id,t.start_offset,t.end_offset,t.owner_id,CASE WHEN t.kind='user' THEN 'user' ELSE 'assistant' END,0 FROM text_chunks t JOIN active a ON a.id=CASE WHEN t.kind='user' THEN t.owner_id ELSE (SELECT p.interaction_id FROM parts p JOIN versions v ON v.id=p.selected_version_id WHERE v.id=t.owner_id AND p.deleted_at IS NULL AND v.status!='generating') END WHERE t.conv_id=?2 AND a.seq<?3)".to_string();
         let query = s(p, "queryText");
         let qt = rules::tokens(&query);
         let entities = p["entityKeys"].as_array().cloned().unwrap_or_default();
@@ -374,27 +395,20 @@ impl Database {
         {
             let mut after = String::new();
             loop {
-                let page=self.rows(&format!("{owners} SELECT o.*,e.vec,e.dim FROM embeddings e JOIN owners o ON o.kind=e.owner_type AND o.owner_id=e.owner_id WHERE e.conv_id=?2 AND e.model=?5 AND e.dim=?6 AND (e.owner_type||':'||e.owner_id)>?7 ORDER BY e.owner_type||':'||e.owner_id LIMIT 256"),&[json!(ids),json!(c),json!(start),json!(before),json!(model),json!(v.len()),json!(after)])?;
+                // The embedding BLOB is decoded to f32 straight from the SQLite buffer (`rows_with_vector`).
+                let page=self.rows_with_vector(&format!("{owners} SELECT o.*,e.vec,e.dim FROM embeddings e JOIN owners o ON o.kind=e.owner_type AND o.owner_id=e.owner_id WHERE e.conv_id=?2 AND e.model=?5 AND e.dim=?6 AND (e.owner_type||':'||e.owner_id)>?7 ORDER BY e.owner_type||':'||e.owner_id LIMIT 256"),&[json!(ids),json!(c),json!(start),json!(before),json!(model),json!(v.len()),json!(after)],"vec",v.len())?;
                 if page.is_empty() {
                     break;
                 }
-                for row in &page {
+                for (row, stored) in &page {
                     let key = format!("{}:{}", s(row, "kind"), s(row, "owner_id"));
                     after = key.clone();
-                    let blob = row["vec"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_u64().map(|v| v as u8))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let Some(vec) = rules::decode_vector(&blob, v.len()) else {
+                    let Some(vec) = stored else {
                         continue;
                     };
                     hybrid = true;
                     seen.insert(key);
-                    if let Some(candidate) = rank(row, rules::cosine(v, &vec)) {
+                    if let Some(candidate) = rank(row, rules::cosine(v, vec)) {
                         best.push(candidate);
                     }
                 }
@@ -521,19 +535,28 @@ fn trim_candidates(best: &mut Vec<Value>) {
 }
 
 const TIMELINE_CACHE_BYTES: usize = 16 * 1024 * 1024;
-/// Serialized size without allocating the text.
-fn json_size(v: &Value) -> usize {
-    struct Count(usize);
-    impl std::io::Write for Count {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0 += b.len();
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+/// Narrative timeline up to a point of the path: one snapshot per interaction, keyed by its chained fingerprint.
+/// The full view (`narrative::view`) is only built for the memory overview; the context needs just the summary.
+pub(crate) struct Timeline {
+    key: String,
+    conv: String,
+    prompt: String,
+    anchors: Value,
+    /// (fingerprint, snapshot, approximate serialized size)
+    snapshots: Vec<(String, std::sync::Arc<Value>, usize)>,
+    size: usize,
+}
+impl Timeline {
+    /// What the context assembly reads: the same fields `narrative::view` gives, without the snapshot list.
+    pub(super) fn summary(&self) -> Value {
+        json!({"version":3,"basis":"narrative","anchors":self.anchors,"current":self.snapshots.last().map(|(_, v, _)| v.as_ref())})
     }
-    let mut c = Count(0);
-    let _ = serde_json::to_writer(&mut c, v);
-    c.0
+    pub(super) fn view(&self) -> Value {
+        let snapshots = self
+            .snapshots
+            .iter()
+            .map(|(_, v, _)| v.as_ref().clone())
+            .collect::<Vec<_>>();
+        crate::narrative::view(&self.prompt, &snapshots)
+    }
 }

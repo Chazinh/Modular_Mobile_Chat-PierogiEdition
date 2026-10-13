@@ -85,6 +85,14 @@ impl Config {
     }
 }
 
+/// Diagnostic mode (`MC_DEBUG_CONTEXT=1`): the context report that is stored and streamed keeps the ID lists of
+/// the memories/episodes that went into the prompt. Read once; a free function (not a `Config` field) so
+/// existing `Config { .. }` literals keep compiling.
+pub fn debug_context() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MC_DEBUG_CONTEXT").as_deref() == Ok("1"))
+}
+
 pub fn hard_links(path: &std::path::Path) -> Result<u64> {
     #[cfg(windows)]
     {
