@@ -3,7 +3,7 @@
 Project changes are recorded here. The **Unreleased** section collects changes
 without a published version; assessments do not represent implemented features.
 
-## Unreleased
+## Released
 
 ### Side menu performance and on-device measurement — 2026-10-13
 
