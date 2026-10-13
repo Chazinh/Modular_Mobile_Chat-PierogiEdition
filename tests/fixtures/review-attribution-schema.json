@@ -1,0 +1,18 @@
+{
+  "topLevelRequired": ["agency", "continuity", "knowledge"],
+  "attribution": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "quote": { "type": "string" },
+        "reason": { "type": "string" },
+        "previousQuote": { "type": "string" },
+        "sourceQuote": { "type": "string" },
+        "originalSpeaker": { "type": "string" },
+        "claimedSpeaker": { "type": "string" }
+      },
+      "required": ["claimedSpeaker", "originalSpeaker", "previousQuote", "quote", "reason", "sourceQuote"]
+    }
+  }
+}

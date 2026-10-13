@@ -1,0 +1,21 @@
+{
+  "name": "ModularChat",
+  "short_name": "ModularChat",
+  "description": "Chat com personagens: o PC guarda a memória, o celular lê e conversa.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1B1B1D",
+  "theme_color": "#101012",
+  "icons": [
+    {
+      "src": "/icons/pierogi-dark-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/pierogi-dark-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

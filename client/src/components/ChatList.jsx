@@ -1,0 +1,281 @@
+import React, { memo, useEffect, useRef, useState } from 'react';
+import { Plus, Search, Settings, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, X, Brain, Pencil } from 'lucide-react';
+import { api } from '../api.js';
+import { Avatar, timeAgo, useLongPress } from '../ui.jsx';
+import { plainText } from '../format.js';
+import { Sheet, SheetButton } from './Sheet.jsx';
+import AvatarViewerModal from './AvatarViewerModal.jsx';
+import RenameModal from './RenameModal.jsx';
+
+function preview(text) {
+  const t = plainText(text || '').replace(/\s+/g, ' ');
+  return t || 'Sem mensagens ainda.';
+}
+
+export default function ChatList({ chats, offline, error, archivedView, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
+  const [searching, setSearching] = useState(false);
+  const [sheet, setSheet] = useState(null);
+  const [hits, setHits] = useState(null);
+  const [toast, setToast] = useState('');
+  const [viewerAvatar, setViewerAvatar] = useState(null);
+  const [renameChat, setRenameChat] = useState(null);
+  const [text, setText] = useState(query); // the field responds immediately; server search/filtering waits for a pause in typing
+  const searchTimer = useRef(0);
+  const searchSeq = useRef(0);
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
+
+  const flash = (t) => {
+    setToast(t);
+    setTimeout(() => setToast(''), 2200);
+  };
+
+  async function textSearch(q) {
+    onQuery(q);
+    const seq = ++searchSeq.current;
+    if (q.trim().length < 3) return setHits(null);
+    try {
+      const results = (await api.search(q)).results;
+      if (seq === searchSeq.current) setHits(results);
+    } catch {
+      if (seq === searchSeq.current) setHits(null);
+    }
+  }
+  function typeQuery(q) {
+    setText(q);
+    clearTimeout(searchTimer.current);
+    if (!q) textSearch('');
+    else searchTimer.current = setTimeout(() => textSearch(q), 280);
+  }
+
+  async function act(fn, ok) {
+    setSheet(null);
+    try {
+      await fn();
+      if (ok) flash(ok);
+      onChanged();
+    } catch (e) {
+      flash(e.message);
+    }
+  }
+
+  async function exportChat(chat) {
+    setSheet(null);
+    try {
+      const data = await api.exportAll(chat.id);
+      const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${chat.name.replace(/[^\w-]+/g, '_')}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (e) {
+      flash(e.message);
+    }
+  }
+
+  return (
+    <div className="mc-list fixed inset-0 z-30 flex flex-col bg-bgDark">
+      {/* Detached floating header with individual liquid-glass bubbles */}
+      <header className="pointer-events-none fixed inset-x-0 top-0 z-30 px-3" style={{ paddingTop: 'calc(var(--sat) + 8px)' }}>
+        <div className="mc-col flex items-center justify-between gap-2">
+          {/* Title isolated in its own bubble */}
+          <div className="mc-glass-pill pointer-events-auto flex items-center rounded-full px-4 py-2 shadow-lg">
+            <h1 className="text-[19px] font-extrabold tracking-tight">{archivedView ? 'Arquivadas' : 'Conversas'}</h1>
+          </div>
+
+          {/* Action icons in individual round bubbles */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSearching((v) => !v)}
+              className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+              aria-label="Buscar"
+            >
+              <Search size={19} />
+            </button>
+            <button
+              onClick={onToggleArchived}
+              className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+              aria-label="Arquivadas"
+            >
+              {archivedView ? <ArchiveRestore size={19} /> : <Archive size={19} />}
+            </button>
+            <button
+              onClick={onGlobal}
+              className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+              aria-label="Configurações"
+            >
+              <Settings size={19} />
+            </button>
+            <button
+              onClick={onCreate}
+              className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+              aria-label="Novo chat"
+            >
+              <Plus size={20} />
+            </button>
+          </div>
+        </div>
+
+        {searching && (
+          <div className="mc-col mt-2">
+            <div className="mc-glass-pill pointer-events-auto flex items-center gap-2 rounded-full px-4 py-2 shadow-lg">
+              <Search size={16} className="text-textMuted" />
+              <input
+                autoFocus
+                value={text}
+                onChange={(e) => typeQuery(e.target.value)}
+                placeholder="Buscar conversas e mensagens"
+                spellCheck={true}
+                lang="pt-BR, en"
+                autoCorrect="on"
+                autoCapitalize="sentences"
+                className="flex-1 bg-transparent text-[16px] outline-none placeholder:text-textMuted"
+              />
+              {text && (
+                <button onClick={() => typeQuery('')} aria-label="Limpar">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </header>
+
+      <div
+        className="flex-1 overflow-y-auto pb-6"
+        style={{
+          paddingTop: searching ? 'calc(var(--sat) + 116px)' : 'calc(var(--sat) + 68px)',
+        }}
+      >
+        <div className="mc-col">
+          {offline && (
+            <div className="px-4 pb-2">
+              <div className="flex items-center gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
+                <WifiOff size={14} /> PC fora do alcance. Mostrando a cópia salva no aparelho (leitura e rascunhos).
+              </div>
+            </div>
+          )}
+          {error && !offline && <div className="px-4 pb-2 text-xs text-red-300">{error}</div>}
+          {hits && hits.length > 0 && (
+            <div className="px-4 pb-2 pt-3">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-textMuted">Mensagens encontradas</p>
+              {hits.map((h, i) => (
+                <button key={i} onClick={() => onOpen(h.convId)} className="mb-1 block w-full rounded-xl bg-cardDark px-3 py-2 text-left active:bg-cardDarkHover">
+                  <span className="text-xs text-textMuted">{h.convName}</span>
+                  <span className="block text-sm">{h.snippet.replace(/[«»]/g, '')}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {chats.length === 0 && (
+            <div className="px-8 pt-24 text-center text-textMuted">
+              <p className="mb-4">{archivedView ? 'Nada arquivado.' : 'Nenhuma conversa ainda.'}</p>
+              {!archivedView && (
+                <button onClick={onCreate} className="rounded-full bg-accentPurple px-6 py-3 font-semibold text-white">
+                  Criar primeiro chat
+                </button>
+              )}
+            </div>
+          )}
+          {chats.map((c) => (
+            <ChatRow key={c.id} chat={c} onOpen={onOpen} onMenu={setSheet} onViewAvatar={setViewerAvatar} />
+          ))}
+        </div>
+      </div>
+
+      {sheet && (
+        <Sheet onClose={() => setSheet(null)} title={sheet.name}>
+          <SheetButton icon={<Pin size={20} />} label={sheet.pinned ? 'Desafixar' : 'Fixar no topo'} onClick={() => act(() => api.updateChat(sheet.id, { pinned: !sheet.pinned }))} />
+          <SheetButton
+            icon={<Pencil size={20} />}
+            label="Renomear conversa"
+            onClick={() => {
+              setRenameChat(sheet);
+              setSheet(null);
+            }}
+          />
+          <SheetButton
+            icon={sheet.archived ? <ArchiveRestore size={20} /> : <Archive size={20} />}
+            label={sheet.archived ? 'Desarquivar' : 'Arquivar'}
+            onClick={() => act(() => api.updateChat(sheet.id, { archived: !sheet.archived }))}
+          />
+          <SheetButton icon={<Copy size={20} />} label="Duplicar personagem (conversa limpa)" onClick={() => act(() => api.duplicateChat(sheet.id), 'Conversa duplicada')} />
+          <SheetButton icon={<Download size={20} />} label="Exportar conversa" onClick={() => exportChat(sheet)} />
+          <SheetButton
+            icon={<Trash2 size={20} />}
+            danger
+            label="Excluir (recuperável por 30 dias)"
+            onClick={() => {
+              if (confirm(`Excluir "${sheet.name}"? Ela fica na lixeira por 30 dias.`)) act(() => api.deleteChat(sheet.id), 'Movida para a lixeira');
+              else setSheet(null);
+            }}
+          />
+        </Sheet>
+      )}
+
+      {viewerAvatar && (
+        <AvatarViewerModal item={viewerAvatar} onClose={() => setViewerAvatar(null)} />
+      )}
+
+      {renameChat && (
+        <RenameModal
+          title={`Renomear "${renameChat.name}"`}
+          initial={renameChat.name}
+          onClose={() => setRenameChat(null)}
+          onSave={async (newName) => {
+            await act(() => api.updateChat(renameChat.id, { name: newName }), 'Conversa renomeada');
+          }}
+        />
+      )}
+
+      {toast && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-8 z-[60] flex justify-center">
+          <span className="rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-black">{toast}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Memoized: the list only re-renders conversations whose content changed (see App.jsx, which reuses equal objects).
+const ChatRow = memo(function ChatRow({ chat, onOpen, onMenu, onViewAvatar }) {
+  const press = useLongPress(() => onMenu(chat), 550);
+  return (
+    <button {...press} className="mc-list-row flex w-full items-center gap-3 px-4 py-3 text-left active:bg-cardDarkHover" onClick={() => onOpen(chat.id)}>
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={(e) => {
+          e.stopPropagation();
+          onViewAvatar({ name: chat.name, avatar: chat.avatar });
+        }}
+        className="shrink-0 active:scale-95 transition-transform"
+        aria-label={`Ver foto de ${chat.name}`}
+      >
+        <Avatar name={chat.name} avatar={chat.avatar} size={60} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="flex min-w-0 items-center gap-1.5 text-[17px] font-bold">
+            {chat.pinned && <Pin size={13} className="shrink-0 text-accentPurpleLight" />}
+            <span className="truncate">{chat.name}</span>
+          </span>
+          <span className="shrink-0 text-sm text-textMuted">{timeAgo(chat.updatedAt)}</span>
+        </div>
+        <p className="mt-0.5 line-clamp-2 text-[14px] leading-snug text-gray-300">{preview(chat.lastMessage)}</p>
+        <div className="mt-1 flex items-center gap-2 text-[11px] text-textMuted">
+          {chat.generating && (
+            <span className="flex items-center gap-1 text-accentPurpleLight">
+              <span className="h-1.5 w-1.5 rounded-full bg-accentPurpleLight" /> respondendo
+            </span>
+          )}
+          {chat.pendingJobs > 0 && (
+            <span className="flex items-center gap-1">
+              <Brain size={11} /> memória pendente ({chat.pendingJobs})
+            </span>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+});

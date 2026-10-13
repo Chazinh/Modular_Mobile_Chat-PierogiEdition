@@ -1,0 +1,546 @@
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ChevronRight, ChevronLeft, Trash2, MessageSquarePlus, Upload, Check, Users, Camera, Copy, Cpu, UserRound, Pencil, FileText, Layers, SlidersHorizontal, History } from 'lucide-react';
+import { api } from '../api.js';
+import { useLayer } from '../nav.js';
+import { Avatar, fileToAvatar } from '../ui.jsx';
+import { VerdictDot } from './ChatView.jsx';
+import StyleForm from './StyleForm.jsx';
+import PersonaManager from './PersonaManager.jsx';
+import { usePanelDrag } from '../gestures.js';
+import { PanelMotion, attachMotion, detachMotion } from '../drawer-motion.js';
+import '../drawer.css';
+
+const VERDICT_TEXT = {
+  forwarded: 'Esforço fixo deste preset, conferido no pedido enviado ao modelo. Cada resposta é conferida de novo.',
+  not_forwarded: 'O provedor recebeu um esforço diferente do preset nesta rota. Não use esta combinação.',
+  unverified: 'Não deu para conferir no registro do provedor; o esforço é enviado, mas sem confirmação.',
+  confirmed: 'Esforço confirmado nesta rota',
+  sent_unconfirmed: 'Esforço enviado, mas a rota não expõe como confirmar. Não é um preset validado.',
+  ignored: 'A rota aceita o parâmetro (HTTP 200), mas os testes reais não mostraram efeito mensurável no raciocínio. O esforço é enviado, porém não confirmado: não é um preset validado.',
+  not_validated: 'Rota ainda não validada (rode scripts/validate-routes.mjs).',
+  error: 'A validação desta rota falhou.',
+};
+
+// Side drawer with the conversation settings.
+export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, onHistoryCleared, onOpenCast, onCreate, onDeleted }) {
+  const [page, setPage] = useState(null); // null | model | name | persona | prompt | history | context | style
+  const [gs, setGs] = useState(null); // global settings (summary on the "Style and limits" row)
+  const [temp, setTemp] = useState(chat.temperature ?? 0.8);
+  const [error, setError] = useState('');
+  const [thinkingSaving, setThinkingSaving] = useState(false);
+  const [personaOpen, setPersonaOpen] = useState(false);
+  const fileRef = useRef(null);
+  const tempTimer = useRef(null);
+  const rootRef = useRef(null);
+  const panelRef = useRef(null);
+  const scrimRef = useRef(null);
+  const motionRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  // The panel is moved directly in the DOM (spring, rubber band, deformation): see drawer-motion.js.
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const motion = new PanelMotion({ panel, scrim: scrimRef.current, axis: 'x', closed: panel.offsetWidth + 24, onClosed: () => onCloseRef.current() });
+    motionRef.current = motion;
+    // if the finger was already pulling from the edge, the panel takes over the drag; otherwise it springs open
+    if (!attachMotion(motion)) motion.open();
+    return () => {
+      detachMotion(motion);
+      motion.destroy();
+      motionRef.current = null;
+    };
+  }, []);
+  const close = () => (motionRef.current ? motionRef.current.close() : onClose());
+  usePanelDrag(rootRef, motionRef, { axis: 'x', enabled: !personaOpen });
+
+  useLayer(page !== null, () => setPage(null));
+
+  const preset = presets?.presets?.find((p) => p.id === chat.presetId);
+  const thinkingOn = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
+
+  async function save(patch) {
+    setError('');
+    try {
+      const updated = await api.updateChat(chat.id, patch);
+      onSaved(updated);
+      return updated;
+    } catch (e) {
+      setError(e.message);
+      return null;
+    }
+  }
+
+  function changeTemp(v) {
+    setTemp(v);
+    clearTimeout(tempTimer.current);
+    tempTimer.current = setTimeout(() => save({ temperature: v }), 400);
+  }
+
+  async function clearHistory() {
+    if (!confirm('Apagar TODO o histórico desta conversa? Fica na lixeira por 30 dias e a memória derivada é invalidada.')) return;
+    try {
+      await api.clearHistory(chat.id);
+      onHistoryCleared();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function deleteChat() {
+    if (!confirm(`Excluir "${chat.name}"? Ela fica na lixeira por 30 dias.`)) return;
+    try {
+      await api.deleteChat(chat.id);
+      onDeleted(chat.id);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function pickAvatar(file) {
+    try {
+      await save({ avatar: await fileToAvatar(file) });
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  useEffect(() => {
+    api.globalSettings().then((r) => setGs(r.settings)).catch(() => {});
+  }, []);
+
+  const ctxPairs = chat.settings?.context?.preferredPairs ?? 30;
+
+  return (
+    <div ref={rootRef} className="mc-drawer">
+      <div ref={scrimRef} className="mc-scrim" onClick={close} />
+      <div ref={panelRef} className="mc-drawer-panel">
+        {page === null && (
+          <>
+            <div className="flex-1 overflow-y-auto">
+              <div className="mc-elastic-wrapper min-h-full">
+                <div className="mc-bubble mx-[10px] mb-[10px] mt-1 flex items-center gap-3 rounded-[30px] py-2.5 pl-2.5 pr-4">
+                  <button onClick={() => fileRef.current?.click()} className="relative shrink-0" aria-label="Trocar avatar">
+                    <GlassAvatar name={chat.name} avatar={chat.avatar} />
+                    <span className="mc-tile-mini absolute -bottom-1 -right-1">
+                      <Camera size={12} />
+                    </span>
+                  </button>
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold">{chat.name}</p>
+                    <p className="text-xs text-textMuted">Avatar guardado só neste aparelho e no PC</p>
+                  </div>
+                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && pickAvatar(e.target.files[0])} />
+                </div>
+                <Row lead={<Cpu size={20} />} label="Modelo e esforço" value={`${preset?.label || chat.routeId}${chat.effort ? ` · ${chat.effort}` : ''}`} onClick={() => setPage('model')} />
+                {preset?.thinkingCanDisable && <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-4 py-3">
+                  <button role="switch" aria-label="Pensamento do modelo" aria-checked={thinkingOn} disabled={busy || thinkingSaving} onClick={async () => { setThinkingSaving(true); try { await save({ settings: { thinkingEnabled: !thinkingOn } }); } finally { setThinkingSaving(false); } }} className="flex w-full items-center justify-between gap-3 text-left disabled:opacity-50">
+                    <span><span className="block font-medium">Pensamento do modelo</span><span className="block text-xs text-textMuted">{thinkingSaving ? 'Salvando…' : thinkingOn ? 'Ligado' : 'Desligado'} · nesta conversa</span></span>
+                    <Switch on={thinkingOn} />
+                  </button>
+                  <p className="mt-2 text-xs text-textMuted">Vale na próxima resposta. O esforço escolhido fica guardado para quando você ligar novamente.</p>
+                </div>}
+                {error && <p role="alert" className="mx-4 text-xs text-red-400">{error}</p>}
+                <Row lead={<UserRound size={20} />} label="Persona" value={chat.persona || '—'} onClick={() => setPersonaOpen(true)} />
+                <Row lead={<FileText size={20} />} label="Personalização (.txt)" value={chat.prompt?.trim() ? 'definida' : 'vazia'} onClick={() => setPage('prompt')} />
+                <Row lead={<Users size={20} />} label="Elenco" value="conferir e corrigir" onClick={onOpenCast} />
+                <Row lead={<Layers size={20} />} label="Contexto" value={`${ctxPairs} pares`} onClick={() => setPage('context')} />
+                <Row lead={<SlidersHorizontal size={20} />} label="Estilo e limites (global)" value={gs ? `${gs.dialoguePct}% falas · ${Number(gs.botChars).toLocaleString('pt-BR')} car.` : '—'} onClick={() => setPage('style')} />
+                <Row lead={<History size={20} />} label="Histórico" value={`${chat.history?.length || 0} msgs`} onClick={() => setPage('history')} />
+
+                <AutoBubble className="mx-[10px] mb-[10px] rounded-[26px]">
+                  <SamplingInfo preset={preset} chat={chat} temp={temp} thinkingOn={thinkingOn} onTemp={changeTemp} />
+                </AutoBubble>
+                {error && <p className="mx-4 mt-3 text-sm text-red-400">{error}</p>}
+              </div>
+            </div>
+            <div className="px-[10px] pt-1">
+              <button onClick={onCreate} className="mc-bubble mc-glass-accent flex w-full items-center justify-center gap-2 rounded-full py-4 font-semibold">
+                <MessageSquarePlus size={20} /> Novo Chat
+              </button>
+            </div>
+          </>
+        )}
+
+        {page === 'model' && (
+          <ModelPage chat={chat} presets={presets} error={error} onBack={() => setPage(null)} onPick={async (patch) => (await save(patch)) && setPage(null)} />
+        )}
+        {personaOpen && (
+          <PersonaManager
+            chat={chat}
+            onClose={() => setPersonaOpen(false)}
+            onChosen={(updated) => {
+              onSaved(updated);
+              setPersonaOpen(false);
+            }}
+          />
+        )}
+        {page === 'persona' && (
+          <TextPage title="Persona (seu nome na conversa)" initial={chat.persona || ''} placeholder="Ex.: Alex" onBack={() => setPage(null)} onSave={async (v) => (await save({ persona: v })) && setPage(null)} />
+        )}
+        {page === 'prompt' && <PromptPage chat={chat} onBack={() => setPage(null)} onSaved={onSaved} onClosePage={() => setPage(null)} />}
+        {page === 'context' && (
+          <SubPage title="Contexto enviado ao modelo" onBack={() => setPage(null)}>
+            <div className="mc-bubble mx-[10px] space-y-3 rounded-[26px] px-4 py-4 text-sm text-textMuted">
+              <p>
+                A conversa inteira fica guardada no PC. A cada resposta o modelo recebe: regras, personalização, persona, cena atual, quem sabe o quê, threads, até 8 memórias relevantes e os últimos <b className="text-white">{ctxPairs}</b> pares completos.
+              </p>
+              <label className="block">
+                <span className="mb-1 flex justify-between">
+                  <span>Pares recentes preferidos</span>
+                  <span className="font-mono text-accentPurpleLight">{ctxPairs}</span>
+                </span>
+                <input
+                  type="range" min="20" max="50" step="1" value={ctxPairs}
+                  onChange={(e) => save({ settings: { context: { ...(chat.settings?.context || {}), preferredPairs: Number(e.target.value) } } })}
+                  className="w-full accent-[#7c3aed]"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 rounded-[20px] bg-composer px-3.5 py-3 text-white">
+                <span>
+                  Regras no primeiro turno
+                  <span className="block text-xs text-textMuted">Automático: system onde a rota respeita; primeiro turno só onde é descartado (cbai).</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={chat.settings?.rulesPlacement === 'first_turn'}
+                  onChange={(e) => save({ settings: { rulesPlacement: e.target.checked ? 'first_turn' : null } })}
+                />
+              </label>
+              <p>Alvo 96 mil tokens, limite suave 110 mil, teto 128 mil. Sob pressão, primeiro reduzo memórias e episódios; só depois os pares recentes (mínimo 20), sem cortar mensagens.</p>
+            </div>
+          </SubPage>
+        )}
+        {page === 'style' && (
+          <SubPage title="Estilo e limites (global)" onBack={() => setPage(null)}>
+            <StyleForm onChange={setGs} />
+          </SubPage>
+        )}
+        {page === 'history' && (
+          <SubPage title="Histórico" onBack={() => setPage(null)}>
+            <div className="mc-bubble mx-[10px] space-y-2 rounded-[26px] px-4 py-3.5 text-sm text-textMuted">
+              <p>{chat.history?.length || 0} mensagens no caminho ativo, salvas no PC e em cache neste aparelho.</p>
+              <p>Apagar e excluir vão para a lixeira por 30 dias (configurações do app → Lixeira).</p>
+            </div>
+            <div className="mt-[10px] space-y-[10px] px-[10px]">
+              <button disabled={busy} onClick={clearHistory} className="mc-bubble flex w-full items-center justify-center gap-2 rounded-full py-4 font-semibold text-red-400 disabled:opacity-40">
+                <Trash2 size={18} /> Apagar histórico desta conversa
+              </button>
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  try {
+                    await api.duplicateChat(chat.id);
+                    onClose();
+                    onHistoryCleared();
+                  } catch (e) {
+                    setError(e.message);
+                  }
+                }}
+                className="mc-bubble flex w-full items-center justify-center gap-2 rounded-full py-4 text-sm disabled:opacity-40"
+              >
+                <Copy size={16} /> Duplicar personagem em conversa limpa
+              </button>
+              <button disabled={busy} onClick={deleteChat} className="mc-bubble flex w-full items-center justify-center gap-2 rounded-full py-4 text-sm text-gray-300 disabled:opacity-40">
+                Excluir chat inteiro
+              </button>
+            </div>
+            {error && <p className="mx-4 mt-3 text-sm text-red-400">{error}</p>}
+          </SubPage>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// How thinking is enabled for each preset (the server's "thinking" field).
+const THINKING_TEXT = {
+  enabled: 'pensamento ativado',
+  adaptive: 'pensamento adaptativo ativado',
+  level: 'pensamento ativado',
+  always: 'pensamento sempre ativo',
+  none: 'sem seleção de pensamento (o provedor usa o mínimo)',
+};
+const thinkingText = (p) => p.thinkingCanDisable ? 'pensamento: você pode ligar ou desligar' : THINKING_TEXT[p.thinking] || 'sem modo de pensamento';
+
+function ModelPage({ chat, presets, error, onBack, onPick }) {
+  const list = (presets?.presets || []).filter(p => p.selectable !== false && p.id !== 'generic');
+  const savedThinking = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
+  const [sel, setSel] = useState({ presetId: chat.presetId, routeId: chat.routeId, effort: chat.effort, thinkingEnabled: savedThinking });
+  const cur = list.find((p) => p.id === sel.presetId);
+  const dirty = sel.presetId !== chat.presetId || sel.routeId !== chat.routeId || sel.effort !== chat.effort || cur?.thinkingCanDisable && sel.thinkingEnabled !== savedThinking;
+  const selectedPatch = () => ({ presetId: sel.presetId, routeId: sel.routeId, effort: sel.effort, ...(cur?.thinkingCanDisable ? { settings: { thinkingEnabled: sel.thinkingEnabled } } : {}) });
+
+  function choosePreset(p) {
+    const route = p.routes.find((r) => r.id === sel.routeId) || p.routes.find((r) => p.preferredRoutes?.includes(r.id)) || p.routes[0];
+    if (!route) return;
+    // presets with their own default (GLM 5.2 without thinking) start at that default; leaving them turns thinking back on
+    const prev = list.find((x) => x.id === sel.presetId);
+    const thinkingEnabled = p.id === sel.presetId ? sel.thinkingEnabled : p.thinkingDefault === false ? false : prev?.thinkingDefault === false ? true : sel.thinkingEnabled;
+    setSel({ presetId: p.id, routeId: route.id, effort: p.effortByRoute?.[route.id] ?? p.defaultEffort, thinkingEnabled });
+  }
+
+  const routeVal = cur?.routes.find((r) => r.id === sel.routeId)?.validation;
+  const verdict = sel.effort ? routeVal?.efforts?.[sel.effort]?.verdict || routeVal?.control || 'not_validated' : null;
+
+  return (
+    <SubPage
+      title="Modelo e esforço"
+      onBack={onBack}
+      action={<button onClick={() => onPick(selectedPatch())} className="px-3 py-1 font-semibold text-accentPurpleLight">Salvar</button>}
+      footer={dirty ? <button onClick={() => onPick(selectedPatch())} className="mc-bubble mc-glass-accent w-full rounded-full px-4 py-3.5 font-semibold">Usar {cur?.label}</button> : null}
+    >
+      {list.length === 0 && <p className="px-5 text-sm text-textMuted">Carregando presets do PC…</p>}
+      <p className="mc-bubble mx-[10px] mb-[10px] rounded-[22px] px-4 py-2.5 text-xs text-textMuted">Em uso: {list.find(p => p.id === chat.presetId)?.label || chat.routeId}. Selecione abaixo e salve para aplicar às próximas respostas.</p>
+      {error && <p role="alert" className="mx-5 mb-3 text-sm text-red-400">{error}</p>}
+      {list.map((p) => {
+        const usable = p.available !== false && p.routes.length > 0;
+        return (
+          <div key={p.id} className={`mc-bubble mx-[10px] mb-[10px] rounded-[26px] ${sel.presetId === p.id ? 'mc-selected' : ''}`}>
+            <button disabled={!usable} onClick={() => choosePreset(p)} className="flex w-full items-center justify-between px-4 py-3 text-left disabled:opacity-50">
+              <span>
+                <span className="block font-medium">{p.label}</span>
+                <span className="block text-xs text-textMuted">
+                  {usable ? `${p.efforts.length ? `esforço padrão: ${p.defaultEffort}` : 'sem controle de esforço'} · ${thinkingText(p)}${p.thinkingDefault === false ? ' (começa desligado)' : ''}` : 'rota não exposta pelos provedores'}
+                </span>
+              </span>
+              {sel.presetId === p.id && <Check size={18} className="text-accentPurpleLight" />}
+            </button>
+            {sel.presetId === p.id && (
+              <div className="border-t border-borderDark px-4 pb-3 pt-2">
+                {p.thinkingCanDisable ? <button role="switch" aria-label="Pensamento do modelo selecionado" aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
+                  <span>Pensamento do modelo</span><Switch on={sel.thinkingEnabled} />
+                </button> : <p className="mb-3 text-xs text-textMuted">{p.thinking === 'none' ? 'Esta rota usa o menor pensamento disponível e não permite desligá-lo.' : 'Controle de desligamento indisponível nesta rota.'}</p>}
+                <p className="mb-1 text-xs text-textMuted">Rota exata</p>
+                {p.routes.map((r) => (
+                  <button key={r.id} onClick={() => setSel((s) => ({ ...s, routeId: r.id, effort: p.effortByRoute?.[r.id] ?? s.effort }))} className="flex w-full items-center gap-2 py-1.5 text-left text-sm">
+                    <span className={`h-3.5 w-3.5 rounded-full border ${sel.routeId === r.id ? 'border-accentPurpleLight bg-accentPurple' : 'border-gray-500'}`} />
+                    <span className="break-all">{r.id}</span>
+                  </button>
+                ))}
+                {p.efforts.length > 0 && (
+                  <>
+                    <p className="mb-1 mt-3 text-xs text-textMuted">{p.thinkingCanDisable && !sel.thinkingEnabled ? 'Esforço guardado para quando o pensamento estiver ligado' : p.effortByRoute ? 'Esforço (cada nível é uma rota própria)' : p.efforts.length > 1 ? 'Esforço desta conversa' : 'Esforço (fixo neste preset)'}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {p.efforts.map((e) => {
+                        if (!p.effortByRoute && p.efforts.length === 1) return <span key={e} className="mc-bubble mc-glass-accent rounded-full px-3 py-1.5 text-sm">{e}</span>;
+                        if (!p.effortByRoute) return <button key={e} aria-pressed={sel.effort === e} onClick={() => setSel(s => ({ ...s, effort: e }))} className={`rounded-full px-3 py-1.5 text-sm text-white ${sel.effort === e ? 'mc-bubble mc-glass-accent' : 'bg-composer'}`}>{e}</button>;
+                        const route = p.routes.find((r) => p.effortByRoute[r.id] === e);
+                        const on = sel.effort === e;
+                        return (
+                          <button
+                            key={e}
+                            disabled={!route}
+                            aria-pressed={on}
+                            title={route ? route.id : 'rota não exposta pelos provedores'}
+                            onClick={() => route && setSel((s) => ({ ...s, routeId: route.id, effort: e }))}
+                            className={`rounded-full px-3 py-1.5 text-sm text-white disabled:opacity-40 ${on ? 'mc-bubble mc-glass-accent' : 'bg-composer'}`}
+                          >
+                            {e}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {verdict && (
+                      <p className="mt-2 flex items-start gap-2 text-xs text-textMuted">
+                        <span className="mt-1"><VerdictDot verdict={verdict} /></span>
+                        <span>{VERDICT_TEXT[verdict] || verdict}</span>
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </SubPage>
+  );
+}
+
+// Glass bubble with the icon in a glass drop; label on top and the current value below (no line wrap).
+function Row({ lead, label, value, onClick }) {
+  return (
+    <button onClick={onClick} className="mc-row">
+      <span className="mc-tile">{lead}</span>
+      <span className="min-w-0 flex-1 leading-tight">
+        <span className="block truncate text-[15.5px]">{label}</span>
+        {value && <span className="mt-0.5 block truncate text-[12.5px] text-textMuted">{value}</span>}
+      </span>
+      <ChevronRight size={18} className="shrink-0 text-textMuted" />
+    </button>
+  );
+}
+
+function Switch({ on }) {
+  return (
+    <span className={`mc-switch ${on ? 'mc-switch-on' : ''}`} aria-hidden="true">
+      <span />
+    </span>
+  );
+}
+
+// Generative bubble: measures its content on every change (ResizeObserver) and animates its own height to it,
+// growing or shrinking in real time; the content fades slightly while it changes.
+function AutoBubble({ className = '', children }) {
+  const outer = useRef(null);
+  const inner = useRef(null);
+  useLayoutEffect(() => {
+    const box = outer.current;
+    const content = inner.current;
+    let timer = 0;
+    box.style.height = `${content.offsetHeight}px`;
+    const fit = () => {
+      const h = `${content.offsetHeight}px`;
+      if (box.style.height === h) return;
+      box.style.height = h;
+      box.classList.add('mc-changing');
+      clearTimeout(timer);
+      timer = setTimeout(() => box.classList.remove('mc-changing'), 200);
+    };
+    const ro = new ResizeObserver(fit);
+    ro.observe(content);
+    return () => {
+      ro.disconnect();
+      clearTimeout(timer);
+    };
+  }, []);
+  return (
+    <div ref={outer} className={`mc-bubble mc-auto-bubble ${className}`}>
+      <div ref={inner} className="mc-auto-inner">{children}</div>
+    </div>
+  );
+}
+
+// Content of the generative bubble: what applies to the next request (model, thinking/effort, sampling) and,
+// when the preset accepts it, the temperature. Changing the model, thinking or temperature resizes the bubble.
+function SamplingInfo({ preset, chat, temp, thinkingOn, onTemp }) {
+  const usesTemp = preset?.sampling === 'temperature';
+  const facts = [
+    preset?.label || chat.routeId,
+    preset?.thinkingCanDisable && !thinkingOn ? 'sem pensamento' : chat.effort ? `esforço ${chat.effort}` : null,
+    usesTemp ? `temperatura ${Number(temp).toFixed(2)}` : 'amostragem da rota',
+  ].filter(Boolean);
+  return (
+    <div className="px-4 py-3.5">
+      <div className="flex flex-wrap gap-1.5">
+        {facts.map((f) => (
+          <span key={f} className="rounded-full bg-composer px-2.5 py-0.5 text-[11.5px] text-gray-300">{f}</span>
+        ))}
+      </div>
+      {usesTemp ? (
+        <div className="mt-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-medium">Temperatura</span>
+            <span className="rounded-full bg-composer px-2.5 py-0.5 font-mono text-sm text-accentPurpleLight">{Number(temp).toFixed(2)}</span>
+          </div>
+          <input type="range" min="0" max="2" step="0.05" value={temp} onChange={(e) => onTemp(Number(e.target.value))} className="w-full accent-[#7c3aed]" aria-label="Temperatura" />
+        </div>
+      ) : (
+        <p className="mt-2 text-xs leading-relaxed text-textMuted">
+          Este preset usa a amostragem padrão da rota; a temperatura anterior
+          {chat.temperature != null ? ` (${Number(chat.temperature).toFixed(2)})` : ''} fica guardada, mas não é enviada.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Glass avatar: photo with a glass rim, or the initial in a translucent tile (no colorful gradient).
+function GlassAvatar({ name, avatar }) {
+  if (avatar) return <Avatar name={name} avatar={avatar} size={56} />;
+  const initial = [...(name || '?').trim()][0]?.toUpperCase() || '?';
+  return <span className="mc-tile mc-tile-lg text-[22px] font-semibold">{initial}</span>;
+}
+
+function SubPage({ title, onBack, children, action, footer }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="px-[10px] pb-[10px] pt-1">
+        <div className="mc-glass-pill flex items-center gap-2 rounded-full px-3 py-2">
+          <button onClick={onBack} className="p-1 active:scale-90" aria-label="Voltar">
+            <ChevronLeft size={22} />
+          </button>
+          <h2 className="flex-1 truncate font-semibold text-[15px]">{title}</h2>
+          {action}
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        <div className="mc-elastic-wrapper min-h-full pt-1">
+          {children}
+        </div>
+      </div>
+      {footer && <div className="mc-subfooter">{footer}</div>}
+    </div>
+  );
+}
+
+function TextPage({ title, initial, placeholder, onBack, onSave }) {
+  const [v, setV] = useState(initial);
+  return (
+    <SubPage title={title} onBack={onBack} action={<button onClick={() => onSave(v)} className="px-3 py-1 font-semibold text-accentPurpleLight">Salvar</button>}>
+      <div className="mc-bubble mx-[10px] rounded-[30px] p-2">
+        <input
+          autoFocus
+          value={v}
+          placeholder={placeholder}
+          spellCheck={true}
+          lang="pt-BR, en"
+          autoCorrect="on"
+          autoCapitalize="sentences"
+          onChange={(e) => setV(e.target.value)}
+          className="w-full rounded-full bg-composer px-4 py-3 text-[16px] outline-none"
+        />
+      </div>
+    </SubPage>
+  );
+}
+
+function PromptPage({ chat, onBack, onSaved, onClosePage }) {
+  const [v, setV] = useState(chat.prompt || '');
+  const [conflict, setConflict] = useState(null);
+  const fileRef = useRef(null);
+
+  async function submit(force = false) {
+    try {
+      const updated = await api.updateChat(chat.id, { prompt: v, baseCharacterRev: force ? undefined : chat.characterRev });
+      onSaved(updated);
+      onClosePage();
+    } catch (e) {
+      if (e.code === 'CHARACTER_CONFLICT') setConflict(e.data.current);
+      else alert(e.message);
+    }
+  }
+
+  return (
+    <SubPage title="Personalização" onBack={onBack} action={<button onClick={() => submit(false)} className="px-3 py-1 font-semibold text-accentPurpleLight">Salvar</button>}>
+      <div className="mc-bubble mx-[10px] mb-2 flex h-full flex-col rounded-[26px] px-3 pb-3 pt-3">
+        <p className="mb-2 text-xs text-textMuted">
+          Características, regras de mundo e personalidade. A ficha fica criptografada no PC. Para editá-la por fora, importe um arquivo .txt; cada alteração cria uma nova revisão.
+        </p>
+        {conflict && (
+          <div className="mb-2 rounded-xl bg-yellow-500/10 p-3 text-sm text-yellow-200">
+            O texto foi alterado em outro lugar (revisão {conflict.characterRev}).
+            <div className="mt-2 flex gap-2">
+              <button className="rounded-full bg-composer px-3 py-1.5" onClick={() => { setV(conflict.prompt); setConflict(null); }}>Carregar a versão do PC</button>
+              <button className="rounded-full bg-composer px-3 py-1.5" onClick={() => submit(true)}>Sobrescrever</button>
+            </div>
+          </div>
+        )}
+        <textarea
+          value={v}
+          onChange={(e) => setV(e.target.value)}
+          placeholder={'Ex.:\nVocê é Mira, estudante da Academia de Magia...\nPersonalidade: ...\nCenário: ...'}
+          spellCheck={true}
+          lang="pt-BR, en"
+          autoCorrect="on"
+          autoCapitalize="sentences"
+          className="min-h-[300px] flex-1 resize-none rounded-xl bg-composer p-3 text-[15px] leading-relaxed outline-none"
+        />
+        <input ref={fileRef} type="file" accept=".txt,text/plain" className="hidden" onChange={async (e) => { const f = e.target.files?.[0]; if (f) setV(await f.text()); e.target.value = ''; }} />
+        <button onClick={() => fileRef.current?.click()} className="mt-3 flex items-center justify-center gap-2 rounded-full bg-composer py-3 text-sm text-gray-300">
+          <Upload size={16} /> Importar arquivo .txt
+        </button>
+      </div>
+    </SubPage>
+  );
+}

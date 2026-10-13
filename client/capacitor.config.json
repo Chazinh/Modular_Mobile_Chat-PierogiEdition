@@ -1,0 +1,13 @@
+{
+  "appId": "io.github.modularchat.pierogiedition",
+  "appName": "Chat",
+  "webDir": "dist",
+  "backgroundColor": "#1B1B1D",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

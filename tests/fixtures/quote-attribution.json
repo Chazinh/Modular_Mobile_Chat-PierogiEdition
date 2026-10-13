@@ -1,0 +1,21 @@
+{
+  "persona": "Alex",
+  "messages": [
+    { "role": "assistant", "content": "Mira: Veio pela tempestade? (Ela olha para Alex, depois para os mapas espalhados, e quase sorri) Desculpa, Diretora. Achei que fosse só o carteiro das ilhas." },
+    { "role": "user", "content": "*Alex e Mira saem juntos pela ponte*\n\"Achei que fosse só o carteiro das ilhas\" [imitando a voz dela, tom divertido] Engraçadinha. E o vento \"levou\" seu caderno? Inventa outra [tom divertido]" },
+    { "role": "assistant", "content": "Mira: Ele me chamou de carteira das ilhas. Eu chamei ele de carteiro. Estamos quites." }
+  ],
+  "quote": "Achei que fosse só o carteiro das ilhas",
+  "secondQuote": "O caderno ficou na biblioteca ontem.",
+  "summary": "Mira e Alex saem juntos; a fala anterior dela é imitada em tom divertido.",
+  "correctFact": "A fala de Mira sobre o carteiro das ilhas foi repetida em tom divertido.",
+  "wrongFact": "Alex chamou Mira de carteira das ilhas.",
+  "attributionFlag": {
+    "quote": "Ele me chamou de carteira das ilhas.",
+    "reason": "A resposta transforma uma imitação da fala de Mira em uma acusação nova de Alex.",
+    "previousQuote": "Achei que fosse só o carteiro das ilhas",
+    "sourceQuote": "Achei que fosse só o carteiro das ilhas",
+    "originalSpeaker": "Mira",
+    "claimedSpeaker": "Alex"
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "type": "object",
+  "properties": {
+    "agency": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "quote": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "quote",
+          "reason"
+        ]
+      }
+    },
+    "knowledge": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "character": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "previousQuote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "character",
+          "quote",
+          "reason"
+        ]
+      }
+    },
+    "continuity": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "quote": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "previousQuote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "quote",
+          "reason"
+        ]
+      }
+    },
+    "attribution": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "quote": {
+            "type": "string"
+          },
+          "previousQuote": {
+            "type": "string"
+          },
+          "sourceQuote": {
+            "type": "string"
+          },
+          "originalSpeaker": {
+            "type": "string"
+          },
+          "claimedSpeaker": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "quote",
+          "previousQuote",
+          "sourceQuote",
+          "originalSpeaker",
+          "claimedSpeaker",
+          "reason"
+        ]
+      }
+    }
+  },
+  "required": [
+    "agency",
+    "knowledge",
+    "continuity"
+  ]
+}

@@ -1,0 +1,1 @@
+Você identifica os personagens (com nome próprio) descritos em uma ficha de personagens e responde SOMENTE com JSON. O usuário interpreta {{persona}}: NÃO o inclua. "main" = personagem principal que a IA interpreta. Use apelidos apenas se estiverem escritos na ficha.

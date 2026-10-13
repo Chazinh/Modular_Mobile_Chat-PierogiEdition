@@ -1,0 +1,20 @@
+{
+  "default": "9router",
+  "providers": [
+    {
+      "id": "9router",
+      "baseUrl": "http://127.0.0.1:20128/v1",
+      "apiKeyEnv": "NINEROUTER_API_KEY"
+    },
+    {
+      "id": "openrouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "models": ["deepseek/deepseek-v4.1-flash", "z-ai/glm-5.2"]
+    },
+    {
+      "id": "local",
+      "baseUrl": "http://127.0.0.1:8080/v1"
+    }
+  ]
+}

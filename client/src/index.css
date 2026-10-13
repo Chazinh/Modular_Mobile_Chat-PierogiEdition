@@ -1,0 +1,269 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  /* uses the variables injected by Capacitor (SystemBars) when present; otherwise the browser env() */
+  --sat: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --sab: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --mc-font: 16px;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: rgb(calc(27 * var(--mc-tr, 1)) calc(27 * var(--mc-tg, 1)) calc(29 * var(--mc-tb, 1)));
+  color: var(--mc-text, #e7e7ea);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  overscroll-behavior: none;
+}
+
+textarea,
+input {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Reading text: adjustable size (14–22 px) and a comfortable maximum width on desktop */
+.mc-read {
+  font-size: var(--mc-font);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+/* The finished reply keeps the font preference; geometry: 78% width, 8% on the left and ~14% on the right (more room on the right). */
+.mc-assistant {
+  width: 78%;
+  margin-left: 8%;
+  min-width: 0;
+  max-width: 100%;
+}
+.mc-scroll { overflow-anchor: none; scroll-behavior: auto; }
+@media (max-width: 640px) {
+  .mc-assistant {
+    /* Compensates the container's 12px; margins of 8% (left) and 14% (right) of the screen, scrollbar included. */
+    width: 78vw;
+    margin-left: calc(8vw - 12px);
+    max-width: none;
+  }
+}
+.mc-chat-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 6px;
+}
+.mc-chat-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  color: var(--mc-text, #e7e7ea);
+  border-radius: 8px;
+  touch-action: manipulation;
+}
+.mc-chat-action:enabled:hover,
+.mc-chat-action:enabled:active { background: transparent; }
+/* Tap feedback: shrinks and gains an accent ring (no flashing white background). */
+.mc-chat-action { transition: transform .12s ease, box-shadow .12s ease, color .12s ease; }
+.mc-chat-action:enabled:active { transform: scale(.86); box-shadow: inset 0 0 0 2px rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1))); border-radius: 14px; }
+/* Stopping: the button stays "pressed" (ring and accent color) until the reply really stops. */
+.mc-chat-action.mc-stopping:disabled { opacity: 1; transform: scale(.9); color: rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1))); box-shadow: inset 0 0 0 2px rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1))); border-radius: 14px; }
+.mc-chat-action:disabled { opacity: 0.35; }
+.mc-chat-action:focus-visible { outline: 2px solid rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1))); outline-offset: 2px; }
+.mc-col {
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(calc(58 * var(--mc-tr, 1)) calc(58 * var(--mc-tg, 1)) calc(66 * var(--mc-tb, 1)));
+  border-radius: 4px;
+}
+
+/* Narrator actions and descriptions: gray italics */
+.mc-action {
+  font-style: italic;
+  color: var(--mc-action, #a1a1aa);
+}
+.mc-name {
+  font-weight: 600;
+  color: var(--mc-name, #f1f1f4);
+}
+.mc-tone {
+  color: var(--mc-tone, #8d8d96);
+}
+
+/* Eye care: ALL text follows the --mc-* variables (src/eyecare.js). text-white, text-textMuted and
+   text-gray-100/300 are mapped in tailwind.config.mjs; the body inherits --mc-text. Semantic exceptions (error, warning,
+   success, violet accent) and text on buttons filled with the accent keep their own color. */
+.bg-accentPurple.text-white,
+.text-white[style*="background"] { color: var(--mc-onaccent, #ffffff); }
+input,
+textarea,
+select { caret-color: var(--mc-text, #e7e7ea); }
+input::placeholder,
+textarea::placeholder,
+::placeholder { color: var(--mc-muted, #9a9aa3); opacity: 1; }
+::selection { background: rgb(calc(124 * var(--mc-tr, 1)) calc(58 * var(--mc-tg, 1)) calc(237 * var(--mc-tb, 1)) / 0.5); color: var(--mc-white, #ffffff); }
+
+@keyframes cursor-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+.streaming-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 15px;
+  margin-left: 2px;
+  background-color: rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1)));
+  animation: cursor-pulse 0.8s infinite;
+  vertical-align: middle;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.sheet-anim {
+  animation: sheet-up 0.24s cubic-bezier(.22, 1, .36, 1);
+}
+
+/* Charcoal, a discreet violet and a cool light in the menu gradient.
+   Glass is used on navigation surfaces, preserving contrast while reading. */
+:root {
+  --mc-glass: linear-gradient(115deg, rgb(calc(49 * var(--mc-tr, 1)) calc(72 * var(--mc-tg, 1)) calc(78 * var(--mc-tb, 1)) / 0.78), rgb(calc(54 * var(--mc-tr, 1)) calc(49 * var(--mc-tg, 1)) calc(77 * var(--mc-tb, 1)) / 0.82) 58%, rgb(calc(65 * var(--mc-tr, 1)) calc(43 * var(--mc-tg, 1)) calc(79 * var(--mc-tb, 1)) / 0.78));
+  --mc-glass-edge: rgb(calc(220 * var(--mc-tr, 1)) calc(209 * var(--mc-tg, 1)) calc(255 * var(--mc-tb, 1)) / 0.085);
+}
+.bg-headerDark {
+  /* plain header in the background color (no gradient strip) */
+  background: rgb(calc(27 * var(--mc-tr, 1)) calc(27 * var(--mc-tg, 1)) calc(29 * var(--mc-tb, 1)));
+  border-bottom: 1px solid var(--mc-glass-edge);
+  /* No backdrop-filter: the header is in the flow, above the scroller (nothing passes behind it), so blur would only cost GPU. */
+}
+.mc-chat-header {
+  background: rgb(calc(27 * var(--mc-tr, 1)) calc(27 * var(--mc-tg, 1)) calc(29 * var(--mc-tb, 1)));
+  flex-shrink: 0;
+}
+.mc-identity {
+  max-width: min(54vw, 240px);
+  background: rgb(calc(14 * var(--mc-tr, 1)) calc(14 * var(--mc-tg, 1)) calc(19 * var(--mc-tb, 1)) / 0.72);
+  box-shadow: inset 0 1px 0 rgb(calc(255 * var(--mc-tr, 1)) calc(255 * var(--mc-tg, 1)) calc(255 * var(--mc-tb, 1)) / 0.035);
+}
+.mc-identity > div:last-child { min-width: 0; }
+.mc-identity .font-semibold { font-size: 14px; }
+.mc-identity .text-xs { font-size: 10px; }
+/* photo and name bubble in the chat: content width, with a cap (long names are truncated) */
+.mc-identity-pill { flex: 0 1 auto; max-width: min(calc(100vw - 168px), 260px); }
+.mc-composer {
+  min-height: 44px;
+  background: linear-gradient(125deg, rgb(calc(49 * var(--mc-tr, 1)) calc(47 * var(--mc-tg, 1)) calc(57 * var(--mc-tb, 1)) / 0.94), rgb(calc(40 * var(--mc-tr, 1)) calc(38 * var(--mc-tg, 1)) calc(48 * var(--mc-tb, 1)) / 0.96));
+  box-shadow: inset 0 1px 0 var(--mc-glass-edge);
+}
+.mc-composer-wrap { flex-shrink: 0; }
+.mc-composer textarea { line-height: 24px; }
+/* The height follows the text without measuring scrollHeight in JS (the Composer only measures when the browser lacks support). */
+.mc-composer-input { field-sizing: content; }
+/* Off-screen list rows skip layout/paint; the typical height avoids scrollbar jumps. */
+.mc-list-row { content-visibility: auto; contain-intrinsic-size: auto 84px; }
+.mc-generation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 44px;
+  gap: 10px;
+  padding: 0 2px;
+  background: transparent;
+}
+.mc-generation .mc-chat-actions { margin-top: 0; }
+.mc-generation .mc-preparing { color: var(--mc-muted, #b1a9bf); }
+.mc-thinking-dots { display: inline-flex; min-width: 12px; }
+/* The dots are lit by JavaScript (ThinkingDots in ChatView.jsx): no continuous CSS animation. */
+.mc-thinking-dots > span { opacity: .3; }
+.mc-thinking-dots > span.on { opacity: 1; }
+.bg-sheet {
+  background:
+    linear-gradient(145deg, rgb(calc(255 * var(--mc-tr, 1)) calc(255 * var(--mc-tg, 1)) calc(255 * var(--mc-tb, 1)) / 0.065), transparent 38%, rgb(calc(199 * var(--mc-tr, 1)) calc(178 * var(--mc-tg, 1)) calc(242 * var(--mc-tb, 1)) / 0.025) 80%),
+    linear-gradient(125deg, rgb(calc(44 * var(--mc-tr, 1)) calc(57 * var(--mc-tg, 1)) calc(64 * var(--mc-tb, 1)) / 0.78), rgb(calc(44 * var(--mc-tr, 1)) calc(39 * var(--mc-tg, 1)) calc(60 * var(--mc-tb, 1)) / 0.83) 58%, rgb(calc(50 * var(--mc-tr, 1)) calc(36 * var(--mc-tg, 1)) calc(61 * var(--mc-tb, 1)) / 0.8));
+  backdrop-filter: blur(22px) saturate(120%);
+  -webkit-backdrop-filter: blur(22px) saturate(120%);
+}
+.mc-list {
+  /* plain background (no gradient strip at the top) */
+  background-color: rgb(calc(27 * var(--mc-tr, 1)) calc(27 * var(--mc-tg, 1)) calc(29 * var(--mc-tb, 1)));
+}
+.mc-list-header.bg-headerDark {
+  background: transparent;
+  border-bottom: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.mc-list-row {
+  /* every conversation is a glass bubble (glass.css), detached from the edges */
+  width: calc(100% - 20px);
+  margin: 0 10px 10px;
+  border-radius: 28px;
+  transition: transform .15s ease;
+}
+.sheet-anim {
+  border-top: 1px solid var(--mc-glass-edge);
+  box-shadow: inset 0 1px 0 rgb(calc(248 * var(--mc-tr, 1)) calc(243 * var(--mc-tg, 1)) calc(255 * var(--mc-tb, 1)) / 0.12), 0 -12px 40px rgba(0, 0, 0, .18);
+}
+.mc-edit-text { width: calc(100% - 32px); max-width: 728px; }
+.mc-editor { height: 100dvh; bottom: auto; }
+.mc-editor > div:first-child { flex-shrink: 0; gap: 10px; }
+.mc-editor > div:first-child > span { min-width: 0; text-align: center; font-size: 14px; }
+.mc-editor > div:first-child button { flex-shrink: 0; min-height: 40px; }
+button { transition: transform .18s ease, opacity .18s ease, background-color .18s ease; }
+button:focus-visible { outline: 2px solid rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1))); outline-offset: 2px; }
+.mc-scrim { animation: scrim-in .22s ease both; }
+.mc-drawer-panel {
+  animation: drawer-in .28s cubic-bezier(.22, 1, .36, 1) both;
+  border-left: 1px solid rgb(calc(232 * var(--mc-tr, 1)) calc(222 * var(--mc-tg, 1)) calc(255 * var(--mc-tb, 1)) / 0.14);
+  box-shadow: inset 1px 0 0 rgb(calc(255 * var(--mc-tr, 1)) calc(255 * var(--mc-tg, 1)) calc(255 * var(--mc-tb, 1)) / 0.075), inset 0 1px 0 rgb(calc(255 * var(--mc-tr, 1)) calc(255 * var(--mc-tg, 1)) calc(255 * var(--mc-tb, 1)) / 0.12), -12px 0 40px rgba(0, 0, 0, .18);
+}
+.mc-drawer.mc-closing .mc-drawer-panel { animation: drawer-out .22s cubic-bezier(.4, 0, 1, 1) both; }
+.mc-drawer.mc-closing .mc-scrim, .mc-sheet-overlay.mc-closing { animation: scrim-out .22s ease both; }
+.mc-sheet-overlay.mc-closing .sheet-anim { animation: sheet-out .18s ease-in both; }
+@keyframes drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes drawer-out { to { transform: translateX(100%); } }
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scrim-out { to { opacity: 0; } }
+@keyframes sheet-out { to { transform: translateY(32px); opacity: 0; } }
+@media (pointer: coarse) {
+  .mc-scroll { touch-action: pan-y; }
+  .mc-scroll button, .mc-scroll a { touch-action: manipulation; }
+  .mc-drawer-panel { touch-action: pan-y; }
+}
+@media (prefers-reduced-motion: reduce) {
+  button { transition: none; }
+  .sheet-anim, .mc-drawer-panel, .mc-scrim, .mc-sheet-overlay { animation-duration: .01ms !important; }
+}

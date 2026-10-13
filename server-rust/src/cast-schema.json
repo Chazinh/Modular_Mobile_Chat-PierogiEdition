@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "properties": {
+    "cast": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "main": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "aliases",
+          "description",
+          "main"
+        ]
+      }
+    }
+  },
+  "required": [
+    "cast"
+  ]
+}

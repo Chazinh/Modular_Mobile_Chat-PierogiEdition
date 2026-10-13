@@ -1,0 +1,243 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "cast": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description"
+        ]
+      }
+    },
+    "scene": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string"
+        },
+        "time": {
+          "type": "string"
+        },
+        "mood": {
+          "type": "string"
+        },
+        "present": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "characters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "location": {
+                "type": "string"
+              },
+              "position": {
+                "type": "string"
+              },
+              "holding": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "location",
+              "position",
+              "holding"
+            ]
+          }
+        }
+      },
+      "required": [
+        "location",
+        "time",
+        "mood",
+        "present",
+        "objects",
+        "characters"
+      ]
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "CHARACTER_FACT",
+              "USER_FACT",
+              "RELATIONSHIP",
+              "EVENT",
+              "SECRET",
+              "PROMISE",
+              "PREFERENCE",
+              "WORLD_FACT",
+              "OBJECT",
+              "LOCATION",
+              "OPEN_THREAD"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "importance": {
+            "type": "number"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private"
+            ]
+          },
+          "replaces": {
+            "type": "string"
+          },
+          "existing_id": {
+            "type": "string"
+          },
+          "attribution": {
+            "type": "object",
+            "properties": {
+              "quote": { "type": "string" },
+              "originalSpeaker": { "type": "string" }
+            },
+            "required": ["quote", "originalSpeaker"]
+          },
+          "knowledge": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "who": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "knows",
+                    "believes",
+                    "unaware"
+                  ]
+                },
+                "via": {
+                  "type": "string",
+                  "enum": [
+                    "witnessed",
+                    "heard",
+                    "told",
+                    "discovered",
+                    "received",
+                    "inferred"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "belief": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "who",
+                "state",
+                "via",
+                "evidence",
+                "belief"
+              ]
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "subject",
+          "content",
+          "importance",
+          "confidence",
+          "visibility",
+          "replaces",
+          "existing_id",
+          "knowledge"
+        ]
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a",
+          "b",
+          "description"
+        ]
+      }
+    },
+    "open_threads": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "resolved_threads": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "summary",
+    "cast",
+    "scene",
+    "facts",
+    "relationships",
+    "open_threads",
+    "resolved_threads"
+  ]
+}

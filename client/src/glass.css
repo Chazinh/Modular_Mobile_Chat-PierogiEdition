@@ -1,0 +1,296 @@
+/* Liquid glass for the whole app, in the style of current iOS glass and the palette of the Pierogi icon.
+   What gives it volume (and avoids flat glass with the shiny Aero/Win7 band):
+   - nearly colorless, translucent body with a cool hint of indigo; the center stays clear;
+   - the light lives INSIDE the edge: strong specular at the top-left corner, a weaker echo at the bottom-right
+     and a slightly brighter lens around the rim (like the edge of a drop refracting light);
+   - a thin, discreet soap-film rim (ice, lilac, pink, gold, mint);
+   - a soft shadow underneath that lifts the bubble off the background.
+   Only floating islands (headers, send bar, sheets) blur what passes behind them; list and menu bubbles
+   stay translucent without blur (the menu scrim already darkens the background) to fit the 120 Hz frame.
+   Everything goes through the blue-light filter factors (--mc-tr/--mc-tg/--mc-tb, see eyecare.js).
+   Layers: background = body + lens; ::before = iridescent rim (masked ring); ::after = inner rim light.
+   Both layers sit behind the content (isolation + z-index -1) and receive no touches. */
+:root {
+  --gl-top: rgb(calc(50 * var(--mc-tr, 1)) calc(50 * var(--mc-tg, 1)) calc(62 * var(--mc-tb, 1)) / .5);
+  --gl-bot: rgb(calc(26 * var(--mc-tr, 1)) calc(26 * var(--mc-tg, 1)) calc(36 * var(--mc-tb, 1)) / .58);
+  --gl-lens: rgba(var(--mc-white-rgb, 255, 255, 255), .07);
+  --gl-ice: rgb(calc(170 * var(--mc-tr, 1)) calc(207 * var(--mc-tg, 1)) calc(227 * var(--mc-tb, 1)));
+  --gl-lilac: rgb(calc(219 * var(--mc-tr, 1)) calc(206 * var(--mc-tg, 1)) calc(251 * var(--mc-tb, 1)));
+  --gl-rose: rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)));
+  --gl-gold: rgb(calc(255 * var(--mc-tr, 1)) calc(226 * var(--mc-tg, 1)) calc(178 * var(--mc-tb, 1)));
+  --gl-mint: rgb(calc(176 * var(--mc-tr, 1)) calc(244 * var(--mc-tg, 1)) calc(226 * var(--mc-tb, 1)));
+  --gl-indigo: rgb(calc(70 * var(--mc-tr, 1)) calc(78 * var(--mc-tg, 1)) calc(211 * var(--mc-tb, 1)));
+  --gl-periwinkle: rgb(calc(141 * var(--mc-tr, 1)) calc(151 * var(--mc-tg, 1)) calc(217 * var(--mc-tb, 1)));
+  --gl-shadow: rgb(calc(4 * var(--mc-tr, 1)) calc(3 * var(--mc-tg, 1)) calc(16 * var(--mc-tb, 1)) / .5);
+  --gl-rim-opacity: .42;
+  /* app background: graphite gray with a veil of dark purple at the top and dark blue at the bottom, very subtle */
+  --mc-bg-grad:
+    radial-gradient(120% 60% at 0% 0%, rgb(calc(62 * var(--mc-tr, 1)) calc(44 * var(--mc-tg, 1)) calc(98 * var(--mc-tb, 1)) / .22), transparent 70%),
+    radial-gradient(110% 60% at 100% 100%, rgb(calc(34 * var(--mc-tr, 1)) calc(50 * var(--mc-tg, 1)) calc(104 * var(--mc-tb, 1)) / .2), transparent 70%),
+    linear-gradient(170deg, rgb(calc(30 * var(--mc-tr, 1)) calc(29 * var(--mc-tg, 1)) calc(38 * var(--mc-tb, 1))), rgb(calc(25 * var(--mc-tr, 1)) calc(25 * var(--mc-tg, 1)) calc(29 * var(--mc-tb, 1))) 45%, rgb(calc(23 * var(--mc-tr, 1)) calc(25 * var(--mc-tg, 1)) calc(36 * var(--mc-tb, 1))));
+}
+
+/* background of full screens (list, chat, stacked screens, editor) */
+.bg-bgDark,
+.mc-list { background-image: var(--mc-bg-grad); }
+
+.mc-glass-pill,
+.mc-glass,
+.mc-bubble,
+.mc-row,
+.mc-pill,
+.mc-list-row {
+  isolation: isolate;
+  color: var(--mc-white, #fff);
+  border: 0;
+  background:
+    radial-gradient(130% 120% at 50% 45%, transparent 58%, var(--gl-lens) 100%),
+    linear-gradient(180deg, var(--gl-top), var(--gl-bot));
+  box-shadow:
+    0 12px 30px -10px var(--gl-shadow),
+    0 2px 8px rgba(0, 0, 0, .22);
+}
+/* floating islands: blur what scrolls behind (few, static elements) */
+.mc-glass-pill,
+.mc-glass {
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+}
+.mc-glass-pill:not(.fixed):not(.absolute):not(.sticky),
+.mc-bubble:not(.fixed):not(.absolute),
+.mc-row,
+.mc-pill,
+.mc-list-row { position: relative; }
+
+/* rim: thin, discreet soap film */
+.mc-glass-pill::before,
+.mc-glass::before,
+.mc-bubble::before,
+.mc-row::before,
+.mc-pill::before,
+.mc-list-row::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  padding: 1px;
+  background: conic-gradient(from 210deg, var(--gl-ice), var(--gl-lilac) 12%, var(--gl-rose) 24%, var(--gl-gold) 34%, var(--gl-mint) 44%, var(--gl-ice) 54%, var(--gl-indigo) 66%, var(--gl-lilac) 78%, var(--gl-rose) 90%, var(--gl-ice));
+  opacity: var(--gl-rim-opacity);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+/* inner rim light: specular at the top left, echo at the bottom right, a thin bright line around and a slight
+   soap halo; this is what gives the thickness of a drop instead of a plate */
+.mc-glass-pill::after,
+.mc-glass::after,
+.mc-bubble::after,
+.mc-row::after,
+.mc-pill::after,
+.mc-list-row::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 1.5px 1.5px 1px -.5px rgba(var(--mc-white-rgb, 255, 255, 255), .42),
+    inset -1px -1.5px 1px -.5px rgba(var(--mc-white-rgb, 255, 255, 255), .16),
+    inset 0 0 0 .5px rgba(var(--mc-white-rgb, 255, 255, 255), .1),
+    inset 3px 4px 10px -6px rgb(calc(170 * var(--mc-tr, 1)) calc(207 * var(--mc-tg, 1)) calc(227 * var(--mc-tb, 1)) / .3),
+    inset -3px -4px 10px -6px rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .24),
+    inset 0 -10px 16px -12px rgba(0, 0, 0, .45);
+  transition: opacity .2s ease;
+}
+
+/* accent (e.g. "+ new chat", primary button): the same glass with the violet accent body */
+.mc-glass-pill.mc-glass-accent,
+.mc-bubble.mc-glass-accent {
+  background:
+    radial-gradient(130% 120% at 50% 45%, transparent 55%, rgba(var(--mc-white-rgb, 255, 255, 255), .12) 100%),
+    linear-gradient(180deg, rgb(calc(128 * var(--mc-tr, 1)) calc(86 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .92), rgb(calc(88 * var(--mc-tr, 1)) calc(48 * var(--mc-tg, 1)) calc(190 * var(--mc-tb, 1)) / .94));
+  color: var(--mc-onaccent, #fff);
+}
+/* selected: a slightly stronger rim and a lilac light ring */
+.mc-bubble[aria-pressed="true"],
+.mc-bubble.mc-selected {
+  --gl-rim-opacity: .8;
+  box-shadow:
+    0 0 0 3px rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1)) / .2),
+    0 12px 30px -10px var(--gl-shadow);
+}
+
+/* bounce on press for every button and menu: sinks quickly when pressed and springs back (overshoots a little and
+   settles). Large bubbles sink less. Message actions have their own ring (index.css) and message TEXT
+   (bot and user, .mc-msg) has no feedback at all. */
+button:not(.mc-chat-action),
+[role="button"],
+.mc-row,
+.mc-list-row {
+  --mc-press: .92;
+  transition: transform .52s cubic-bezier(.28, 1.75, .45, 1), opacity .18s ease, background-color .18s ease;
+}
+.mc-row,
+.mc-list-row,
+.mc-bubble:is(button),
+.mc-sheet button.w-full { --mc-press: .965; }
+button:not(.mc-chat-action):not(:disabled):active,
+[role="button"]:active,
+.mc-row:active,
+.mc-list-row:active {
+  transform: scale(var(--mc-press));
+  transition: transform .11s cubic-bezier(.3, 0, .6, 1), opacity .11s ease, background-color .11s ease;
+}
+.mc-bubble:is(button):active::after,
+.mc-row:active::after,
+.mc-pill:active::after,
+.mc-list-row:active::after,
+button.mc-glass-pill:active::after { opacity: .55; }
+.mc-msg,
+.mc-msg * { transform: none !important; transition: none !important; -webkit-tap-highlight-color: transparent; }
+
+/* icon tile inside rows: a smaller drop, lightly tinted indigo */
+.mc-tile {
+  flex: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  color: var(--mc-white, #fff);
+  background:
+    radial-gradient(130% 120% at 50% 45%, transparent 50%, rgba(var(--mc-white-rgb, 255, 255, 255), .14) 100%),
+    linear-gradient(160deg, rgb(calc(110 * var(--mc-tr, 1)) calc(104 * var(--mc-tg, 1)) calc(178 * var(--mc-tb, 1)) / .75), rgb(calc(52 * var(--mc-tr, 1)) calc(50 * var(--mc-tg, 1)) calc(112 * var(--mc-tb, 1)) / .8));
+  box-shadow:
+    inset 1.5px 1.5px 1px -.5px rgba(var(--mc-white-rgb, 255, 255, 255), .5),
+    inset -1px -1px 1px -.5px rgba(var(--mc-white-rgb, 255, 255, 255), .2),
+    inset 0 0 0 .5px rgba(var(--mc-white-rgb, 255, 255, 255), .16),
+    0 3px 8px var(--gl-shadow);
+}
+.mc-tile-lg { width: 56px; height: 56px; border-radius: 19px; }
+.mc-tile-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  color: var(--mc-white, #fff);
+  background: linear-gradient(160deg, var(--gl-periwinkle), var(--gl-indigo));
+  box-shadow: inset 1px 1px 0 rgba(var(--mc-white-rgb, 255, 255, 255), .45), 0 1px 3px var(--gl-shadow);
+}
+
+/* cards inside sheets and the menu: the same bubble (no flat gray); fields look "sunken" into the glass */
+.mc-sheet .bg-cardDark,
+.mc-drawer-panel .bg-cardDark {
+  background: linear-gradient(180deg, var(--gl-top), var(--gl-bot));
+  box-shadow: inset 1px 1px 1px -.5px rgba(var(--mc-white-rgb, 255, 255, 255), .3), inset 0 0 0 .5px rgba(var(--mc-white-rgb, 255, 255, 255), .08), 0 6px 18px -8px var(--gl-shadow);
+}
+.mc-sheet .bg-composer,
+.mc-drawer-panel .bg-composer {
+  background-color: rgb(calc(8 * var(--mc-tr, 1)) calc(8 * var(--mc-tg, 1)) calc(16 * var(--mc-tb, 1)) / .4);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35), inset 0 0 0 .5px rgba(var(--mc-white-rgb, 255, 255, 255), .07);
+}
+.mc-drawer-panel .border-borderDark { border-color: rgba(var(--mc-white-rgb, 255, 255, 255), .1); }
+
+/* on/off switch: a track sunken into the glass; when on, it becomes a violet drop */
+.mc-switch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  width: 46px;
+  height: 26px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgb(calc(8 * var(--mc-tr, 1)) calc(8 * var(--mc-tg, 1)) calc(16 * var(--mc-tb, 1)) / .55);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .5), inset 0 0 0 .5px rgba(var(--mc-white-rgb, 255, 255, 255), .12);
+  transition: background .2s ease;
+}
+.mc-switch > span {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: radial-gradient(70% 60% at 35% 25%, #fff, var(--gl-lilac));
+  box-shadow: 0 2px 5px rgba(0, 0, 0, .4);
+  transition: transform .4s cubic-bezier(.28, 1.6, .45, 1);
+}
+.mc-switch-on {
+  background: linear-gradient(180deg, rgb(calc(132 * var(--mc-tr, 1)) calc(84 * var(--mc-tg, 1)) calc(240 * var(--mc-tb, 1))), rgb(calc(80 * var(--mc-tr, 1)) calc(40 * var(--mc-tg, 1)) calc(180 * var(--mc-tb, 1))));
+}
+.mc-switch-on > span { transform: translateX(20px); }
+
+/* In the side menu the bubbles sit over the chat text: more body so reading does not compete. */
+.mc-drawer-panel {
+  --gl-top: rgb(calc(46 * var(--mc-tr, 1)) calc(46 * var(--mc-tg, 1)) calc(58 * var(--mc-tb, 1)) / .8);
+  --gl-bot: rgb(calc(26 * var(--mc-tr, 1)) calc(26 * var(--mc-tg, 1)) calc(36 * var(--mc-tb, 1)) / .86);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-bubble, .mc-row, .mc-pill, .mc-list-row, .mc-glass-pill, .mc-switch > span,
+  button:not(.mc-chat-action), [role="button"] { transition: none; }
+}
+
+/* Collapsed chat top bar: only the status dot at the top center (64x30 touch area). The dot,
+   the bubble and the ring are moved frame by frame by top-bar-motion.js: no CSS transitions on them. */
+.mc-bar-handle {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 32;
+  width: 64px;
+  height: 30px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  transition: none !important;
+}
+.mc-bar-handle.mc-bar-open { pointer-events: none; }
+.mc-bar-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: rgb(calc(120 * var(--mc-tr, 1)) calc(120 * var(--mc-tg, 1)) calc(132 * var(--mc-tb, 1)));
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, .35), 0 1px 3px rgba(0, 0, 0, .4);
+}
+.mc-bar-dot.mc-on {
+  background: radial-gradient(circle at 35% 30%, rgb(calc(190 * var(--mc-tr, 1)) calc(255 * var(--mc-tg, 1)) calc(225 * var(--mc-tb, 1))), rgb(calc(52 * var(--mc-tr, 1)) calc(211 * var(--mc-tg, 1)) calc(153 * var(--mc-tb, 1))) 60%);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, .3), 0 0 10px rgb(calc(52 * var(--mc-tr, 1)) calc(211 * var(--mc-tg, 1)) calc(153 * var(--mc-tb, 1)) / .7);
+}
+.mc-glass-pill.mc-bar-bubble,
+.mc-bar-ring {
+  position: fixed;
+  left: 50%;
+  z-index: 31;
+  width: 64px;
+  height: 64px;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+/* the bubble is real soap: nearly transparent, an iridescent film running around the rim, a round highlight
+   at the top left and a smaller glint at the bottom right */
+.mc-glass-pill.mc-bar-bubble {
+  --gl-rim-opacity: .95;
+  background:
+    radial-gradient(circle at 30% 26%, rgba(var(--mc-white-rgb, 255, 255, 255), .55), rgba(var(--mc-white-rgb, 255, 255, 255), 0) 22%),
+    radial-gradient(circle at 70% 76%, rgba(var(--mc-white-rgb, 255, 255, 255), .18), rgba(var(--mc-white-rgb, 255, 255, 255), 0) 16%),
+    radial-gradient(circle, transparent 52%, rgb(calc(219 * var(--mc-tr, 1)) calc(206 * var(--mc-tg, 1)) calc(251 * var(--mc-tb, 1)) / .16) 72%, rgb(calc(170 * var(--mc-tr, 1)) calc(207 * var(--mc-tg, 1)) calc(227 * var(--mc-tb, 1)) / .3) 100%),
+    conic-gradient(from 30deg, rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .22), rgb(calc(255 * var(--mc-tr, 1)) calc(226 * var(--mc-tg, 1)) calc(178 * var(--mc-tb, 1)) / .16), rgb(calc(176 * var(--mc-tr, 1)) calc(244 * var(--mc-tg, 1)) calc(226 * var(--mc-tb, 1)) / .18), rgb(calc(170 * var(--mc-tr, 1)) calc(207 * var(--mc-tg, 1)) calc(227 * var(--mc-tb, 1)) / .22), rgb(calc(141 * var(--mc-tr, 1)) calc(151 * var(--mc-tg, 1)) calc(217 * var(--mc-tb, 1)) / .2), rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .22));
+  box-shadow: 0 8px 22px -8px var(--gl-shadow);
+}
+.mc-bar-ring {
+  border: 2px solid rgb(calc(219 * var(--mc-tr, 1)) calc(206 * var(--mc-tg, 1)) calc(251 * var(--mc-tb, 1)) / .8);
+  box-shadow: 0 0 12px rgb(calc(170 * var(--mc-tr, 1)) calc(207 * var(--mc-tg, 1)) calc(227 * var(--mc-tb, 1)) / .5), inset 0 0 8px rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .45);
+}
+/* while the bubble animates, the buttons are moved frame by frame: no bounce transition in the way */
+.mc-bar-animating [data-bar-item] { transition: none !important; }

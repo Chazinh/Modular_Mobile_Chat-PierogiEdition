@@ -1,0 +1,222 @@
+[
+  {
+    "id": "deepseek-v41-flash",
+    "thinkingCanDisable": true,
+    "selectable": true,
+    "label": "DeepSeek V4.1 Flash",
+    "family": "deepseek",
+    "match": [
+      "deepseek-v4\\.1-flash"
+    ],
+    "preferredRoutes": [
+      "cbai/deepseek-v4.1-flash",
+      "nvidia/deepseek-ai/deepseek-v4.1-flash"
+    ],
+    "efforts": [
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinking": "enabled",
+    "sampling": "default",
+    "providerReserve": 16384,
+    "contextWindow": 1000000,
+    "maxOutput": 32768,
+    "capacitySource": "assumed"
+  },
+  {
+    "id": "claude-opus-5-5",
+    "selectable": true,
+    "label": "Claude Opus 5.5",
+    "family": "claude",
+    "match": [
+      "claude-opus-5-5"
+    ],
+    "exclude": [
+      "claude-opus-5-5-\\d"
+    ],
+    "preferredRoutes": [
+      "cc/claude-opus-5-5"
+    ],
+    "efforts": [
+      "low"
+    ],
+    "defaultEffort": "low",
+    "thinking": "adaptive",
+    "sampling": "default",
+    "providerReserve": 32768,
+    "contextWindow": 1000000,
+    "maxOutput": 128000,
+    "capacitySource": "assumed"
+  },
+  {
+    "id": "claude-sonnet-5-5",
+    "thinkingCanDisable": true,
+    "thinkingOffType": "between_tools",
+    "selectable": true,
+    "label": "Claude Sonnet 5.5",
+    "family": "claude",
+    "match": [
+      "claude-sonnet-5-5"
+    ],
+    "preferredRoutes": [
+      "cc/claude-sonnet-5-5"
+    ],
+    "efforts": [
+      "low",
+      "medium"
+    ],
+    "defaultEffort": "medium",
+    "thinking": "adaptive",
+    "sampling": "default",
+    "providerReserve": 32768,
+    "contextWindow": 1000000,
+    "maxOutput": 64000,
+    "capacitySource": "assumed"
+  },
+  {
+    "id": "gemini-38-flash",
+    "selectable": true,
+    "label": "Gemini 3.8 Flash",
+    "family": "gemini",
+    "match": [
+      "gemini-3\\.8-flash"
+    ],
+    "preferredRoutes": [
+      "ag/gemini-3.8-flash-low",
+      "ag/gemini-3.8-flash-medium",
+      "ag/gemini-3.8-flash-high"
+    ],
+    "routeAliases": {
+      "ag/gemini-3.8-flash": "ag/gemini-3.8-flash-low"
+    },
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "defaultEffort": "low",
+    "effortByRoute": {
+      "ag/gemini-3.8-flash-low": "low",
+      "ag/gemini-3.8-flash-medium": "medium",
+      "ag/gemini-3.8-flash-high": "high"
+    },
+    "thinking": "level",
+    "sampling": "default",
+    "providerReserve": 16384,
+    "contextWindow": 1000000,
+    "maxOutput": 64000,
+    "capacitySource": "documented"
+  },
+  {
+    "id": "kimi-k3",
+    "label": "Kimi K3",
+    "selectable": true,
+    "family": "kimi",
+    "match": [
+      "kimi-k3(?:[^0-9]|$)"
+    ],
+    "preferredRoutes": [
+      "nvidia/moonshotai/kimi-k3"
+    ],
+    "efforts": [
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinking": "always",
+    "sampling": "default",
+    "providerReserve": 32768,
+    "contextWindow": 1048576,
+    "maxOutput": 131072,
+    "capacitySource": "documented"
+  },
+  {
+    "id": "muse-spark-13",
+    "label": "Muse Spark 1.3",
+    "selectable": true,
+    "family": "muse",
+    "match": [
+      "muse-spark-1\\.3"
+    ],
+    "preferredRoutes": [
+      "oc/muse-spark-1.3-contributor-free"
+    ],
+    "unlistedRoutes": [
+      "oc/muse-spark-1.3-contributor-free"
+    ],
+    "efforts": [
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinking": "enabled",
+    "sampling": "default",
+    "providerReserve": 16384,
+    "contextWindow": 1048576,
+    "maxOutput": 131072,
+    "capacitySource": "documented"
+  },
+  {
+    "id": "step-5-preview",
+    "label": "Step 5 Preview",
+    "selectable": true,
+    "family": "step",
+    "match": [
+      "step-5-preview"
+    ],
+    "preferredRoutes": [
+      "oc/step-5-preview-free"
+    ],
+    "unlistedRoutes": [
+      "oc/step-5-preview-free"
+    ],
+    "efforts": [
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinking": "enabled",
+    "sampling": "default",
+    "providerReserve": 16384,
+    "contextWindow": 128000,
+    "maxOutput": 64000,
+    "capacitySource": "documented"
+  },
+  {
+    "id": "glm-52",
+    "label": "GLM 5.2",
+    "selectable": true,
+    "family": "glm",
+    "match": [
+      "glm-5\\.2(?:[^0-9]|$)"
+    ],
+    "preferredRoutes": [
+      "cbai/glm-5.2"
+    ],
+    "efforts": [
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinkingCanDisable": true,
+    "thinkingDefault": false,
+    "thinking": "enabled",
+    "sampling": "default",
+    "providerReserve": 16384,
+    "contextWindow": 1000000,
+    "maxOutput": 131072,
+    "capacitySource": "documented",
+    "thinkingOffShape": "omit"
+  },
+  {
+    "id": "generic",
+    "selectable": false,
+    "label": "Outro modelo (sem controle de esforço)",
+    "family": "generic",
+    "preferredRoutes": [],
+    "efforts": [],
+    "defaultEffort": null,
+    "thinking": null,
+    "sampling": "temperature",
+    "providerReserve": 8192,
+    "contextWindow": 128000,
+    "maxOutput": 8192,
+    "capacitySource": "assumed"
+  }
+]

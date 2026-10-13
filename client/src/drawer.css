@@ -1,0 +1,119 @@
+/* Side menu and sheets: the menu has no background panel; each item is a glass bubble (glass.css) floating over the scrim.
+   Motion (drag, spring, rubber band, deformation) is written to transform/opacity by drawer-motion.js. */
+:root {
+  --mc-gap: 12px;
+}
+
+/* NATIVE scrolling in the chat: the horizontal gesture is left to the drawer (see gestures.js). */
+.mc-chat,
+.mc-chat .mc-scroll { touch-action: pan-y; }
+.mc-chat .mc-scroll button,
+.mc-chat .mc-scroll a { touch-action: manipulation; }
+
+/* ---- gaveta lateral ---- */
+.mc-drawer { position: fixed; inset: 0; z-index: 40; touch-action: pan-y; }
+.mc-drawer .mc-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgb(calc(6 * var(--mc-tr, 1)) calc(5 * var(--mc-tg, 1)) calc(22 * var(--mc-tb, 1)) / .72);
+  opacity: 0;
+  animation: none;
+}
+.mc-drawer .mc-drawer-panel {
+  position: absolute;
+  right: var(--mc-gap);
+  top: calc(var(--sat) + var(--mc-gap));
+  bottom: calc(var(--sab) + var(--mc-gap));
+  width: min(86vw, 420px);
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 2px;
+  border-radius: 34px;
+  background: transparent;
+  overflow: visible;
+  transform: translate3d(calc(100% + 24px), 0, 0); /* hidden until JS takes over (no flash) */
+  transform-origin: right center;
+  will-change: transform;
+  touch-action: pan-y;
+  animation: none;
+  border: 0;
+  box-shadow: none;
+}
+.mc-drawer .mc-drawer-panel.mc-dragging { cursor: grabbing; }
+/* touch-action only applies up to the first scrollable ancestor: without this the browser takes the horizontal gesture
+   over inner lists (pointercancel) and the drawer stops following the finger. */
+.mc-drawer-panel,
+.mc-drawer-panel * { touch-action: pan-y; }
+
+/* ---- glass rows and button ---- */
+.mc-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% - 20px);
+  margin: 0 10px 10px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 999px;
+  text-align: left;
+  transition: transform .15s ease;
+}
+.mc-pill { border-radius: 999px; transition: transform .15s ease; }
+
+/* ---- bottom sheet (same language; dragged by the handle) ---- */
+.mc-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: none;
+}
+.mc-sheet-overlay .mc-sheet-scrim { position: absolute; inset: 0; background: rgb(calc(6 * var(--mc-tr, 1)) calc(5 * var(--mc-tg, 1)) calc(22 * var(--mc-tb, 1)) / .62); opacity: 0; }
+.mc-sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: calc(100% - 20px);
+  max-width: 620px;
+  max-height: 88%;
+  margin-bottom: calc(var(--sab) + 10px);
+  border-radius: 32px;
+  overflow: hidden;
+  transform: translate3d(0, 120%, 0);
+  transform-origin: center bottom;
+  will-change: transform;
+}
+.mc-sheet.mc-sheet-full { height: 92%; max-height: 92%; }
+.mc-sheet-grab { flex: none; touch-action: none; cursor: grab; padding: 10px 8px 4px; }
+.mc-grabber { display: block; width: 38px; height: 5px; margin: 0 auto 8px; border-radius: 3px; background: rgba(var(--mc-white-rgb, 255, 255, 255), .3); }
+.mc-sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px calc(var(--sab) + 12px); touch-action: pan-y; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-row, .mc-pill { transition: none; }
+}
+
+/* Fixed footer of menu subpages (e.g. "Use <model>"): only the button bubble, no background strip. */
+.mc-subfooter { flex: none; padding: 8px 10px 4px; }
+
+/* Generative bubble: its height follows the content in real time (AutoBubble in SettingsDrawer.jsx measures and animates). */
+.mc-auto-bubble { overflow: hidden; transition: height .34s cubic-bezier(.22, 1, .36, 1); }
+.mc-auto-bubble > .mc-auto-inner { transition: opacity .2s ease; }
+.mc-auto-bubble.mc-changing > .mc-auto-inner { opacity: .35; }
+@media (prefers-reduced-motion: reduce) { .mc-auto-bubble, .mc-auto-bubble > .mc-auto-inner { transition: none; } }
+
+@keyframes rpModalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes rpModalScaleIn {
+  from { opacity: 0; transform: scale(0.92) translate3d(0, 8px, 0); }
+  to { opacity: 1; transform: scale(1) translate3d(0, 0, 0); }
+}
+.mc-modal-backdrop {
+  animation: rpModalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.mc-modal-card {
+  animation: rpModalScaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
