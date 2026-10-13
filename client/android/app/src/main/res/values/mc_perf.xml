@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Measurement copy only (build type "perf" overrides this): no screen-capture block, no biometric gate. -->
+    <bool name="mc_perf">false</bool>
+</resources>

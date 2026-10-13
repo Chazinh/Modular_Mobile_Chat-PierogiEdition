@@ -160,6 +160,8 @@ if (typeof document !== 'undefined') {
   window.addEventListener('pagehide', flushCache);
 }
 
+const GLOBAL_SETTINGS_TTL = 60000;
+let globalSettingsCache = null; // { at, value }
 const CACHE_LIST = 'chats';
 const CACHE_CHAT = (id) => `chat.${id}`;
 const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'kimi-k3', 'muse-spark-13', 'step-5-preview', 'glm-52']);
@@ -243,7 +245,22 @@ export const api = {
   trash: () => request('GET', '/api/trash'),
   restoreTrash: (item) => request('POST', '/api/trash/restore', item),
   globalSettings: () => request('GET', '/api/settings/global'),
-  saveGlobalSettings: (patch) => request('PUT', '/api/settings/global', patch),
+  // Summary shown by the side menu: the menu is opened over and over, and each open used to hit the PC (TLS, JSON,
+  // radio) just to print "75% falas · 2.000 car.". Kept for a minute and dropped by any save of the settings.
+  peekGlobalSettings: () => (globalSettingsCache && Date.now() - globalSettingsCache.at < GLOBAL_SETTINGS_TTL ? globalSettingsCache.value : null),
+  globalSettingsCached: async () => {
+    const hit = api.peekGlobalSettings();
+    if (hit) return { settings: hit };
+    const r = await request('GET', '/api/settings/global');
+    globalSettingsCache = { at: Date.now(), value: r.settings };
+    return r;
+  },
+  saveGlobalSettings: async (patch) => {
+    globalSettingsCache = null;
+    const r = await request('PUT', '/api/settings/global', patch);
+    globalSettingsCache = null;
+    return r;
+  },
   purgeTrash: (item) => request('POST', '/api/trash/purge', item),
   purgeAllTrash: () => request('POST', '/api/trash/purge', { all: true }),
 

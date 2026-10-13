@@ -17,6 +17,8 @@ import java.util.ArrayList;
 
 public class MainActivity extends BridgeActivity {
     private View privacyCover;
+    /** Measurement copy (build type "perf"): no capture block and no biometric gate. Always false in release. */
+    private boolean perf;
     private boolean unlocked = false;
     private boolean prompting = false;
     private BiometricPrompt prompt;
@@ -28,6 +30,11 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AppIconPlugin.class);
         registerPlugin(LanguagePlugin.class);
         super.onCreate(state);
+        perf = getResources().getBoolean(R.bool.mc_perf);
+        if (perf) {
+            unlocked = true;
+            return;
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         privacyCover = new View(this);
         privacyCover.setBackgroundColor(0xff1b1b1d);
@@ -56,6 +63,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onStop() {
         // icon change chosen in the app: applied only while the app is off screen (see AppIconPlugin)
         if (!isChangingConfigurations()) AppIconPlugin.applyPending(this);
+        if (perf) { super.onStop(); return; }
         unlocked = false;
         if (privacyCover != null) privacyCover.setVisibility(View.VISIBLE);
         super.onStop();

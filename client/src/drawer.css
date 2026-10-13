@@ -48,6 +48,9 @@
    and never re-creates the layer mid-gesture (that re-raster made the glass bubbles flicker). The inner list does
    not chain its scroll to the chat behind nor show the native overscroll on top of the elastic one. */
 .mc-elastic-wrapper { will-change: transform; backface-visibility: hidden; }
+/* Plain box around each menu item (StairList in SettingsDrawer.jsx): the staircase moves this box, never the bubble.
+   flow-root keeps the item's own margins inside the box, so the spacing is the same as before the box existed. */
+.mc-stair { display: flow-root; }
 .mc-drawer-panel .overflow-y-auto { overscroll-behavior: contain; }
 /* While the rows move in a staircase (drawer-motion.js), the scroller's clipping box is widened far beyond the panel
    (negative margin + equal padding: the content box and the layout of the rows do not change), so rows trailing to

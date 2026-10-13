@@ -23,12 +23,29 @@ const VERDICT_TEXT = {
   error: 'A validação desta rota falhou.',
 };
 
+// The menu items arrive in a staircase (drawer-motion.js): the chain writes transform/opacity on each item every
+// frame. Written on the glass bubbles themselves, every write re-resolved the heavy styles of the bubble AND of its
+// ::before/::after (gradients and shadows full of var()/calc(): ~70 us per element, ~70 elements per frame = ~4 ms of
+// style recalculation on every frame of the animation). Each item sits in a plain box instead, so the per-frame
+// writes land on elements with a trivial style and the bubbles are never restyled while they slide.
+function stairItems(children, prefix = '') {
+  const out = [];
+  React.Children.toArray(children).forEach((child) => {
+    if (React.isValidElement(child) && child.type === React.Fragment) out.push(...stairItems(child.props.children, `${prefix}${child.key}/`));
+    else out.push(<div key={`${prefix}${child?.key ?? out.length}`} className="mc-stair">{child}</div>);
+  });
+  return out;
+}
+function StairList({ className = '', children }) {
+  return <div className={`mc-elastic-wrapper ${className}`}>{stairItems(children)}</div>;
+}
+
 // Side drawer with the conversation settings.
 export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, onHistoryCleared, onOpenCast, onCreate, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
   const [page, setPage] = useState(null); // null | model | name | persona | prompt | history | context | style
-  const [gs, setGs] = useState(null); // global settings (summary on the "Style and limits" row)
+  const [gs, setGs] = useState(() => api.peekGlobalSettings()); // global settings (summary on the "Style and limits" row)
   const [temp, setTemp] = useState(chat.temperature ?? 0.8);
   const [error, setError] = useState('');
   const [thinkingSaving, setThinkingSaving] = useState(false);
@@ -117,7 +134,9 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
   }
 
   useEffect(() => {
-    api.globalSettings().then((r) => setGs(r.settings)).catch(() => {});
+    // already known and fresh: no request and no re-render while the panel is still sliding in
+    if (api.peekGlobalSettings()) return;
+    api.globalSettingsCached().then((r) => setGs(r.settings)).catch(() => {});
   }, []);
 
   const ctxPairs = chat.settings?.context?.preferredPairs ?? 30;
@@ -129,7 +148,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
         {page === null && (
           <>
             <div className="flex-1 overflow-y-auto">
-              <div className="mc-elastic-wrapper min-h-full">
+              <StairList className="min-h-full">
                 <div className="mc-bubble mx-[10px] mb-[10px] mt-1 flex items-center gap-3 rounded-[30px] py-2.5 pl-2.5 pr-4">
                   <button onClick={() => fileRef.current?.click()} className="relative shrink-0" aria-label={tr("Trocar avatar")}>
                     <GlassAvatar name={chat.name} avatar={chat.avatar} />
@@ -163,7 +182,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
                   <SamplingInfo preset={preset} chat={chat} temp={temp} thinkingOn={thinkingOn} onTemp={changeTemp} />
                 </AutoBubble>
                 {error && <p className="mx-4 mt-3 text-sm text-red-400">{tr(error)}</p>}
-              </div>
+              </StairList>
             </div>
             <div className="px-[10px] pt-1">
               <button onClick={onCreate} className="mc-bubble mc-glass-accent flex w-full items-center justify-center gap-2 rounded-full py-4 font-semibold">
@@ -472,9 +491,9 @@ function SubPage({ title, onBack, children, action, footer }) {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <div className="mc-elastic-wrapper min-h-full pt-1">
+        <StairList className="min-h-full pt-1">
           {children}
-        </div>
+        </StairList>
       </div>
       {footer && <div className="mc-subfooter">{footer}</div>}
     </div>

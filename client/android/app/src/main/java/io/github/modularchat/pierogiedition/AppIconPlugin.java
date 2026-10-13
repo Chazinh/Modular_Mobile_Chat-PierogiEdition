@@ -27,8 +27,9 @@ public class AppIconPlugin extends Plugin {
         return null;
     }
 
+    // Aliases resolve against the code namespace, which can differ from a private build's applicationId.
     private static ComponentName component(Context context, String alias) {
-        return new ComponentName(context.getPackageName(), context.getPackageName() + alias);
+        return new ComponentName(context.getPackageName(), AppIconPlugin.class.getPackage().getName() + alias);
     }
 
     /** Icon currently enabled in the launcher (the first enabled alias; with none, the manifest default). */

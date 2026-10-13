@@ -55,6 +55,19 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
+        // Measurement copy (scripts/build-perf-android.ps1): same code and optimizations as release, but its own
+        // package (installs beside the real app, own empty storage), debug-signed, and without FLAG_SECURE or the
+        // biometric gate (see R.bool.mc_perf in MainActivity), so screenshots and adb measurements work.
+        // Never distribute it.
+        perf {
+            initWith release
+            signingConfig signingConfigs.debug
+            applicationIdSuffix ".perf"
+            versionNameSuffix "-perf"
+            matchingFallbacks = ['release']
+            // WebView content debugging (CDP tracing from scripts/trace-device-ui.mjs); the real release is not debuggable.
+            debuggable true
+        }
     }
 }
 

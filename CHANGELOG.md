@@ -5,6 +5,46 @@ without a published version; assessments do not represent implemented features.
 
 ## Unreleased
 
+### Side menu performance and on-device measurement — 2026-10-13
+
+- Fixed the side menu animation being expensive to render on the phone. A trace of
+  the WebView on a real device showed the cause: on every frame of the pull/release
+  animation, the staircase wrote `transform`/`opacity` straight onto the glass
+  buttons, so the browser recalculated the style of each button **and** of its
+  `::before`/`::after` pseudo-elements (gradients and shadows full of
+  `var()`/`calc()`). That was about 69 elements per frame, roughly 4.2 ms of style
+  recalculation against an 8.3 ms budget at 120 Hz. Blur, shadows, scrim and ring
+  masks were tested one by one and were not the problem.
+- Each menu item now sits inside a plain box (`StairList` in `SettingsDrawer.jsx`,
+  `.mc-stair` in `drawer.css`) and the staircase moves the box, not the button.
+  Appearance and animation are identical. Measured over repeated open/close cycles:
+  elements restyled per frame 69 → 13, style recalculation 4.1 s → 0.8 s, main
+  thread (`BeginMainFrame`) 5.8 s → 3.3 s, frames that miss their deadline
+  51–52% → 2.8%, and about 72 → 123 frames per cycle (a smoother animation).
+  Battery temperature did not change in the 3-minute test (29.6 → 30.5 °C), so
+  the measured gain is in frames and CPU, not in degrees.
+- The "Style and limits" summary in the menu no longer queries the PC every time
+  the menu opens (`api.js`): the global settings are cached for 60 s and the cache
+  is dropped on any save. This avoids an HTTPS request and a re-render in the
+  middle of the animation.
+- Added a `perf` Android build type, a measurement copy of the app. It has its own
+  package (`<applicationId>.perf`, installed beside the real app with empty
+  storage), is debug-signed and debuggable, and has no `FLAG_SECURE` and no
+  biometric gate (`R.bool.mc_perf`, read in `MainActivity`; always `false` in
+  `release`), so screenshots, `adb` measurements and WebView tracing work. It must
+  never be distributed. `AppIconPlugin` now resolves its launcher aliases against
+  the code namespace instead of the package name, which differs in this build.
+- New tools: `scripts/build-perf-android.ps1` (builds and installs the measurement
+  copy with the build output outside the project folder),
+  `scripts/measure-device-perf.mjs` (real swipes in a `drawer` or `scroll` mode,
+  then `gfxinfo` frames, janky-frame percentage, percentiles and battery/AP/skin
+  temperatures) and `scripts/trace-device-ui.mjs` (WebView trace over CDP). Set
+  `MC_PERF_PACKAGE` if the app is installed under another package.
+- Known: the top bar (bubble and glass pills) writes style per frame onto the
+  glass elements, the same pattern, and is a candidate for the same fix; it was not
+  measured. About 250 raster tasks per cycle and about 1 ms/frame of painting
+  remain, which is the next target if the phone still heats up.
+
 ### Server logs, memory and CPU diet — 2026-10-13
 
 With the encrypted vault, the whole SQLite database lives in memory and every
