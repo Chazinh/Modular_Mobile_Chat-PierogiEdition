@@ -1,5 +1,6 @@
 Hi! ><
-<img width="1024" height="1024" alt="dsed-1" src="https://github.com/user-attachments/assets/9aaf063c-1d6d-456d-81fc-45219ca5992c" />
+<img width="671" height="318" alt="image" src="https://github.com/user-attachments/assets/1ba91d5f-9995-4cd1-975d-8217168f8048" />
+
 
 <img width="1018" height="1545" alt="image" src="https://github.com/user-attachments/assets/643d8d69-cc95-4d62-a7ce-e21896ccfbe0" />
 
