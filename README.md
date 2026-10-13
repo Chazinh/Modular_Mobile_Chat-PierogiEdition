@@ -1,3 +1,5 @@
+<img width="1190" height="844" alt="image" src="https://github.com/user-attachments/assets/a9957e7e-0a2f-47df-87b7-c09a2263e645" />
+
 # modularchat-pierogiedition
 
 A self-hosted character chat. Your **PC runs the server** and keeps all memory encrypted on disk; your **phone (Android app) or any browser** reads and writes the conversation. Text generation goes to any **OpenAI-compatible model provider** you configure (9Router, OpenRouter, a local llama.cpp/vLLM/Ollama server, …), and long-term memory is built **locally** by small GGUF models.
