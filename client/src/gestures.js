@@ -84,15 +84,16 @@ export function useDrawerGesture(onOpen, enabled = true) {
     if (!el) return;
     let g = null;
     const down = e => {
-      g = allowed.current && e.pointerType === 'touch' && e.isPrimary && e.clientX >= window.innerWidth - EDGE_PX
+      g = allowed.current && e.pointerType === 'touch' && e.isPrimary && !isControl(e.target) && e.clientX >= window.innerWidth - EDGE_PX
         ? { id: e.pointerId, x: e.clientX, y: e.clientY, live: false } : null;
     };
     const move = e => {
       if (!g || e.pointerId !== g.id) return;
       if (!g.live) {
         const dx = e.clientX - g.x, dy = e.clientY - g.y;
-        if (Math.hypot(dx, dy) < 6) return;
+        if (Math.hypot(dx, dy) < 8) return;
         if (!(dx < 0 && -dx > Math.abs(dy) * 1.2)) { g = null; return; } // vertical or outwards: not a drawer gesture
+        if (-dx < 12) return;
         g.live = true;
         try { el.setPointerCapture(g.id); } catch { /* no capture: carry on without it */ }
         resetPull();
@@ -113,6 +114,7 @@ export function useDrawerGesture(onOpen, enabled = true) {
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
     return () => {
+      resetPull();
       el.removeEventListener('pointerdown', down); el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
     };

@@ -85,6 +85,11 @@
   will-change: transform;
 }
 .mc-sheet.mc-sheet-full { height: 92%; max-height: 92%; }
+/* Compact control sheets need a denser glass body so controls behind them cannot bleed through. */
+.mc-sheet.mc-control-sheet {
+  background: radial-gradient(130% 120% at 50% 45%, transparent 58%, var(--gl-lens) 100%),
+    linear-gradient(180deg, rgb(calc(33 * var(--mc-tr, 1)) calc(32 * var(--mc-tg, 1)) calc(45 * var(--mc-tb, 1)) / .98), rgb(calc(26 * var(--mc-tr, 1)) calc(25 * var(--mc-tg, 1)) calc(35 * var(--mc-tb, 1)) / .98));
+}
 .mc-sheet-grab { flex: none; touch-action: none; cursor: grab; padding: 10px 8px 4px; }
 .mc-grabber { display: block; width: 38px; height: 5px; margin: 0 auto 8px; border-radius: 3px; background: rgba(var(--mc-white-rgb, 255, 255, 255), .3); }
 .mc-sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px calc(var(--sab) + 12px); touch-action: pan-y; }

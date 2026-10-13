@@ -1,8 +1,10 @@
+import { tr, useLanguage } from '../i18n.js';
 import React, { useState } from 'react';
 import { useLayer } from '../nav.js';
 import '../drawer.css';
 
-export default function RenameModal({ title = 'Renomear conversa', initial = '', onClose, onSave }) {
+export default function RenameModal({ title = tr('Renomear conversa'), initial = '', onClose, onSave }) {
+  useLanguage();
   const [name, setName] = useState(initial);
   const [saving, setSaving] = useState(false);
 
@@ -36,9 +38,9 @@ export default function RenameModal({ title = 'Renomear conversa', initial = '',
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Nome da conversa"
+            placeholder={tr("Nome da conversa")}
             spellCheck={true}
-            lang="pt-BR, en"
+
             autoCorrect="on"
             autoCapitalize="sentences"
             className="w-full rounded-2xl bg-white/10 px-4 py-3 text-[16px] text-white outline-none border border-white/15 focus:border-accentPurpleLight transition-colors"
@@ -48,15 +50,13 @@ export default function RenameModal({ title = 'Renomear conversa', initial = '',
               type="button"
               onClick={onClose}
               className="rounded-full px-4 py-2 text-sm text-textMuted active:bg-white/10 transition-colors"
-            >
-              Cancelar
-            </button>
+            >{tr("\n              Cancelar\n            ")}</button>
             <button
               type="submit"
               disabled={!name.trim() || saving}
               className="rounded-full bg-accentPurple px-5 py-2 text-sm font-semibold text-white shadow-md active:scale-95 disabled:opacity-40 transition-transform"
             >
-              {saving ? 'Salvando…' : 'Salvar'}
+              {saving ? tr("Salvando…") : tr("Salvar")}
             </button>
           </div>
         </form>

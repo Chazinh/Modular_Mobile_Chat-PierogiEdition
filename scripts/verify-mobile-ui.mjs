@@ -25,6 +25,7 @@ let chat = initial(), failChat = false, failPresets=false, delayChat=null, activ
 let globalStyle={botChars:8000,dialoguePct:65,content:'',lengthMode:'maximum',monologueChars:300,turnPacing:'interactive'};
 let lastDone=null;
 const calls = [], errors = [], widths = [], feedback = [];
+let purges = 0;
 const visibleReply='Mira: 🚀 RESPOSTA_PRONTA_✨\n*Ela sorri.*';
 function complete(status='complete'){
   if(!active)return;
@@ -38,6 +39,11 @@ const json = (res, obj) => { res.writeHead(200, { 'Content-Type': 'application/j
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://fixture');
+    if (url.pathname === '/api/devices') return json(res, { devices: [] });
+    if (url.pathname === '/api/trash') return json(res, { days: 30, items: [{ id: 'trash-fixture', type: 'conversation', name: 'Cena fictícia', count: 3, deletedAt: new Date().toISOString(), preview: 'Mira: *Olá.*' }] });
+    if (url.pathname === '/api/trash/purge' && req.method === 'POST') { purges++; return json(res, { ok: true }); }
+    if (url.pathname === '/api/status') return json(res, { router: { ok: true, models: 4 }, local: { chat: { ok: false }, embed: { ok: false } }, db: { jobs: {} } });
+    if (url.pathname === '/api/chats/fixture/memory') return json(res, { state: null, sync: { synced: true, lag: 0 }, cast: [], memories: [], relationships: [], threads: [], episodes: [], jobs: [], local: { chat: { ok: false, reason: 'offline' }, embed: { ok: false } } });
     if(privateFixture&&url.pathname==='/api/privacy/cache-key')return json(res,{key:privateCacheKey});
     if (url.pathname === '/api/chats') return json(res, { chats: [{ ...chat, history: undefined, snippet: 'Conversa fictícia para verificação' }] });
     if (url.pathname === '/api/chats/fixture') { if (failChat) return req.socket.destroy(); if(req.method==='PUT'){let raw='';for await(const c of req)raw+=c;const patch=JSON.parse(raw);chat={...chat,...patch,settings:{...chat.settings,...patch.settings},revision:chat.revision+1};chat.thinkingEnabled=chat.settings.thinkingEnabled!==false;calls.push({thinkingEnabled:chat.thinkingEnabled});} if(delayChat)await delayChat; return json(res, {...chat,generation:active?{id:'g1',mode:active.mode,partId:active.partId}:null}); }
@@ -151,9 +157,80 @@ try {
   await cdp('Page.navigate', { url: base });
   await waitFor(`Array.from(document.querySelectorAll('button')).some(b => b.textContent.includes('Cena fictícia'))`);
   await screenshot('list-refined-390');
+
+  // Interface language, colors and confirmations use the app's own sheets.
+  const textButton = text => evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)});if(!b)throw Error('Button missing: '+${JSON.stringify(text)});b.click()})()`);
+  const inputValue = (label, value) => evaluate(`(()=>{const i=document.querySelector('input[aria-label=${JSON.stringify(label)}]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,${JSON.stringify(value)});i.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  const authoredBefore = JSON.stringify(chat);
+  const callsBefore = calls.length;
+  await click('Configurações'); await waitFor(`document.querySelector('[aria-label="Idioma da interface"]')`);
+  assert.equal(await evaluate(`document.querySelectorAll('select,input[type=color]').length`), 0);
+  await click('Idioma da interface'); await waitFor(`document.querySelector('[role="radiogroup"]')`);
+  await pause(600); await screenshot('language-sheet-390');
+  assert.equal(await evaluate(`(()=>{const b=document.querySelector('[role="radio"][aria-checked="true"]'),r=b.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('[role="radio"]')===b})()`), true, 'language choice must render and receive taps above neighboring cards');
+  await evaluate(`document.querySelector('[role="radio"][lang="en"]').click()`);
+  await waitFor(`document.documentElement.lang==='en' && document.querySelector('[aria-label="Interface language"]')`);
+  assert.equal(await evaluate(`localStorage.getItem('mc.language')`), 'en');
+  assert.equal(await evaluate(`document.querySelector('h2').textContent`), 'Settings');
+  assert.equal(JSON.stringify(chat), authoredBefore);
+  await screenshot('settings-english-390');
+  await cdp('Page.reload'); await waitFor(`document.querySelector('[aria-label="Settings"]')`);
+  assert.equal(await evaluate(`document.documentElement.lang`), 'en');
+  assert.ok(await evaluate(`document.body.textContent.includes('Cena fictícia')`));
+  await click('Settings'); await waitFor(`document.querySelector('[aria-label="Interface language"]')`);
+  await click('Interface language'); await waitFor(`document.querySelector('[role="radio"][lang="pt-BR"]')`);
+  await evaluate(`document.querySelector('[role="radio"][lang="pt-BR"]').click()`);
+  await waitFor(`document.documentElement.lang==='pt-BR'`);
+  await click('Escolher outra cor'); await waitFor(`document.querySelector('[aria-label="Código da cor"]')`);
+  await inputValue('Código da cor', '#a1b2c3');
+  await textButton('Aplicar cor'); await waitFor(`!document.querySelector('[aria-label="Código da cor"]')`);
+  assert.equal(await evaluate(`JSON.parse(localStorage.getItem('mc.eyecare')).custom`), '#a1b2c3');
+  await click('Escolher outra cor'); await waitFor(`document.querySelector('[aria-label="Código da cor"]')`);
+  await inputValue('Código da cor', '#bad');
+  await waitFor(`document.querySelector('[aria-invalid="true"]')`);
+  assert.equal(await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Aplicar cor').disabled`), true);
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 360, height: 844, deviceScaleFactor: 1, mobile: true });
+  await pause(600); await screenshot('color-sheet-360');
+  assert.equal(await evaluate(`document.documentElement.scrollWidth>innerWidth`), false);
+  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+  await waitFor(`!document.querySelector('[role="dialog"]')`);
+  assert.equal(await evaluate(`JSON.parse(localStorage.getItem('mc.eyecare')).custom`), '#a1b2c3');
+  await textButton('Restaurar padrão');
+  await textButton('Esvaziar lixeira'); await waitFor(`document.querySelector('[role="dialog"]')`);
+  await pause(600); await screenshot('confirmation-sheet-360');
+  await textButton('Cancelar'); await waitFor(`!document.querySelector('[role="dialog"]')`);
+  assert.equal(purges, 0, 'cancel never executes a destructive request');
+  await textButton('Esvaziar lixeira'); await waitFor(`document.querySelector('[role="dialog"]')`);
+  await evaluate(`history.back()`); await waitFor(`!document.querySelector('[role="dialog"]')`);
+  assert.ok(await evaluate(`!!document.querySelector('[aria-label="Idioma da interface"]')`), 'Back cancels only the top sheet');
+  assert.equal(purges, 0);
+  await textButton('Esvaziar lixeira'); await waitFor(`document.querySelector('[role="dialog"]')`);
+  await textButton('Confirmar'); await waitFor(`!document.querySelector('[role="dialog"]')`);
+  await waitFor(`document.body.textContent.includes('Lixeira esvaziada.')`);
+  assert.equal(purges, 1, 'explicit acceptance sends exactly one request');
+  assert.equal(calls.length, callsBefore, 'local language and colors never change server/model settings');
+  assert.equal(JSON.stringify(chat), authoredBefore);
+  await click('Voltar'); await waitFor(`document.querySelector('[aria-label="Configurações"]')`);
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Cena fictícia')).click()`);
   await waitFor(`document.querySelector('[aria-label="Continuar a cena"]')`);
   await screenshot('chat-refined-390');
+  await click('Memória'); await waitFor(`document.querySelector('h2')?.textContent==='Memória do PC'`);
+  await textButton('Memórias'); await waitFor(`document.querySelector('[aria-label="Adicionar memória"]')`);
+  await click('Adicionar memória'); await waitFor(`document.querySelector('[aria-label="Tipo de memória"]')`);
+  await click('Tipo de memória'); await waitFor(`document.querySelector('[role="radiogroup"]')`);
+  assert.equal(await evaluate(`document.querySelectorAll('select').length`), 0);
+  await pause(600); await screenshot('memory-type-sheet-390');
+  assert.equal(await evaluate(`(()=>{const b=document.querySelector('[role="radio"][aria-checked="true"]'),r=b.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('[role="radio"]')===b})()`), true, 'nested choice stays above the underlying form');
+  await evaluate(`[...document.querySelectorAll('[role="radio"]')].find(b=>b.textContent.trim()==='evento').click()`);
+  await waitFor(`document.querySelector('[aria-label="Tipo de memória"]').textContent.trim()==='evento'`);
+  await evaluate(`history.back()`); await waitFor(`!document.querySelector('[role="dialog"]')`);
+  await click('Voltar'); await waitFor(`document.querySelector('[aria-label="Continuar a cena"]')`);
+  if (process.env.MC_UI_INTERFACE_ONLY === '1') {
+    assert.equal(errors.length, 0, JSON.stringify(errors));
+    console.log(`PASS: interface pt-BR/en, persistence, authored-content preservation, HEX palette, cancellation/Back/one confirmed request and memory selector. Screenshots: ${out}`);
+  } else {
   const compact=await evaluate(`({header:document.querySelector('.mc-chat > header').getBoundingClientRect().height,composer:document.querySelector('.mc-composer-input').closest('.mc-glass-pill').getBoundingClientRect().height,capsule:document.querySelector('.mc-identity-pill').getBoundingClientRect().width})`);
   assert.ok(compact.header<=54&&compact.composer<=48&&compact.capsule<230,JSON.stringify(compact));
   assert.equal(await evaluate(`!!document.querySelector('[aria-label="Modelo conectado"].bg-emerald-400')`),true);
@@ -163,7 +240,6 @@ try {
     await evaluate(`(()=>{const p=document.querySelector('[data-message-id="${id}"] p');p.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,touches:[]}));p.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));p.dispatchEvent(new TouchEvent('touchend',{bubbles:true,touches:[]}));})()`);
     await waitFor(`document.querySelector('.mc-sheet')`);
   };
-  const textButton = label => evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()===${JSON.stringify(label)}).click()`);
   const enter = (selector,text) => evaluate(`(()=>{const t=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(t,${JSON.stringify(text)});t.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   chat.history[1].content='Mira: **Fala com markdown**\n*Uma ação.*';chat.revision++;await refresh();
   await menu('a1');await textButton('Copiar');await waitFor(`window.__copied`);
@@ -392,6 +468,7 @@ const anchor=()=>evaluate(`(() => {const el=document.querySelector('.mc-scroll')
   assert.deepEqual(errors, []);
   await fs.writeFile(path.join(out, 'ui-results.json'), JSON.stringify({ status: 'passed', widths, feedback, requests: calls.map(c=>c.mode || 'stop'), runtimeErrors: errors, limits: 'Viewport reduzido simula espaço do teclado. IME/teclado e WebView Android físicos não testados.' }, null, 2));
   console.log(`PASS: edição user/bot e falha recuperável, cópia Markdown, slider salvo ao sair, gestos verticais diagonais e gaveta lateral, UI widths/font, icon aria/title/44px/focus, buffer invisible before done, regeneration target hidden, native resume and completed generation recovery without duplication, UTF-16 reconnect, scroll anchors, offline cached presets, long press, offline, safe areas, simulated keyboard height. Screenshots: ${out}`);
+  }
 } finally {
   ws?.close(); for (const p of pending.values()) clearTimeout(p.timer);
   if (active) active.res.destroy(); server.closeAllConnections(); await new Promise(r=>server.close(r));

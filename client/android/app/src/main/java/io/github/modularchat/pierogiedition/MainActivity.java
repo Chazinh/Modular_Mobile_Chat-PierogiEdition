@@ -26,6 +26,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onCreate(Bundle state) {
         registerPlugin(PrivateStoragePlugin.class);
         registerPlugin(AppIconPlugin.class);
+        registerPlugin(LanguagePlugin.class);
         super.onCreate(state);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         privacyCover = new View(this);
@@ -63,19 +64,19 @@ public class MainActivity extends BridgeActivity {
         prompting = true;
         int result = BiometricManager.from(this).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG);
         if (result != BiometricManager.BIOMETRIC_SUCCESS) {
-            new AlertDialog.Builder(this).setTitle("Biometria necessária")
-                .setMessage("Cadastre uma biometria forte nas configurações do aparelho para acessar suas conversas.")
-                .setPositiveButton("Configurações", (d, w) -> {
+            new AlertDialog.Builder(this).setTitle(LanguagePlugin.text(this, "Biometria necessária", "Biometrics required"))
+                .setMessage(LanguagePlugin.text(this, "Cadastre uma biometria forte nas configurações do aparelho para acessar suas conversas.", "Set up strong biometrics in your device settings to access your conversations."))
+                .setPositiveButton(LanguagePlugin.text(this, "Configurações", "Settings"), (d, w) -> {
                     prompting = false;
                     Intent intent = new Intent(Build.VERSION.SDK_INT >= 30 ? Settings.ACTION_BIOMETRIC_ENROLL : Settings.ACTION_SECURITY_SETTINGS);
                     if (Build.VERSION.SDK_INT >= 30) intent.putExtra(Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED, BiometricManager.Authenticators.BIOMETRIC_STRONG);
                     startActivity(intent);
-                }).setNegativeButton("Sair", (d, w) -> finish()).setCancelable(false).show();
+                }).setNegativeButton(LanguagePlugin.text(this, "Sair", "Exit"), (d, w) -> finish()).setCancelable(false).show();
             return;
         }
         prompt.authenticate(new BiometricPrompt.PromptInfo.Builder().setTitle(getString(R.string.app_name))
             .setConfirmationRequired(false)
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-            .setNegativeButtonText("Sair").build());
+            .setNegativeButtonText(LanguagePlugin.text(this, "Sair", "Exit")).build());
     }
 }

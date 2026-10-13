@@ -1,4 +1,6 @@
-import React, { useLayoutEffect, useRef } from 'react';
+import { tr, useLanguage } from '../i18n.js';
+import React, { useId, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronLeft } from 'lucide-react';
 import { useLayer } from '../nav.js';
 import { usePanelDrag } from '../gestures.js';
@@ -7,7 +9,9 @@ import '../drawer.css';
 
 // Glass bottom sheet. Springs up and is dragged down by its handle (rubber band when pulled up).
 // The Back button closes the sheet before anything else.
-export function Sheet({ onClose, title, children, full = false }) {
+export function Sheet({ onClose, title, children, full = false, className = '' }) {
+  useLanguage();
+  const titleId = useId();
   const panelRef = useRef(null);
   const scrimRef = useRef(null);
   const grabRef = useRef(null);
@@ -32,21 +36,40 @@ export function Sheet({ onClose, title, children, full = false }) {
   };
   usePanelDrag(grabRef, motionRef, { axis: 'y' });
   useLayer(true, onClose);
-  return (
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const previous = document.activeElement;
+    const overlay = panel.closest('.mc-sheet-overlay');
+    const elements = () => [...panel.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')].filter(el => el.getClientRects().length);
+    (panel.querySelector('[data-autofocus]') || elements()[0] || panel).focus({ preventScroll: true });
+    const onKey = event => {
+      if ([...document.querySelectorAll('.mc-sheet-overlay')].at(-1) !== overlay) return;
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCloseRef.current(); }
+      if (event.key !== 'Tab') return;
+      const fields = elements(), first = fields[0], last = fields.at(-1);
+      if (!first) { event.preventDefault(); panel.focus(); }
+      else if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('keydown', onKey); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
+  }, []);
+  return createPortal(
     <div className="mc-sheet-overlay">
       <div ref={scrimRef} className="mc-sheet-scrim" onClick={close} />
-      <div ref={panelRef} className={`mc-sheet mc-glass ${full ? 'mc-sheet-full' : ''}`}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={title ? titleId : undefined} aria-label={title ? undefined : tr('Opções')} tabIndex={-1} className={`mc-sheet mc-glass ${full ? 'mc-sheet-full' : ''} ${className}`}>
         <div ref={grabRef} className="mc-sheet-grab">
           <span className="mc-grabber" />
-          {title && <p className="mx-2 mb-1 text-sm font-semibold text-textMuted">{title}</p>}
+          {title && <p id={titleId} className="mx-2 mb-1 text-sm font-semibold text-textMuted">{title}</p>}
         </div>
         <div className="mc-sheet-body">{children}</div>
       </div>
-    </div>
+    </div>, document.body
   );
 }
 
 export function SheetButton({ icon, label, onClick, danger, detail, disabled }) {
+  useLanguage();
   return (
     <button
       onClick={onClick}
@@ -62,6 +85,7 @@ export function SheetButton({ icon, label, onClick, danger, detail, disabled }) 
 
 // Stacked full screen (editing, cast, memory...). Back closes only this screen.
 export function Screen({ title, onClose, action, children }) {
+  useLanguage();
   useLayer(true, onClose);
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-bgDark">
@@ -71,7 +95,7 @@ export function Screen({ title, onClose, action, children }) {
           <button
             onClick={onClose}
             className="mc-glass-pill pointer-events-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-            aria-label="Voltar"
+            aria-label={tr("Voltar")}
           >
             <ChevronLeft size={24} />
           </button>

@@ -5,6 +5,7 @@
 param(
   [int]$Port = 0,
   [switch]$Lan,            # sandbox only: also listen on the LAN
+  [switch]$Loopback,       # production behind the HTTPS proxy: do not expose Rust to the LAN
   [switch]$Sandbox,        # work on an isolated copy of the vault
   [switch]$ResetSandbox,   # with -Sandbox: back up and discard the sandbox vault, then copy again
   [switch]$LocalModels,    # sandbox only: also start the local memory models
@@ -16,6 +17,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($Sandbox -and $Production) { throw 'Choose either -Production or -Sandbox.' }
+if ($Lan -and $Loopback) { throw 'Choose either -Lan or -Loopback.' }
 if ($ResetSandbox -and -not $Sandbox) { throw '-ResetSandbox requires -Sandbox; the main vault is never discarded.' }
 
 function Get-FileSha256([string]$Path) {
@@ -90,7 +92,7 @@ if ($Sandbox) {
 }
 
 $env:DATA_DIR = $data
-$env:HOST = if ($Sandbox -and -not $Lan) { '127.0.0.1' } else { '0.0.0.0' }
+$env:HOST = if ($Loopback -or ($Sandbox -and -not $Lan)) { '127.0.0.1' } else { '0.0.0.0' }
 $env:PORT = "$Port"
 $env:REQUIRE_PAIRING = '1'
 $env:MC_ENCRYPTED_STORAGE = '1'

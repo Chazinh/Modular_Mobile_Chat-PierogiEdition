@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rubber, unrubber, follow, springStep, deformation, releaseTarget, VelocityTracker, EDGE_PX } from '../client/src/drawer-motion.js';
+import { rubber, unrubber, follow, springStep, deformation, releaseTarget, VelocityTracker, EDGE_PX, PanelMotion, pullEvent, attachMotion, detachMotion, resetPull } from '../client/src/drawer-motion.js';
 
 test('borracha: cresce cada vez menos, nunca passa do limite e é invertível', () => {
   assert.equal(rubber(0, 84), 0);
@@ -70,4 +70,41 @@ test('velocidade pelas últimas amostras', () => {
 
 test('faixa de ativação rente à borda é estreita (alça do painel Edge)', () => {
   assert.ok(EDGE_PX >= 12 && EDGE_PX <= 28);
+});
+
+test('gaveta: evento atrasado não bloqueia o botão; gesto iniciado continua anexando', () => {
+  resetPull();
+  const calls = [], motion = { begin: x => calls.push(['begin', x]), move: x => calls.push(['move', x]), end: () => calls.push(['end']) };
+  pullEvent('move', 200);
+  pullEvent('end');
+  assert.equal(attachMotion(motion), false);
+  assert.deepEqual(calls, []);
+  detachMotion(motion);
+  pullEvent('begin', 360); pullEvent('move', 300); pullEvent('end');
+  assert.equal(attachMotion(motion), true);
+  assert.deepEqual(calls, [['begin', 360], ['move', 300], ['end']]);
+  detachMotion(motion);
+});
+
+test('gaveta: fechar na entrada não herda impulso de abertura e destruir impede reanimação', () => {
+  const originalRAF = globalThis.requestAnimationFrame, originalCancel = globalThis.cancelAnimationFrame;
+  let scheduled = 0;
+  globalThis.requestAnimationFrame = () => ++scheduled;
+  globalThis.cancelAnimationFrame = () => {};
+  const panel = { style: {}, classList: { add() {}, remove() {} } };
+  try {
+    const motion = new PanelMotion({ panel, closed: 360 });
+    motion.open();
+    motion.v = -800;
+    motion.close();
+    assert.equal(motion.v, 0, 'fechamento não volta na direção de abertura');
+    const before = scheduled;
+    motion.destroy();
+    motion.begin(300); motion.move(200); motion.end(); motion.open(); motion.close();
+    assert.equal(scheduled, before);
+    assert.equal(motion.drag, null);
+  } finally {
+    if (originalRAF === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = originalRAF;
+    if (originalCancel === undefined) delete globalThis.cancelAnimationFrame; else globalThis.cancelAnimationFrame = originalCancel;
+  }
 });

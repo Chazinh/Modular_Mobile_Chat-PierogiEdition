@@ -115,6 +115,7 @@ export class PanelMotion {
 
   // ---- finger drag ----
   begin(finger) {
+    if (this.dead) return;
     this.stop();
     const raw = this.x < 0 ? -unrubber(-this.x, 24) : this.x;
     this.drag = { finger, raw };
@@ -123,7 +124,7 @@ export class PanelMotion {
     this.panel.classList.add('mc-dragging');
   }
   move(finger) {
-    if (!this.drag) return;
+    if (this.dead || !this.drag) return;
     const raw = this.drag.raw + (finger - this.drag.finger);
     this.x = follow(raw, this.closed, 24);
     this.tracker.push(this.x);
@@ -131,7 +132,7 @@ export class PanelMotion {
     this.render();
   }
   end() {
-    if (!this.drag) return;
+    if (this.dead || !this.drag) return;
     this.drag = null;
     this.panel.classList.remove('mc-dragging');
     const v = this.tracker.velocity();
@@ -144,11 +145,12 @@ export class PanelMotion {
     this.settle('open', 0);
   }
   close() {
-    this.settle('closed', this.v);
+    this.settle('closed', Math.max(0, this.v));
   }
   settle(target, v0) {
+    if (this.dead) return;
     this.stop();
-    this.v = v0 || 0;
+    this.v = this.axis === 'x' ? clamp(v0 || 0, -this.closed * 2, this.closed * 2) : v0 || 0;
     if (reduced()) {
       this.x = target === 'open' ? 0 : this.closed;
       this.v = 0;
@@ -158,8 +160,8 @@ export class PanelMotion {
     }
     this.mode = target === 'open' ? 'opening' : 'closing';
     this.goal = target === 'open' ? 0 : this.closed + 8;
-    this.k = 360;
-    this.c = 38;
+    this.k = this.axis === 'x' ? 180 : 360;
+    this.c = this.axis === 'x' ? 27 : 38;
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.tick);
   }
@@ -213,6 +215,7 @@ export function attachMotion(m) {
   current = m;
   const pending = queue;
   queue = [];
+  if (pending[0]?.[0] !== 'begin') return false;
   for (const [type, finger] of pending) apply(m, type, finger);
   return pending.length > 0;
 }

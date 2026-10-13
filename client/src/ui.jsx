@@ -1,3 +1,4 @@
+import { tr, useLanguage } from './i18n.js';
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { parseScene } from './format.js';
 
@@ -78,7 +79,7 @@ export async function copyText(text) {
 export function timeAgo(iso) {
   if (!iso) return '';
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return 'agora';
+  if (diff < 60) return tr('agora');
   const min = Math.floor(diff / 60);
   if (min < 60) return `${min} min`;
   const h = Math.floor(min / 60);
@@ -86,8 +87,8 @@ export function timeAgo(iso) {
   const d = Math.floor(h / 24);
   if (d < 30) return `${d} d`;
   const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo} ${mo > 1 ? 'meses' : 'mês'}`;
-  return `${Math.floor(mo / 12)} ano(s)`;
+  if (mo < 12) return tr('{0} {1}', [mo, mo > 1 ? tr('meses') : tr('mês')]);
+  return tr('{0} ano(s)', [Math.floor(mo / 12)]);
 }
 
 export const fold = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
@@ -105,6 +106,7 @@ export function findCast(cast, name) {
 const COLORS = ['#7c3aed', '#db2777', '#0891b2', '#ea580c', '#16a34a', '#4f46e5', '#ca8a04'];
 
 export function Avatar({ name, avatar, size = 56, round = false }) {
+  useLanguage();
   const radius = round ? 'rounded-full' : 'rounded-2xl';
   if (avatar && (avatar.startsWith('http') || avatar.startsWith('data:image/'))) {
     return <img src={avatar} alt={name || ''} className={`shrink-0 ${radius} object-cover border border-white/10`} style={{ width: size, height: size }} />;
@@ -138,13 +140,14 @@ export function fileToAvatar(file, size = 256) {
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error('Imagem inválida.'));
+      reject(new Error(tr("Imagem inválida.")));
     };
     img.src = url;
   });
 }
 
 function Segs({ segments }) {
+  useLanguage();
   return segments.map((s, i) =>
     s.i ? (
       <em key={i} className="mc-action">
@@ -159,6 +162,7 @@ function Segs({ segments }) {
 // Renders a scene reply: actions in gray italics, "Name: text" speech without a side avatar.
 // Safe by construction: React escapes all text and nothing external is loaded.
 export function SceneText({ text, cast, streaming }) {
+  useLanguage();
   const lines = useMemo(() => parseScene(text), [text]);
   const rows = [];
   lines.forEach((l, i) => {
@@ -187,6 +191,7 @@ export function SceneText({ text, cast, streaming }) {
 
 // User text: same grammar (italics between asterisks), no avatars.
 export function UserText({ text }) {
+  useLanguage();
   const lines = useMemo(() => parseScene(text), [text]);
   return (
     <div className="space-y-1.5">

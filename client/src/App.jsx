@@ -1,3 +1,4 @@
+import { tr, useLanguage } from './i18n.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, config, ApiError } from './api.js';
 import { useLayer, installNativeBack, closeTopLayer } from './nav.js';
@@ -37,6 +38,7 @@ export function useFontSize() {
 }
 
 export default function App() {
+  useLanguage();
   useNativeLifecycle();
   const [chats, setChats] = useState([]);
   const [archivedView, setArchivedView] = useState(false);
@@ -130,7 +132,7 @@ export default function App() {
       setOpenSettings(true);
       setOpenId(chat.id);
     } catch (e) {
-      setError(`Não foi possível criar o chat: ${e.message}`);
+      setError(tr("Não foi possível criar o chat: {0}", [e.message]));
     }
   }
 

@@ -1,9 +1,11 @@
+import { tr, useLanguage } from '../i18n.js';
 import React from 'react';
 import { X } from 'lucide-react';
 import { useLayer } from '../nav.js';
 import '../drawer.css';
 
 export default function AvatarViewerModal({ item, onClose }) {
+  useLanguage();
   useLayer(!!item, onClose);
 
   if (!item) return null;
@@ -21,11 +23,11 @@ export default function AvatarViewerModal({ item, onClose }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex w-full items-center justify-between pb-3 px-1 gap-3">
-          <span className="truncate text-base font-semibold text-white">{name || 'Avatar'}</span>
+          <span className="truncate text-base font-semibold text-white">{name || tr("Avatar")}</span>
           <button
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 active:scale-90 transition-transform"
-            aria-label="Fechar"
+            aria-label={tr("Fechar")}
           >
             <X size={18} />
           </button>

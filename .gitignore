@@ -16,3 +16,12 @@ providers.json
 *.keystore
 *.jks
 keystore.properties
+client/android/host-trust/
+hosting/*.local.*
+hosting/Caddyfile
+hosting/auth.json
+hosting/login.txt
+hosting/duckdns-token.txt
+hosting/data/
+hosting/logs/
+.task-temp/

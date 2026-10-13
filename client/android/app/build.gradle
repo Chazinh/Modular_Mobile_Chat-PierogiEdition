@@ -7,6 +7,18 @@ def mcProps = new Properties()
 def mcPropsFile = new File(System.getenv('MC_KEYSTORE_PROPS') ?: "${rootDir}/keystore.properties")
 if (mcPropsFile.exists()) mcPropsFile.withInputStream { mcProps.load(it) }
 
+// Optional, private resource directory. Never bundle someone else's host or CA.
+def mcHostTrust = System.getenv('MC_ANDROID_HOST_TRUST_DIR')
+def mcNetworkConfig = '@xml/network_security_config'
+if (mcHostTrust) {
+    def mcTrustDirectory = new File(mcHostTrust)
+    if (!new File(mcTrustDirectory, 'xml/modularchat_host_security_config.xml').isFile() ||
+        !new File(mcTrustDirectory, 'raw/modularchat_host_ca.crt').isFile()) {
+        throw new GradleException('MC_ANDROID_HOST_TRUST_DIR must contain the generated XML and public host CA.')
+    }
+    mcNetworkConfig = '@xml/modularchat_host_security_config'
+}
+
 android {
     namespace = "io.github.modularchat.pierogiedition"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,12 +28,16 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0.0"
+        manifestPlaceholders = [mcNetworkSecurityConfig: mcNetworkConfig]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
+    }
+    if (mcHostTrust) {
+        sourceSets.main.res.srcDir new File(mcHostTrust)
     }
     signingConfigs {
         release {

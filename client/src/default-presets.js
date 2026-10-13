@@ -89,7 +89,7 @@ export const DEFAULT_PRESETS = {
     },
     {
       id: "glm-52",
-      label: "GLM 5.2",
+      label: "GLM",
       selectable: true,
       family: "glm",
       preferredRoutes: ["cbai/glm-5.2"],

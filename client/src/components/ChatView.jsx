@@ -1,3 +1,5 @@
+import { useConfirm } from './ConfirmProvider.jsx';
+import { tr, useLanguage } from '../i18n.js';
 import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import {
   ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2, Brain,
@@ -16,6 +18,7 @@ import { useResume } from '../lifecycle.js';
 import { useReadingGesture, useDrawerGesture, useTopBar } from '../gestures.js';
 import AvatarViewerModal from './AvatarViewerModal.jsx';
 import RenameModal from './RenameModal.jsx';
+import { resetPull } from '../drawer-motion.js';
 
 const STATUS_NOTE = {
   interrupted: 'Interrompida. O trecho recebido foi salvo.',
@@ -45,6 +48,8 @@ function mergeChat(prev, next) {
 }
 
 export default function ChatView({ chatId, openSettingsInitially, onBack, onChanged, onCreate, onDeleted }) {
+  const confirm = useConfirm();
+  useLanguage();
   const [chat, setChat] = useState(null);
   const [offline, setOffline] = useState(false);
   const [stream, setStream] = useState(null); // Presentation: phase/ack only. The SSE buffer lives in ctxRef.
@@ -131,6 +136,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
       if (ctxRef.current) ctxRef.current.cancelled = true;
       abortRef.current?.abort();
       clearTimeout(reloadTimer.current);
+      resetPull();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
@@ -202,7 +208,8 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
   const hasMore = visibleHistory.length > renderedCount;
   const displayedHistory = hasMore ? visibleHistory.slice(visibleHistory.length - renderedCount) : visibleHistory;
   useReadingGesture(scrollRef, !drawer && !editMsg && !menuMsg);
-  const drawerGesture = useDrawerGesture(() => setDrawer(true), !drawer && !editMsg && !menuMsg && !castOpen && !memoryOpen && !versionsFor && !detailFor);
+  const openDrawer = () => { resetPull(); setDrawer(true); };
+  const drawerGesture = useDrawerGesture(() => setDrawer(true), !drawer && !editMsg && !menuMsg && !castOpen && !memoryOpen && !versionsFor && !detailFor && !renameOpen && !viewerAvatar);
   // Reading anchor: first message whose bottom is below the visible top. Binary search over the list's
   // children (ordered by layout): ~9 geometry reads instead of one per message.
   const rememberReading = () => {
@@ -263,7 +270,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
         gidRef.current = ev.ack.generationId;
         ctx.mode = ev.ack.mode;
         ctx.partId = ev.ack.partId;
-        api.setPending(chatId, { ...ctx.payload, generationId: ev.ack.generationId, mode: ctx.mode, partId: ctx.partId }).catch(()=>setError('Falha ao proteger a confirmação no cache; a resposta continua salva no PC.'));
+        api.setPending(chatId, { ...ctx.payload, generationId: ev.ack.generationId, mode: ctx.mode, partId: ctx.partId }).catch(()=>setError(tr("Falha ao proteger a confirmação no cache; a resposta continua salva no PC.")));
         setOffline(false);
         if (ev.ack.userMessage && (ev.ack.mode === 'send' || ev.ack.mode === 'edit')) {
           updateChat((c) => {
@@ -353,7 +360,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
     setError('');
     const result=await reattach(ctx);
     if (result==='done') await finishRun(ctx);
-    else if (result==='failed') { setOffline(true); setError('A resposta continua salva no PC. Reconecte para recebê-la.'); }
+    else if (result==='failed') { setOffline(true); setError(tr("A resposta continua salva no PC. Reconecte para recebê-la.")); }
   }
 
   async function attach(gen) {
@@ -364,7 +371,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
     setStream({ phase: 'waiting', mode: gen.mode, partId: gen.partId });
     const result=await reattach(ctx);
     if (result==='done') await finishRun(ctx);
-    else if (result==='failed') { setOffline(true); setError('Conexão interrompida. A resposta continua no PC; volte ao app para reconectar.'); }
+    else if (result==='failed') { setOffline(true); setError(tr("Conexão interrompida. A resposta continua no PC; volte ao app para reconectar.")); }
   }
 
   function recoverPending(pending) {
@@ -394,7 +401,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
     }
     if (ctx.cancelled || ctrl.signal.aborted) return false;
     try { await api.setPending(chatId, payload); } catch(e) {
-      busyRef.current=false;setStream(null);setError('Não foi possível proteger o envio no aparelho.');return false;
+      busyRef.current=false;setStream(null);setError(tr("Não foi possível proteger o envio no aparelho."));return false;
     }
     try {
       await api.sendMessage(chatId, payload, ev => { if (ctx.epoch === 0) makeHandler(ctx)(ev); }, ctrl.signal);
@@ -421,7 +428,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
     if (ctx.cancelled) return false;
     if (ctx.epoch > 1 && !ctx.done) return ctx.acked;
     if (ctx.done) await finishRun(ctx);
-    else { setOffline(true); setError('Conexão interrompida. A resposta continua no PC; volte ao app para reconectar.'); }
+    else { setOffline(true); setError(tr("Conexão interrompida. A resposta continua no PC; volte ao app para reconectar.")); }
     return ctx.acked;
   }
 
@@ -441,7 +448,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
   function send(text) {
     const content = text.trim();
     if (!content || busy) return;
-    if (text.length > 6000) return setError("Sua mensagem pode ter no máximo 6.000 caracteres.");
+    if (text.length > 6000) return setError(tr("Sua mensagem pode ter no máximo 6.000 caracteres."));
     run({ mode: 'send', content }, { fromComposer: true });
   }
 
@@ -458,12 +465,12 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
 
   async function copyMsg(m) {
     setMenuMsg(null);
-    flash((await copyText(m.content)) ? 'Copiado' : 'Não foi possível copiar');
+    flash((await copyText(m.content)) ? tr("Copiado") : tr("Não foi possível copiar"));
   }
 
   async function deleteMsg(m) {
     setMenuMsg(null);
-    if (!confirm(m.role === 'user' ? 'Apagar esta mensagem e as respostas dela? (fica na lixeira por 30 dias)' : 'Apagar esta resposta? (fica na lixeira por 30 dias)')) return;
+    if (!await confirm(m.role === 'user' ? tr("Apagar esta mensagem e as respostas dela? (fica na lixeira por 30 dias)") : tr("Apagar esta resposta? (fica na lixeira por 30 dias)"))) return;
     try {
       await api.deleteMessage(chatId, m.id);
       await load();
@@ -478,7 +485,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
     if (!text || text === m.content) { setEditMsg(null); return; }
     if (m.role === 'user') {
       const accepted = await run({ mode: 'edit', messageId: m.interactionId, content: text });
-      if (!accepted) throw new Error('A correção não foi enviada. Confira a conexão e tente novamente.');
+      if (!accepted) throw new Error(tr("A correção não foi enviada. Confira a conexão e tente novamente."));
       return;
     }
     try {
@@ -529,9 +536,9 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
         onClick={topBar.onHandleClick}
         className={`mc-bar-handle ${topBar.open ? 'mc-bar-open' : ''}`}
         style={{ top: 'var(--sat)' }}
-        aria-label="Mostrar barra superior"
+        aria-label={tr("Mostrar barra superior")}
         aria-expanded={topBar.open}
-        title={connected ? 'Modelo conectado · toque ou puxe para baixo' : 'Conexão do modelo ainda não confirmada · toque ou puxe para baixo'}
+        title={connected ? tr("Modelo conectado · toque ou puxe para baixo") : tr("Conexão do modelo ainda não confirmada · toque ou puxe para baixo")}
       >
         <span className={`mc-bar-dot ${connected ? 'mc-on' : ''}`} />
       </button>
@@ -547,7 +554,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
               data-bar-item
               onClick={onBack}
               className="mc-glass-pill pointer-events-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label="Voltar"
+              aria-label={tr("Voltar")}
             >
               <ChevronLeft size={24} />
             </button>
@@ -555,7 +562,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
               <button
                 onClick={() => setViewerAvatar({ name: chat?.name, avatar: chat?.avatar })}
                 className="shrink-0 active:scale-95 transition-transform"
-                aria-label="Ver avatar"
+                aria-label={tr("Ver avatar")}
               >
                 <Avatar name={chat?.name} avatar={chat?.avatar} size={32} round />
               </button>
@@ -563,20 +570,20 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
                 <button
                   onClick={() => setRenameOpen(true)}
                   className="flex items-center gap-1.5 text-left max-w-full active:opacity-80"
-                  aria-label="Renomear conversa"
+                  aria-label={tr("Renomear conversa")}
                 >
                   <span className="truncate text-[14px] font-semibold">{chat?.name || '...'}</span>
                   <Pencil size={12} className="shrink-0 text-textMuted opacity-70" />
                 </button>
                 <button
-                  onClick={() => setDrawer(true)}
+                  onClick={openDrawer}
                   className="flex max-w-full items-center gap-1.5 text-[11px] text-textMuted text-left"
-                  aria-label="Opções do modelo"
+                  aria-label={tr("Opções do modelo")}
                 >
                   <span className="truncate">{presetInfo?.label || chat?.routeId?.split('/').pop()}{chat?.effort ? ` · ${chat.effort}` : ''}</span>
                   <span
-                    title={connected ? 'Modelo conectado: resposta recebida' : 'Conexão do modelo ainda não confirmada'}
-                    aria-label={connected ? 'Modelo conectado' : 'Modelo sem conexão confirmada'}
+                    title={connected ? tr("Modelo conectado: resposta recebida") : tr("Conexão do modelo ainda não confirmada")}
+                    aria-label={connected ? tr("Modelo conectado") : tr("Modelo sem conexão confirmada")}
                     className={`inline-block h-2 w-2 shrink-0 rounded-full ${connected ? 'bg-emerald-400' : 'bg-gray-500'}`}
                   />
                 </button>
@@ -590,16 +597,16 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
               data-bar-item
               onClick={() => setMemoryOpen(true)}
               className="mc-glass-pill pointer-events-auto relative flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label="Memória"
+              aria-label={tr("Memória")}
             >
               <Brain size={22} />
               {chat?.memorySummary?.pending > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accentPurpleLight ring-2 ring-black/40" />}
             </button>
             <button
               data-bar-item
-              onClick={() => setDrawer(true)}
+              onClick={openDrawer}
               className="mc-glass-pill pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label="Opções"
+              aria-label={tr("Opções")}
             >
               <MoreHorizontal size={24} />
             </button>
@@ -620,13 +627,11 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
         <div ref={listRef} className="mc-col space-y-3 mc-read">
           {offline && (
             <div className="flex items-center gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300 mb-2">
-              <WifiOff size={14} /> Sem conexão com o PC. Você pode ler e escrever rascunhos; o envio precisa do servidor.
-              <button className="ml-auto underline" onClick={resume}>Tentar de novo</button>
+              <WifiOff size={14} />{tr(" Sem conexão com o PC. Você pode ler e escrever rascunhos; o envio precisa do servidor.\n              ")}<button className="ml-auto underline" onClick={resume}>{tr("Tentar de novo")}</button>
             </div>
           )}
           {history.length === 0 && !busy && (
-            <p className="pt-16 text-center text-sm text-textMuted">
-              Comece a conversa. Personalize o personagem em <b>⋯ → Personalização</b>.
+            <p className="pt-16 text-center text-sm text-textMuted">{tr("\n              Comece a conversa. Personalize o personagem em ")}<b>{tr("⋯ → Personalização")}</b>.
             </p>
           )}
           {hasMore && (
@@ -635,8 +640,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
                 type="button"
                 onClick={() => setRenderedCount((c) => Math.min(visibleHistory.length, c + 40))}
                 className="rounded-full bg-surface px-4 py-1.5 text-xs font-medium text-textMuted ring-1 ring-white/10 active:opacity-80"
-              >
-                Carregar mensagens anteriores ({visibleHistory.length - displayedHistory.length})
+              >{tr("\n                Carregar mensagens anteriores (")}{visibleHistory.length - displayedHistory.length})
               </button>
             </div>
           )}
@@ -660,8 +664,8 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
           {busy && <StreamCard onStop={onStop} idle={offline} />}
           {error && (
             <div className="flex items-start gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">
-              <span className="flex-1 break-words">{error}</span>
-              <button onClick={() => setError('')} className="shrink-0 text-xs underline">fechar</button>
+              <span className="flex-1 break-words">{tr(error)}</span>
+              <button onClick={() => setError('')} className="shrink-0 text-xs underline">{tr("fechar")}</button>
             </div>
           )}
           {!busy && history.length > 0 && !lastIsAssistant && (
@@ -674,7 +678,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
           <button
             onClick={toBottom}
             className="mc-glass-pill fixed bottom-[calc(var(--sab)+82px)] right-4 z-20 flex h-11 w-11 items-center justify-center rounded-full active:scale-90"
-            aria-label="Ir para o fim"
+            aria-label={tr("Ir para o fim")}
           >
             <ArrowDown size={20} />
             {newContent && <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full bg-accentPurpleLight ring-2 ring-black" />}
@@ -707,22 +711,22 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
 
       {menuMsg && (
         <Sheet onClose={() => setMenuMsg(null)} title={plainText(menuMsg.content).slice(0, 120)}>
-          <SheetButton icon={<Copy size={20} />} label="Copiar" onClick={() => copyMsg(menuMsg)} />
+          <SheetButton icon={<Copy size={20} />} label={tr("Copiar")} onClick={() => copyMsg(menuMsg)} />
           <SheetButton
             icon={<Pencil size={20} />}
-            label={menuMsg.role === 'user' ? 'Editar e reenviar (novo ramo)' : 'Editar'}
+            label={menuMsg.role === 'user' ? tr("Editar e reenviar (novo ramo)") : tr("Editar")}
             onClick={() => {
               setEditMsg(menuMsg);
               setMenuMsg(null);
             }}
           />
           {menuMsg.role === 'assistant' && menuMsg.versionCount > 1 && (
-            <SheetButton icon={<Layers size={20} />} label={`Alternativas (${menuMsg.versionCount})`} onClick={() => { setVersionsFor(menuMsg); setMenuMsg(null); }} />
+            <SheetButton icon={<Layers size={20} />} label={tr("Alternativas ({0})", [menuMsg.versionCount])} onClick={() => { setVersionsFor(menuMsg); setMenuMsg(null); }} />
           )}
           {menuMsg.role === 'assistant' && (
-            <SheetButton icon={<Info size={20} />} label="Detalhes e tokens" onClick={() => { setDetailFor(menuMsg); setMenuMsg(null); }} />
+            <SheetButton icon={<Info size={20} />} label={tr("Detalhes e tokens")} onClick={() => { setDetailFor(menuMsg); setMenuMsg(null); }} />
           )}
-          <SheetButton icon={<Trash2 size={20} />} label="Apagar" danger onClick={() => deleteMsg(menuMsg)} />
+          <SheetButton icon={<Trash2 size={20} />} label={tr("Apagar")} danger onClick={() => deleteMsg(menuMsg)} />
         </Sheet>
       )}
 
@@ -743,7 +747,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
 
       {toast && (
         <div className="pointer-events-none fixed inset-x-0 bottom-28 z-[60] flex justify-center">
-          <span className="rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-black">{toast}</span>
+          <span className="rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-black">{tr(toast)}</span>
         </div>
       )}
 
@@ -767,6 +771,7 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
 }
 
 export function VerdictDot({ verdict }) {
+  useLanguage();
   const map = {
     forwarded: ['bg-emerald-400', 'Esforço confirmado no pedido enviado ao provedor'],
     not_forwarded: ['bg-red-400', 'O provedor recebeu um esforço diferente do preset'],
@@ -778,22 +783,22 @@ export function VerdictDot({ verdict }) {
     error: ['bg-red-400', 'Falha na validação'],
   };
   const [cls, label] = map[verdict] || map.not_validated;
-  return <span title={label} aria-label={label} className={`inline-block h-2 w-2 shrink-0 rounded-full ${cls}`} />;
+  return <span title={tr(label)} aria-label={tr(label)} className={`inline-block h-2 w-2 shrink-0 rounded-full ${cls}`} />;
 }
 
 const UserBubble = memo(function UserBubble({ m, onLongPress, onBranch }) {
+  useLanguage();
   const press = useLongPress(() => onLongPress(m));
   return (
     <div data-message-id={m.id} className="flex flex-col items-end">
       <div {...press} className="mc-msg max-w-[88%] rounded-2xl rounded-br-md bg-accentPurple/25 px-4 py-3">
         <UserText text={m.content} />
-        {m.edited && <span className="mt-1 block text-right text-[11px] text-textMuted">editada</span>}
+        {m.edited && <span className="mt-1 block text-right text-[11px] text-textMuted">{tr("editada")}</span>}
       </div>
       {m.branch && (
         <div className="mt-1 flex items-center gap-1 text-xs text-textMuted">
-          <button onClick={() => onBranch(m, -1)} className="p-1" aria-label="Ramo anterior"><ChevronLeft size={14} /></button>
-          ramo {m.branch.index}/{m.branch.count}
-          <button onClick={() => onBranch(m, 1)} className="p-1" aria-label="Próximo ramo"><ChevronRight size={14} /></button>
+          <button onClick={() => onBranch(m, -1)} className="p-1" aria-label={tr("Ramo anterior")}><ChevronLeft size={14} /></button>{tr("\n          ramo ")}{m.branch.index}/{m.branch.count}
+          <button onClick={() => onBranch(m, 1)} className="p-1" aria-label={tr("Próximo ramo")}><ChevronRight size={14} /></button>
         </div>
       )}
     </div>
@@ -801,6 +806,7 @@ const UserBubble = memo(function UserBubble({ m, onLongPress, onBranch }) {
 });
 
 const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, onContinue, onRegenerate, onLongPress, onVersions }) {
+  useLanguage();
   const press = useLongPress(() => onLongPress(m));
   const note = STATUS_NOTE[m.status];
   return (
@@ -808,20 +814,19 @@ const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, on
       <div className="rounded-2xl bg-cardDark px-3 py-3">
         <div {...press} className="mc-msg">
         <SceneText text={m.content} />
-        {m.edited && <span className="mt-1 block text-right text-[11px] text-textMuted">editada</span>}
+        {m.edited && <span className="mt-1 block text-right text-[11px] text-textMuted">{tr("editada")}</span>}
         </div>
         {isLast && !busy && <ChatActions offline={offline} onContinue={onContinue} onRegenerate={onRegenerate} />}
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-textMuted">
         {m.versionCount > 1 && (
           <button onClick={() => onVersions(m)} className="flex items-center gap-1 underline-offset-2 hover:underline">
-            <Layers size={12} /> {m.versionCount} versões
-          </button>
+            <Layers size={12} /> {m.versionCount}{tr(" versões\n          ")}</button>
         )}
-        {note && <span className={m.status === 'error' ? 'text-red-300' : 'text-yellow-300'}>{note}</span>}
+        {note && <span className={m.status === 'error' ? 'text-red-300' : 'text-yellow-300'}>{tr(note)}</span>}
         {m.usage?.provider?.effortOk === false && (
           <span className="text-red-300">
-            {m.usage.provider.thinkingEnabled === false ? '⚠ não foi possível confirmar o pensamento desligado no provedor' : `⚠ provedor recebeu esforço ${m.usage.provider.effortSent ?? 'nenhum'} (esperado ${m.usage.provider.effortExpected})`}
+            {m.usage.provider.thinkingEnabled === false ? tr("⚠ não foi possível confirmar o pensamento desligado no provedor") : tr("⚠ provedor recebeu esforço {0} (esperado {1})", [m.usage.provider.effortSent ?? tr("nenhum"), m.usage.provider.effortExpected])}
           </span>
         )}
         {isLast && m.usage && !busy && <UsageLine usage={m.usage} />}
@@ -833,6 +838,7 @@ const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, on
 // Composer with its own state: typing re-renders only this component, not the history. The draft is saved
 // with a delay (and on exit/when the app is hidden), since every write encrypts the whole private storage.
 const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend }, ref) {
+  useLanguage();
   const [value, setValue] = useState(() => api.getDraft(chatId));
   const textRef = useRef(null);
   const valueRef = useRef(value);
@@ -894,12 +900,12 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
               rows={1}
               value={value}
               maxLength={6000}
-              placeholder="Digite uma mensagem"
+              placeholder={tr("Digite uma mensagem")}
               enterKeyHint="enter"
               onChange={change}
               onBlur={flushDraft}
               spellCheck={true}
-              lang="pt-BR, en"
+
               autoCorrect="on"
               autoCapitalize="sentences"
               className="mc-composer-input min-w-0 max-h-[160px] flex-1 resize-none bg-transparent py-2 text-[16px] outline-none placeholder:text-textMuted"
@@ -908,15 +914,14 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
               onClick={() => onSend(value)}
               disabled={!value.trim() || busy || offline || value.length > 6000}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accentPurple text-white transition-[transform,opacity] active:scale-90 disabled:opacity-30 mb-0.5"
-              aria-label="Enviar"
+              aria-label={tr("Enviar")}
             >
               <SendHorizontal size={20} />
             </button>
           </div>
           {value.length > 4800 && (
             <p className="pointer-events-auto px-4 pt-1 text-right text-xs text-textMuted">
-              {value.length.toLocaleString('pt-BR')} / 6.000 caracteres
-            </p>
+              {value.length.toLocaleString('pt-BR')}{tr(" / 6.000 caracteres\n            ")}</p>
           )}
         </div>
       </div>
@@ -925,6 +930,7 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
 });
 
 export function UsageLine({ usage }) {
+  useLanguage();
   // preference: real provider count (request log); then the one returned by the gateway; otherwise an estimate (~)
   const real = usage.provider?.usage;
   const est = (k) => (usage.method?.[k] === 'estimated' ? '~' : '');
@@ -933,28 +939,29 @@ export function UsageLine({ usage }) {
   const reasoning = real?.reasoning ?? usage.reasoning;
   const p = usage.provider;
   return (
-    <span title="Sem ~ = contado pelo provedor; ~ = estimado localmente">
+    <span title={tr("Sem ~ = contado pelo provedor; ~ = estimado localmente")}>
       ↑{real ? '' : est('input')}{fmtTokens(input)} ↓{real ? '' : est('output')}{fmtTokens(output)}
-      {reasoning != null ? ` · raciocínio ${real || usage.method?.reasoning === 'measured' ? '' : '~'}${fmtTokens(reasoning)}` : ''}
-      {real?.cacheRead ? ` · cache ${fmtTokens(real.cacheRead)}` : ''}
-      {p?.thinkingEnabled === false ? ` · pensamento desligado${p.thinkingOk ? ' ✓' : ''}` : p?.effortOk ? ` · esforço ${p.effortSent} ✓` : ''}
+      {reasoning != null ? tr(" · raciocínio {0}{1}", [real || usage.method?.reasoning === 'measured' ? '' : '~', fmtTokens(reasoning)]) : ''}
+      {real?.cacheRead ? tr(" · cache {0}", [fmtTokens(real.cacheRead)]) : ''}
+      {p?.thinkingEnabled === false ? tr(" · pensamento desligado{0}", [p.thinkingOk ? ' ✓' : '']) : p?.effortOk ? tr(" · esforço {0} ✓", [p.effortSent]) : ''}
     </span>
   );
 }
 
 // The footer is a sibling of the long-press text: tapping the icons never opens the message menu.
 function ChatActions({ offline, retry, onContinue, onRegenerate, onStop, stopping }) {
+  useLanguage();
   const isolate = (e) => e.stopPropagation();
   const retryLabel = retry ? 'Tentar responder de novo' : 'Refazer a última resposta';
   return (
     <div className="mc-chat-actions" onTouchStart={isolate} onPointerDown={isolate} onClick={isolate} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}>
       {onStop ? (
-        <button type="button" onClick={onStop} disabled={stopping} className={`mc-chat-action ${stopping ? 'mc-stopping' : ''}`} aria-label="Parar geração" aria-busy={stopping || undefined} title="Parar geração">
+        <button type="button" onClick={onStop} disabled={stopping} className={`mc-chat-action ${stopping ? 'mc-stopping' : ''}`} aria-label={tr("Parar geração")} aria-busy={stopping || undefined} title={tr("Parar geração")}>
           <Square size={16} aria-hidden="true" />
         </button>
       ) : (
         <>
-          {!retry && <button type="button" disabled={offline} onClick={onContinue} className="mc-chat-action" aria-label="Continuar a cena" title="Continuar a cena">
+          {!retry && <button type="button" disabled={offline} onClick={onContinue} className="mc-chat-action" aria-label={tr("Continuar a cena")} title={tr("Continuar a cena")}>
             <FastForward size={22} aria-hidden="true" />
           </button>}
           <button type="button" disabled={offline} onClick={onRegenerate} className="mc-chat-action" aria-label={retryLabel} title={retryLabel}>
@@ -970,6 +977,7 @@ function ChatActions({ offline, retry, onContinue, onRegenerate, onStop, stoppin
 // vsync (60-120 per second) during the whole wait. Paused when the connection dropped, with the tab hidden or with
 // "reduce motion": an idle screen produces no frames.
 function ThinkingDots({ idle }) {
+  useLanguage();
   const [lit, setLit] = useState(1);
   useEffect(() => {
     if (idle) { setLit(3); return undefined; }
@@ -989,6 +997,7 @@ function ThinkingDots({ idle }) {
 }
 
 function StreamCard({ onStop, idle }) {
+  useLanguage();
   const [stopping, setStopping] = useState(false);
   const timer = useRef(0);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -1004,8 +1013,8 @@ function StreamCard({ onStop, idle }) {
   return (
     <div className="mc-assistant">
       <div className="mc-generation">
-          <div role="status" aria-live="polite" aria-label={stopping ? 'Parando...' : 'Pensando...'} className="mc-preparing text-sm text-textMuted">
-            <span aria-hidden="true">{stopping ? 'Parando' : 'Pensando'}<ThinkingDots idle={idle || stopping} /></span>
+          <div role="status" aria-live="polite" aria-label={stopping ? tr("Parando...") : tr("Pensando...")} className="mc-preparing text-sm text-textMuted">
+            <span aria-hidden="true">{stopping ? tr("Parando") : tr("Pensando")}<ThinkingDots idle={idle || stopping} /></span>
           </div>
         <ChatActions onStop={stop} stopping={stopping} />
       </div>
@@ -1014,6 +1023,7 @@ function StreamCard({ onStop, idle }) {
 }
 
 function EditSheet({ msg, onCancel, onSave }) {
+  useLanguage();
   const [v, setV] = useState(msg.content);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1022,26 +1032,26 @@ function EditSheet({ msg, onCancel, onSave }) {
   return (
     <div className="mc-editor fixed inset-0 z-50 flex flex-col bg-bgDark" style={{ paddingTop: 'calc(var(--sat) + 8px)', paddingBottom: 'calc(var(--sab) + 12px)' }}>
       <div className="mc-col flex items-center justify-between px-4 pb-3">
-        <button onClick={onCancel} className="py-1 text-textMuted">Cancelar</button>
-        <span className="font-semibold">{isUser ? 'Editar sua mensagem' : 'Editar resposta'}</span>
+        <button onClick={onCancel} className="py-1 text-textMuted">{tr("Cancelar")}</button>
+        <span className="font-semibold">{isUser ? tr("Editar sua mensagem") : tr("Editar resposta")}</span>
         <button onClick={async () => {
           setSaving(true); setError('');
           try { await onSave(v); } catch (e) { setError(e.message); }
           finally { setSaving(false); }
         }} disabled={saving || !v.trim() || v.length > (isUser ? 6000 : 8000)} className="py-1 font-semibold text-accentPurpleLight disabled:opacity-30">
-          {saving ? 'Salvando…' : isUser ? 'Reenviar' : 'Salvar'}
+          {saving ? tr("Salvando…") : isUser ? tr("Reenviar") : tr("Salvar")}
         </button>
       </div>
-      {isUser && <p className="mc-col mb-2 px-4 text-xs text-textMuted">Cria um novo ramo: o caminho atual continua guardado e você pode voltar a ele.</p>}
-      {error && <p role="alert" className="mc-col px-4 pb-2 text-sm text-red-300">{error}</p>}
+      {isUser && <p className="mc-col mb-2 px-4 text-xs text-textMuted">{tr("Cria um novo ramo: o caminho atual continua guardado e você pode voltar a ele.")}</p>}
+      {error && <p role="alert" className="mc-col px-4 pb-2 text-sm text-red-300">{tr(error)}</p>}
       <textarea
         autoFocus
         value={v}
         maxLength={isUser ? 6000 : 8000}
         onChange={(e) => setV(e.target.value)}
-        aria-label="Texto da mensagem"
+        aria-label={tr("Texto da mensagem")}
         spellCheck={true}
-        lang="pt-BR, en"
+
         autoCorrect="on"
         autoCapitalize="sentences"
         className="mc-edit-text mx-auto min-h-0 flex-1 resize-none rounded-2xl bg-composer p-4 text-[16px] leading-relaxed outline-none"
@@ -1051,6 +1061,7 @@ function EditSheet({ msg, onCancel, onSave }) {
 }
 
 function VersionsSheet({ chatId, msg, onClose, onSelected }) {
+  useLanguage();
   const [list, setList] = useState(null);
   const [err, setErr] = useState('');
   useEffect(() => {
@@ -1065,14 +1076,14 @@ function VersionsSheet({ chatId, msg, onClose, onSelected }) {
   }
   const origin = { generate: 'Original', regenerate: 'Refeita', continue: 'Continuação', edit: 'Editada', legacy: 'Importada' };
   return (
-    <Sheet onClose={onClose} title="Alternativas desta resposta" full>
-      {err && <p className="px-3 text-sm text-red-300">{err}</p>}
-      {!list && !err && <p className="px-3 text-sm text-textMuted">Carregando…</p>}
+    <Sheet onClose={onClose} title={tr("Alternativas desta resposta")} full>
+      {err && <p className="px-3 text-sm text-red-300">{tr(err)}</p>}
+      {!list && !err && <p className="px-3 text-sm text-textMuted">{tr("Carregando…")}</p>}
       {list?.map((v, i) => (
         <button key={v.id} onClick={() => pick(v)} className="mb-2 block w-full rounded-2xl bg-cardDark px-4 py-3 text-left active:bg-cardDarkHover">
           <div className="mb-1 flex items-center gap-2 text-xs text-textMuted">
-            <span>#{i + 1} · {origin[v.origin] || v.origin}{v.status !== 'complete' ? ` · ${v.status}` : ''}</span>
-            {v.selected && <span className="flex items-center gap-1 text-emerald-300"><Check size={12} /> em uso</span>}
+            <span>#{i + 1} · {tr(origin[v.origin] || v.origin)}{v.status !== 'complete' ? ` · ${v.status}` : ''}</span>
+            {v.selected && <span className="flex items-center gap-1 text-emerald-300"><Check size={12} />{tr(" em uso")}</span>}
           </div>
           <p className="line-clamp-4 text-sm">{plainText(v.content)}</p>
         </button>
@@ -1082,28 +1093,29 @@ function VersionsSheet({ chatId, msg, onClose, onSelected }) {
 }
 
 function DetailSheet({ msg, chat, onClose }) {
+  useLanguage();
   const u = msg.usage;
   return (
-    <Sheet onClose={onClose} title="Detalhes da resposta">
+    <Sheet onClose={onClose} title={tr("Detalhes da resposta")}>
       <div className="space-y-1.5 px-3 pb-2 text-sm">
-        <Row k="Rota" v={msg.model || chat?.routeId} />
-        <Row k={u?.length?.thinkingEnabled === false ? 'Esforço guardado (quando ligado)' : 'Esforço pedido'} v={msg.effort || '—'} />
-        {u?.length?.thinkingEnabled != null && <Row k="Pensamento pedido" v={u.length.thinkingEnabled ? 'Ligado' : 'Desligado'} />}
-        {u?.length && <Row k="Tamanho enviado" v={`${u.length.maxCharacters} caracteres · ${u.length.mode === 'target' ? 'alvo aproximado' : 'máximo'}`} />}
-        {u?.length && <Row k="Orçamento da API" v={`${u.length.apiMaxTokens} tokens · ~${u.length.visibleTokens} de texto + margem e raciocínio`} />}
-        {u?.style?.after && <Row k="Tamanho recebido" v={`${u.style.after.characters} caracteres`} />}
-        {u?.style?.after?.maxMonologueCharacters > 0 && <Row k="Maior sequência de fala" v={`${u.style.after.longestMonologueCharacters} / ${u.style.after.maxMonologueCharacters} caracteres${u.style.after.monologueOk ? '' : ' · excedeu o ajuste'}`} />}
-        {u?.style?.attempted && <Row k="Ajuste da resposta" v={u.style.accepted ? 'Reescrita aplicada' : 'Original preservada; reescrita não aceita'} />}
-        {u && <Row k="Tokens de entrada" v={`${u.method?.input === 'estimated' ? '~' : ''}${u.input} (${u.method?.input === 'estimated' ? 'estimado' : 'medido'})`} />}
-        {u && <Row k="Tokens de saída" v={`${u.method?.output === 'estimated' ? '~' : ''}${u.output} (${u.method?.output === 'estimated' ? 'estimado' : 'medido'})`} />}
-        {u && <Row k="Raciocínio" v={u.reasoning == null ? 'não informado' : `${u.method?.reasoning === 'measured' ? '' : '~'}${u.reasoning} (${u.method?.reasoning === 'measured' ? 'medido' : 'estimado'})`} />}
-        {u?.finish && <Row k="Término" v={u.finish} />}
-        {u?.provider?.usage && <Row k="Entrada real (provedor)" v={`${u.provider.usage.input}${u.provider.usage.cacheRead ? ` · ${u.provider.usage.cacheRead} do cache` : ''}`} />}
-        {u?.provider && !u.provider.notFound && (u.provider.thinkingEnabled === false ? <Row k="Pensamento no provedor" v={u.provider.thinkingOk ? 'Desligado ✓' : 'Desligamento não confirmado'} /> : <Row k="Esforço no provedor" v={`${u.provider.effortSent ?? 'nenhum'} ${u.provider.effortOk ? '✓ confere com o preset' : `✗ esperado ${u.provider.effortExpected}`}`} />)}
-        {u?.provider?.notFound && <Row k="Esforço no provedor" v="não encontrado no registro do provedor" />}
-        <Row k="Estado" v={msg.status} />
-        <p className="pt-2 text-xs text-textMuted">O raciocínio interno do modelo nunca é exibido nem guardado; só a contagem aparece aqui.</p>
-        {msg.status && <p className="text-xs text-textMuted">Controle de esforço desta rota: {confirm[msg.effort ? 'sent_unconfirmed' : 'not_applicable'] ? '' : ''}veja o ponto colorido no cabeçalho.</p>}
+        <Row k={tr("Rota")} v={msg.model || chat?.routeId} />
+        <Row k={u?.length?.thinkingEnabled === false ? tr("Esforço guardado (quando ligado)") : tr("Esforço pedido")} v={msg.effort || '—'} />
+        {u?.length?.thinkingEnabled != null && <Row k={tr("Pensamento pedido")} v={u.length.thinkingEnabled ? tr("Ligado") : tr("Desligado")} />}
+        {u?.length && <Row k={tr("Tamanho enviado")} v={tr("{0} caracteres · {1}", [u.length.maxCharacters, u.length.mode === 'target' ? tr("alvo aproximado") : tr("máximo")])} />}
+        {u?.length && <Row k={tr("Orçamento da API")} v={tr("{0} tokens · ~{1} de texto + margem e raciocínio", [u.length.apiMaxTokens, u.length.visibleTokens])} />}
+        {u?.style?.after && <Row k={tr("Tamanho recebido")} v={tr("{0} caracteres", [u.style.after.characters])} />}
+        {u?.style?.after?.maxMonologueCharacters > 0 && <Row k={tr("Maior sequência de fala")} v={tr("{0} / {1} caracteres{2}", [u.style.after.longestMonologueCharacters, u.style.after.maxMonologueCharacters, u.style.after.monologueOk ? '' : tr(" · excedeu o ajuste")])} />}
+        {u?.style?.attempted && <Row k={tr("Ajuste da resposta")} v={u.style.accepted ? tr("Reescrita aplicada") : tr("Original preservada; reescrita não aceita")} />}
+        {u && <Row k={tr("Tokens de entrada")} v={`${u.method?.input === 'estimated' ? '~' : ''}${u.input} (${u.method?.input === 'estimated' ? tr("estimado") : tr("medido")})`} />}
+        {u && <Row k={tr("Tokens de saída")} v={`${u.method?.output === 'estimated' ? '~' : ''}${u.output} (${u.method?.output === 'estimated' ? tr("estimado") : tr("medido")})`} />}
+        {u && <Row k={tr("Raciocínio")} v={u.reasoning == null ? tr("não informado") : `${u.method?.reasoning === 'measured' ? '' : '~'}${u.reasoning} (${u.method?.reasoning === 'measured' ? tr("medido") : tr("estimado")})`} />}
+        {u?.finish && <Row k={tr("Término")} v={u.finish} />}
+        {u?.provider?.usage && <Row k={tr("Entrada real (provedor)")} v={`${u.provider.usage.input}${u.provider.usage.cacheRead ? tr(" · {0} do cache", [u.provider.usage.cacheRead]) : ''}`} />}
+        {u?.provider && !u.provider.notFound && (u.provider.thinkingEnabled === false ? <Row k={tr("Pensamento no provedor")} v={u.provider.thinkingOk ? tr("Desligado ✓") : tr("Desligamento não confirmado")} /> : <Row k={tr("Esforço no provedor")} v={`${u.provider.effortSent ?? tr("nenhum")} ${u.provider.effortOk ? tr("✓ confere com o preset") : tr("✗ esperado {0}", [u.provider.effortExpected])}`} />)}
+        {u?.provider?.notFound && <Row k={tr("Esforço no provedor")} v={tr('não encontrado no registro do provedor')} />}
+        <Row k={tr("Estado")} v={msg.status} />
+        <p className="pt-2 text-xs text-textMuted">{tr("O raciocínio interno do modelo nunca é exibido nem guardado; só a contagem aparece aqui.")}</p>
+        {msg.status && <p className="text-xs text-textMuted">{tr("Controle de esforço desta rota: ")}{confirm[msg.effort ? 'sent_unconfirmed' : 'not_applicable'] ? '' : ''}{tr("veja o ponto colorido no cabeçalho.")}</p>}
       </div>
     </Sheet>
   );

@@ -1,3 +1,5 @@
+import { useConfirm } from './ConfirmProvider.jsx';
+import { tr, useLanguage } from '../i18n.js';
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Plus, Search, Settings, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, X, Brain, Pencil } from 'lucide-react';
 import { api } from '../api.js';
@@ -9,10 +11,12 @@ import RenameModal from './RenameModal.jsx';
 
 function preview(text) {
   const t = plainText(text || '').replace(/\s+/g, ' ');
-  return t || 'Sem mensagens ainda.';
+  return t || tr('Sem mensagens ainda.');
 }
 
 export default function ChatList({ chats, offline, error, archivedView, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
+  const confirm = useConfirm();
+  useLanguage();
   const [searching, setSearching] = useState(false);
   const [sheet, setSheet] = useState(null);
   const [hits, setHits] = useState(null);
@@ -80,7 +84,7 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
         <div className="mc-col flex items-center justify-between gap-2">
           {/* Title isolated in its own bubble */}
           <div className="mc-glass-pill pointer-events-auto flex items-center rounded-full px-4 py-2 shadow-lg">
-            <h1 className="text-[19px] font-extrabold tracking-tight">{archivedView ? 'Arquivadas' : 'Conversas'}</h1>
+            <h1 className="text-[19px] font-extrabold tracking-tight">{archivedView ? tr("Arquivadas") : tr("Conversas")}</h1>
           </div>
 
           {/* Action icons in individual round bubbles */}
@@ -88,28 +92,28 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
             <button
               onClick={() => setSearching((v) => !v)}
               className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label="Buscar"
+              aria-label={tr("Buscar")}
             >
               <Search size={19} />
             </button>
             <button
               onClick={onToggleArchived}
               className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label="Arquivadas"
+              aria-label={tr("Arquivadas")}
             >
               {archivedView ? <ArchiveRestore size={19} /> : <Archive size={19} />}
             </button>
             <button
               onClick={onGlobal}
               className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label="Configurações"
+              aria-label={tr("Configurações")}
             >
               <Settings size={19} />
             </button>
             <button
               onClick={onCreate}
               className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label="Novo chat"
+              aria-label={tr("Novo chat")}
             >
               <Plus size={20} />
             </button>
@@ -124,15 +128,15 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
                 autoFocus
                 value={text}
                 onChange={(e) => typeQuery(e.target.value)}
-                placeholder="Buscar conversas e mensagens"
+                placeholder={tr("Buscar conversas e mensagens")}
                 spellCheck={true}
-                lang="pt-BR, en"
+
                 autoCorrect="on"
                 autoCapitalize="sentences"
                 className="flex-1 bg-transparent text-[16px] outline-none placeholder:text-textMuted"
               />
               {text && (
-                <button onClick={() => typeQuery('')} aria-label="Limpar">
+                <button onClick={() => typeQuery('')} aria-label={tr("Limpar")}>
                   <X size={16} />
                 </button>
               )}
@@ -151,14 +155,13 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
           {offline && (
             <div className="px-4 pb-2">
               <div className="flex items-center gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
-                <WifiOff size={14} /> PC fora do alcance. Mostrando a cópia salva no aparelho (leitura e rascunhos).
-              </div>
+                <WifiOff size={14} />{tr(" PC fora do alcance. Mostrando a cópia salva no aparelho (leitura e rascunhos).\n              ")}</div>
             </div>
           )}
-          {error && !offline && <div className="px-4 pb-2 text-xs text-red-300">{error}</div>}
+          {error && !offline && <div className="px-4 pb-2 text-xs text-red-300">{tr(error)}</div>}
           {hits && hits.length > 0 && (
             <div className="px-4 pb-2 pt-3">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-textMuted">Mensagens encontradas</p>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-textMuted">{tr("Mensagens encontradas")}</p>
               {hits.map((h, i) => (
                 <button key={i} onClick={() => onOpen(h.convId)} className="mb-1 block w-full rounded-xl bg-cardDark px-3 py-2 text-left active:bg-cardDarkHover">
                   <span className="text-xs text-textMuted">{h.convName}</span>
@@ -169,11 +172,9 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
           )}
           {chats.length === 0 && (
             <div className="px-8 pt-24 text-center text-textMuted">
-              <p className="mb-4">{archivedView ? 'Nada arquivado.' : 'Nenhuma conversa ainda.'}</p>
+              <p className="mb-4">{archivedView ? tr("Nada arquivado.") : tr("Nenhuma conversa ainda.")}</p>
               {!archivedView && (
-                <button onClick={onCreate} className="rounded-full bg-accentPurple px-6 py-3 font-semibold text-white">
-                  Criar primeiro chat
-                </button>
+                <button onClick={onCreate} className="rounded-full bg-accentPurple px-6 py-3 font-semibold text-white">{tr("\n                  Criar primeiro chat\n                ")}</button>
               )}
             </div>
           )}
@@ -185,10 +186,10 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
 
       {sheet && (
         <Sheet onClose={() => setSheet(null)} title={sheet.name}>
-          <SheetButton icon={<Pin size={20} />} label={sheet.pinned ? 'Desafixar' : 'Fixar no topo'} onClick={() => act(() => api.updateChat(sheet.id, { pinned: !sheet.pinned }))} />
+          <SheetButton icon={<Pin size={20} />} label={sheet.pinned ? tr("Desafixar") : tr("Fixar no topo")} onClick={() => act(() => api.updateChat(sheet.id, { pinned: !sheet.pinned }))} />
           <SheetButton
             icon={<Pencil size={20} />}
-            label="Renomear conversa"
+            label={tr("Renomear conversa")}
             onClick={() => {
               setRenameChat(sheet);
               setSheet(null);
@@ -196,17 +197,17 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
           />
           <SheetButton
             icon={sheet.archived ? <ArchiveRestore size={20} /> : <Archive size={20} />}
-            label={sheet.archived ? 'Desarquivar' : 'Arquivar'}
+            label={sheet.archived ? tr("Desarquivar") : tr("Arquivar")}
             onClick={() => act(() => api.updateChat(sheet.id, { archived: !sheet.archived }))}
           />
-          <SheetButton icon={<Copy size={20} />} label="Duplicar personagem (conversa limpa)" onClick={() => act(() => api.duplicateChat(sheet.id), 'Conversa duplicada')} />
-          <SheetButton icon={<Download size={20} />} label="Exportar conversa" onClick={() => exportChat(sheet)} />
+          <SheetButton icon={<Copy size={20} />} label={tr("Duplicar personagem (conversa limpa)")} onClick={() => act(() => api.duplicateChat(sheet.id), tr("Conversa duplicada"))} />
+          <SheetButton icon={<Download size={20} />} label={tr("Exportar conversa")} onClick={() => exportChat(sheet)} />
           <SheetButton
             icon={<Trash2 size={20} />}
             danger
-            label="Excluir (recuperável por 30 dias)"
-            onClick={() => {
-              if (confirm(`Excluir "${sheet.name}"? Ela fica na lixeira por 30 dias.`)) act(() => api.deleteChat(sheet.id), 'Movida para a lixeira');
+            label={tr("Excluir (recuperável por 30 dias)")}
+            onClick={async () => {
+              if (await confirm(tr("Excluir \"{0}\"? Ela fica na lixeira por 30 dias.", [sheet.name]))) act(() => api.deleteChat(sheet.id), tr("Movida para a lixeira"));
               else setSheet(null);
             }}
           />
@@ -219,18 +220,18 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
 
       {renameChat && (
         <RenameModal
-          title={`Renomear "${renameChat.name}"`}
+          title={tr("Renomear \"{0}\"", [renameChat.name])}
           initial={renameChat.name}
           onClose={() => setRenameChat(null)}
           onSave={async (newName) => {
-            await act(() => api.updateChat(renameChat.id, { name: newName }), 'Conversa renomeada');
+            await act(() => api.updateChat(renameChat.id, { name: newName }), tr("Conversa renomeada"));
           }}
         />
       )}
 
       {toast && (
         <div className="pointer-events-none fixed inset-x-0 bottom-8 z-[60] flex justify-center">
-          <span className="rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-black">{toast}</span>
+          <span className="rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-black">{tr(toast)}</span>
         </div>
       )}
     </div>
@@ -239,6 +240,7 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
 
 // Memoized: the list only re-renders conversations whose content changed (see App.jsx, which reuses equal objects).
 const ChatRow = memo(function ChatRow({ chat, onOpen, onMenu, onViewAvatar }) {
+  useLanguage();
   const press = useLongPress(() => onMenu(chat), 550);
   return (
     <button {...press} className="mc-list-row flex w-full items-center gap-3 px-4 py-3 text-left active:bg-cardDarkHover" onClick={() => onOpen(chat.id)}>
@@ -250,7 +252,7 @@ const ChatRow = memo(function ChatRow({ chat, onOpen, onMenu, onViewAvatar }) {
           onViewAvatar({ name: chat.name, avatar: chat.avatar });
         }}
         className="shrink-0 active:scale-95 transition-transform"
-        aria-label={`Ver foto de ${chat.name}`}
+        aria-label={tr("Ver foto de {0}", [chat.name])}
       >
         <Avatar name={chat.name} avatar={chat.avatar} size={60} />
       </span>
@@ -266,12 +268,11 @@ const ChatRow = memo(function ChatRow({ chat, onOpen, onMenu, onViewAvatar }) {
         <div className="mt-1 flex items-center gap-2 text-[11px] text-textMuted">
           {chat.generating && (
             <span className="flex items-center gap-1 text-accentPurpleLight">
-              <span className="h-1.5 w-1.5 rounded-full bg-accentPurpleLight" /> respondendo
-            </span>
+              <span className="h-1.5 w-1.5 rounded-full bg-accentPurpleLight" />{tr(" respondendo\n            ")}</span>
           )}
           {chat.pendingJobs > 0 && (
             <span className="flex items-center gap-1">
-              <Brain size={11} /> memória pendente ({chat.pendingJobs})
+              <Brain size={11} />{tr(" memória pendente (")}{chat.pendingJobs})
             </span>
           )}
         </div>

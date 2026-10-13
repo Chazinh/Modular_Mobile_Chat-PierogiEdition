@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#7C3AED</color>
+    <color name="colorPrimaryDark">#1B1B1D</color>
+    <color name="colorAccent">#C4B5FD</color>
+    <color name="mc_surface">#1E1D26</color>
+    <color name="mc_text">#E7E7EA</color>
+    <color name="mc_muted">#B7AEC6</color>
+</resources>

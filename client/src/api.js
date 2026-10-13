@@ -4,37 +4,21 @@
 import { kv } from './kv.js';
 import { privateGet, privateSet, initializePrivacy, privacyNeedsPairing } from './private-storage.js';
 import { DEFAULT_PRESETS } from './default-presets.js';
+import { currentServer, configuredConnection, configureConnection, setConfiguredServer, hasConfiguredServer, resolveServer, connectionFailed } from './server-connection.js';
 
-const LS_SERVER = 'mc.server';
 const LS_TOKEN = 'mc.token';
-
-const ls = {
-  get(k) {
-    try {
-      return localStorage.getItem(k);
-    } catch {
-      return null;
-    }
-  },
-  set(k, v) {
-    try {
-      if (v == null) localStorage.removeItem(k);
-      else localStorage.setItem(k, v);
-    } catch {
-      /* storage unavailable */
-    }
-  },
-};
 
 export const isNative = () => !!(typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.());
 
 export const config = {
   get server() {
-    return (ls.get(LS_SERVER) || '').replace(/\/+$/, '');
+    return currentServer();
   },
   set server(v) {
-    ls.set(LS_SERVER, v ? String(v).trim().replace(/\/+$/, '') : null);
+    setConfiguredServer(v);
   },
+  get connection() { return configuredConnection(); },
+  configureConnection,
   get token() {
     return privateGet(LS_TOKEN) || '';
   },
@@ -42,7 +26,7 @@ export const config = {
     privateSet(LS_TOKEN, v || null).catch(()=>{});
   },
   get needsServer() {
-    return isNative() && !this.server;
+    return isNative() && !hasConfiguredServer();
   },
 };
 
@@ -54,7 +38,7 @@ export function uuid() {
   });
 }
 
-const url = (p) => `${config.server}${p}`;
+const url = async (p, signal) => `${await resolveServer(signal)}${p}`;
 const headers = (json = true) => {
   const h = {};
   if (json) h['Content-Type'] = 'application/json';
@@ -79,9 +63,10 @@ async function request(method, path, body, { signal } = {}) {
   signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
   let res;
   try {
-    res = await fetch(url(path), { method, headers: headers(!!body), body: body ? JSON.stringify(body) : undefined, signal });
+    res = await fetch(await url(path, signal), { method, headers: headers(!!body), body: body ? JSON.stringify(body) : undefined, signal, redirect: 'error' });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
+    connectionFailed();
     throw new ApiError('Sem conexão com o PC.', 0, { offline: true });
   }
   const data = await res.json().catch(() => ({}));
@@ -130,10 +115,11 @@ async function openStream(method, path, body, signal) {
   const handshake = new AbortController();
   const timer = setTimeout(() => handshake.abort(), 15000);
   try {
-    res = await fetch(url(path), { method, headers: headers(!!body), body: body ? JSON.stringify(body) : undefined,
-      signal: signal ? AbortSignal.any([signal, handshake.signal]) : handshake.signal });
+    const combined = signal ? AbortSignal.any([signal, handshake.signal]) : handshake.signal;
+    res = await fetch(await url(path, combined), { method, headers: headers(!!body), body: body ? JSON.stringify(body) : undefined, signal: combined, redirect: 'error' });
   } catch (e) {
     if (signal?.aborted) throw e;
+    connectionFailed();
     throw new ApiError('Sem conexão com o PC.', 0, { offline: true });
   } finally {
     clearTimeout(timer);
@@ -177,7 +163,12 @@ if (typeof document !== 'undefined') {
 const CACHE_LIST = 'chats';
 const CACHE_CHAT = (id) => `chat.${id}`;
 const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'kimi-k3', 'muse-spark-13', 'step-5-preview', 'glm-52']);
-export const publicPresets = data => data ? { ...data, presets: (data.presets || []).filter(p => PUBLIC_PRESETS.has(p.id)) } : null;
+export const publicPresets = data => data ? {
+  ...data,
+  presets: (data.presets || [])
+    .filter(p => PUBLIC_PRESETS.has(p.id))
+    .map(p => p.id === 'glm-52' ? { ...p, label: 'GLM' } : p),
+} : null;
 
 export const api = {
   // ----- cache local (IndexedDB) -----
@@ -296,7 +287,7 @@ export const api = {
   search: (q, chat) => request('GET', `/api/search?q=${encodeURIComponent(q)}${chat ? `&chat=${chat}` : ''}`),
   backup: () => request('POST', '/api/backup'),
   async exportAll(chatId) {
-    const res = await fetch(url(chatId ? `/api/chats/${chatId}/export` : '/api/export'), { headers: headers(false) });
+    const res = await fetch(await url(chatId ? `/api/chats/${chatId}/export` : '/api/export'), { headers: headers(false), redirect: 'error' });
     if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
     return res.json();
   },
@@ -306,11 +297,13 @@ export const api = {
   // onEvent receives: { ack } | { delta } | { done, status, message, error, usage } | { error }
   async sendMessage(id, payload, onEvent, signal) {
     const res = await openStream('POST', `/api/chats/${id}/message`, payload, signal);
-    await readSSE(res, onEvent, true);
+    try { await readSSE(res, onEvent, true); }
+    catch (error) { if (!signal?.aborted) connectionFailed(); throw error; }
   },
   async attachGeneration(chatId, genId, from, onEvent, signal) {
     const res = await openStream('GET', `/api/chats/${chatId}/generations/${genId}/stream?from=${from}`, null, signal);
-    await readSSE(res, onEvent, true);
+    try { await readSSE(res, onEvent, true); }
+    catch (error) { if (!signal?.aborted) connectionFailed(); throw error; }
   },
 
   // ----- cross-device sync events -----
@@ -322,6 +315,7 @@ export const api = {
         await readSSE(res, onEvent);
       } catch (e) {
         if (e.name === 'AbortError') return;
+        connectionFailed();
       }
       await new Promise((r) => {
         const timer = setTimeout(done, 3000);

@@ -1,0 +1,107 @@
+{
+	admin __ADMIN_ADDRESS__
+	skip_install_trust
+	storage file_system {
+		root "__RUNTIME__/data"
+	}
+	log default {
+		output file "__RUNTIME__/logs/runtime.json" {
+			roll_size 10MiB
+			roll_keep 3
+		}
+		level INFO
+	}
+	servers {
+		protocols h1 h2
+	}
+}
+
+# A sessao separa o login web do Authorization: Bearer usado pelo aplicativo.
+# Apenas o login usa Basic; as requisicoes do app conservam o token de pareamento.
+(modularchat_backend) {
+	reverse_proxy http://127.0.0.1:__BACKEND_PORT__ {
+		header_up Host {http.request.host}
+		header_down Set-Cookie "^mc_session=(.*)$" "mc_session=$1; Secure"
+		# Caddy descarrega text/event-stream imediatamente, sem buffer adicional.
+		transport http {
+			dial_timeout 5s
+		}
+	}
+}
+
+(modularchat_gateway) {
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+	@entrar {
+		path /_host/login
+		method GET
+	}
+	@sessao expression {http.request.cookie.__Host-modularchat_gateway} == "__SESSION_TOKEN__"
+	@novo_codigo path /api/pair/start
+	@basic header Authorization "Basic *"
+	@api_com_token {
+		path /api/*
+		header Authorization "Bearer *"
+	}
+	@pareamento_lan {
+		remote_ip 127.0.0.1 ::1 __LAN_SUBNET__
+		path /api/health /api/pair /api/pair/info
+	}
+	@preflight {
+		method OPTIONS
+		path /api/*
+	}
+	# The backend validates CORS origins; OPTIONS never executes an API operation.
+	route {
+		respond @novo_codigo "Gere o codigo de pareamento no computador." 403
+		handle @preflight {
+			import modularchat_backend
+		}
+		handle @entrar {
+			route {
+				basic_auth argon2id ModularChat {
+					__WEB_USER__ __PASSWORD_HASH__
+				}
+				header Cache-Control "no-store"
+				header Set-Cookie "__Host-modularchat_gateway=__SESSION_TOKEN__; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200"
+				redir * / 303
+			}
+		}
+		handle @pareamento_lan {
+			import modularchat_backend
+		}
+		handle @api_com_token {
+			route {
+				respond @novo_codigo "Gere o codigo de pareamento no computador." 403
+				# Um Bearer arbitrario nao abre o proxy: o servidor verifica o aparelho primeiro.
+				forward_auth http://127.0.0.1:__BACKEND_PORT__ {
+					uri /api/privacy/cache-key
+				}
+				import modularchat_backend
+			}
+		}
+		handle @sessao {
+			# O proxy se conecta por loopback; nao publique a operacao originalmente local.
+			respond @novo_codigo "Gere o codigo de pareamento no computador." 403
+			request_header @basic -Authorization
+			import modularchat_backend
+		}
+		handle /api/* {
+			header Content-Type application/json
+			header Cache-Control "no-store"
+			respond `{"error":"Abra o site novamente para entrar.","code":"WEB_LOGIN_REQUIRED"}` 401
+		}
+		handle {
+			redir * /_host/login 303
+		}
+	}
+}
+
+__LOCAL_SITE__
+
+__LAN_SITE__
+
+__PUBLIC_SITE__
