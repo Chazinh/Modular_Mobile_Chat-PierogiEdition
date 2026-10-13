@@ -79,20 +79,28 @@ export class VelocityTracker {
 }
 
 const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 
 // First frame of an animation: the requestAnimationFrame timestamp is the frame start and can be EARLIER than the
 // performance.now() read when the animation was scheduled. A negative dt froze the first frame (a visible hitch right
 // after letting go); a missing previous timestamp counts as one frame instead.
 export const frameDt = (now, last) => (last ? clamp((now - last) / 1000, 0, 0.05) : 1 / 60);
 
-// "Staircase": the items of a side panel arrive one after another from top to bottom, as a function of the panel's
-// open progress p (0 = closed, 1 = open), so the effect follows the finger, can be held halfway and plays backwards
-// when closing. Only transform/opacity; the items are measured once per gesture/animation and released at rest.
+// "Staircase": the items of a side panel appear one after another, top to bottom. Each row waits its turn (`delay`
+// ms after the row above it, counted from the start of the gesture/animation), hidden where the panel started, and
+// then chases the panel with its own critically damped spring (continuous every frame: no replayed samples, no
+// steps), so the rows clearly surface one by one instead of arriving together. Only while OPENING
+// (a row never runs ahead of the panel): closing moves everything together. Only transform/opacity, only the rows
+// on screen; at rest (fully open or closed) no inline styles or extra layers remain.
 export class Staircase {
-  constructor(getItems, { shift = 64, step = 0.055, spread = 0.38 } = {}) {
-    Object.assign(this, { getItems, shift, step, spread });
+  constructor(getItems, { k = 210, falloff = 0.1, delay = 55, max = 14 } = {}) {
+    Object.assign(this, { getItems, k, falloff, delay, max });
+    this.t0 = 0;
     this.items = null;
+    this.st = [];
+    this.p = 0;
+    this.closed = 1;
+    this.last = 0;
+    this.raf = 0;
   }
   collect() {
     const h = window.innerHeight;
@@ -100,30 +108,69 @@ export class Staircase {
     this.items = Array.from(this.getItems() || []).filter((el) => {
       const r = el.getBoundingClientRect();
       return r.height > 0 && r.top < h && r.bottom > 0;
-    }).slice(0, 16);
-    const span = Math.min(this.spread, this.step * Math.max(0, this.items.length - 1));
-    this.window = 1 - span;
-    this.items.forEach((el, i) => {
-      el.__mcDelay = this.items.length > 1 ? (span * i) / (this.items.length - 1) : 0;
+    }).slice(0, this.max);
+    // every row starts where the panel was when the gesture/animation began
+    this.st = this.items.map(() => ({ x: this.p, v: 0 }));
+    for (const el of this.items) {
       el.style.willChange = 'transform, opacity';
       el.style.transition = 'none'; // .mc-row's press transition would smear the per-frame writes
-    });
+    }
   }
-  render(p) {
-    if (!this.items) this.collect();
-    for (const el of this.items) {
-      const q = easeOut(clamp((p - el.__mcDelay) / this.window, 0, 1));
-      if (q >= 1) {
+  push(p, closed, now = performance.now()) {
+    if (!this.items) {
+      this.collect();
+      this.t0 = now; // the turns are counted from here
+    }
+    this.p = p;
+    this.closed = closed;
+    this.draw(now);
+    if (!this.raf && typeof requestAnimationFrame === 'function') this.raf = requestAnimationFrame(this.loop);
+  }
+  // advances every row's spring to `now`; returns true while some row is still behind the panel
+  draw(now) {
+    const dt = this.last ? clamp((now - this.last) / 1000, 0, 0.05) : 1 / 60;
+    this.last = now;
+    let behind = false;
+    (this.items || []).forEach((el, i) => {
+      const s = this.st[i];
+      if (this.p <= s.x) {
+        s.x = this.p; // closing (or caught up): the row goes with the panel
+        s.v = 0;
+      } else if (now - this.t0 < i * this.delay) {
+        // not its turn yet: stays where the panel started, hidden
+      } else if (dt > 0) {
+        const k = this.k / (1 + i * this.falloff);
+        const r = springStep(s, this.p, dt, k, 2 * Math.sqrt(k));
+        s.x = Math.min(r.x, this.p);
+        s.v = r.v;
+      }
+      const offset = (this.p - s.x) * this.closed; // px behind the panel
+      if (offset < 0.5) {
+        s.x = this.p;
+        s.v = 0;
         el.style.transform = '';
         el.style.opacity = '';
       } else {
-        el.style.transform = `translate3d(${((1 - q) * this.shift).toFixed(2)}px,0,0)`;
-        el.style.opacity = (0.15 + 0.85 * q).toFixed(3);
+        behind = true;
+        el.style.transform = `translate3d(${offset.toFixed(2)}px,0,0)`;
+        el.style.opacity = (1 - clamp(offset / (this.closed * 0.45), 0, 1)).toFixed(3); // waiting rows are invisible
       }
-    }
+    });
+    return behind;
   }
-  // at rest (open or closed): no inline styles or extra layers left behind; the next gesture measures again
+  // keeps the rows gliding after the finger stops or the panel's spring settles
+  loop = () => {
+    this.raf = 0;
+    if (!this.items) return;
+    if (this.draw(performance.now())) {
+      this.raf = requestAnimationFrame(this.loop);
+    } else if (this.p >= 1 || this.p <= 0) {
+      this.release();
+    }
+  };
   release() {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
     for (const el of this.items || []) {
       el.style.transform = '';
       el.style.opacity = '';
@@ -131,6 +178,8 @@ export class Staircase {
       el.style.transition = '';
     }
     this.items = null;
+    this.st = [];
+    this.last = 0;
   }
 }
 
@@ -162,7 +211,7 @@ export class PanelMotion {
     this.panel.style.transform = t;
     const p = clamp(1 - this.x / this.closed, 0, 1);
     if (this.scrim) this.scrim.style.opacity = p.toFixed(3);
-    this.stagger?.render(p);
+    this.stagger?.push(p, this.closed);
   }
 
   // Finger moves are coalesced into one write per display frame (never two layouts in the same frame).
@@ -256,7 +305,6 @@ export class PanelMotion {
     this.raf = requestAnimationFrame(this.tick);
   };
   finish(target) {
-    this.stagger?.release();
     if (target === 'closed') this.onClosed?.();
     else this.onOpened?.();
   }
@@ -264,6 +312,7 @@ export class PanelMotion {
   destroy() {
     this.dead = true;
     this.stop();
+    this.stagger?.release();
   }
 }
 

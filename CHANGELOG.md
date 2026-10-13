@@ -49,11 +49,16 @@ without a published version; assessments do not represent implemented features.
     elastic) was a repeated frame because of a negative `dt`; `frameDt` now always
     advances one frame. Drawer and sheet drags are also coalesced to one write per
     frame;
-  - side drawer (`Staircase` in `drawer-motion.js`, `SettingsDrawer.jsx`): the
-    menu bubbles arrive one after another from top to bottom, following the
-    drawer's progress. They follow the finger, can be held halfway and play in
-    reverse when closing. Only transform and opacity are animated, only for items
-    on screen, and nothing is left applied at rest;
+  - side drawer (`Staircase` in `drawer-motion.js`, `SettingsDrawer.jsx`): each
+    menu bubble, from top to bottom, waits for its turn (55 ms after the row
+    above it), stays invisible at the starting point and then chases the panel with
+    its own critically damped spring. While pulling or releasing, the rows appear
+    one by one from top to bottom in a smooth cascade, continuous on every frame,
+    with no jumps and never ahead of the panel; when closing, everything moves
+    together. Only transform and opacity are animated, only for rows on screen, and
+    nothing is left applied at rest. Earlier versions tied the delay to the opening
+    progress (64 px) or to a 32 ms delay line, and were imperceptible or stepped,
+    so they were replaced;
   - `elastic.js`: when the finger reversed direction while stretched, the stretch
     dropped to 0 in one frame (a jump of up to 48 px); it now returns with a spring
     from where it is. In lists that do not scroll (the drawer menu) the stretch is
@@ -63,8 +68,9 @@ without a published version; assessments do not represent implemented features.
 - Tests: `server-rust/tests/context_contracts.rs` checks the order context → plan →
   message → reminder; `tests/api.test.js` checks that the final turn starts with
   `[PLANO DA RESPOSTA]` and that the message follows `[FIM DO PLANO]`;
-  `tests/drawer-motion.test.js` covers the staircase and the first frame of the
-  springs.
+  `tests/drawer-motion.test.js` covers the staircase (top-to-bottom cascade,
+  reaching the panel, closing together, nothing left at rest) and the first frame
+  of the springs.
 
 ### Home screen and chat interface — 2026-10-13
 

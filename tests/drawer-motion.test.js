@@ -116,25 +116,43 @@ test('primeiro quadro após soltar o dedo anda um quadro (sem dt negativo congel
   assert.equal(frameDt(5000, 1000), 0.05, 'quadro longo limitado');
 });
 
-test('escadinha: itens chegam de cima para baixo seguindo o progresso e ficam limpos em repouso', () => {
+test('escadinha: ao abrir, cada linha de cima para baixo persegue o painel com mola mais macia e todas alcançam', () => {
   const g = globalThis;
-  const saved = g.window;
+  const saved = { window: g.window, raf: g.requestAnimationFrame };
   g.window = { innerHeight: 800 };
+  g.requestAnimationFrame = undefined; // the test drives the frames
   try {
     const items = [0, 1, 2, 3].map((i) => ({ style: {}, getBoundingClientRect: () => ({ top: i * 60, bottom: i * 60 + 50, height: 50 }) }));
     const offscreen = { style: {}, getBoundingClientRect: () => ({ top: 900, bottom: 950, height: 50 }) };
     const stair = new Staircase(() => [...items, offscreen]);
     const shift = (el) => Number(/translate3d\(([\d.]+)px/.exec(el.style.transform || 'translate3d(0px')[1]);
-    stair.render(0);
-    assert.ok(items.every((el) => shift(el) === 64 && el.style.willChange), 'fechada: todos recuados');
+    stair.push(0, 400, 1000);
+    for (let t = 1016, p = 0.15; p <= 1; t += 16, p += 0.15) stair.push(Math.min(1, p), 400, t);
+    for (let i = 1; i < items.length; i++) assert.ok(shift(items[i]) >= shift(items[i - 1]), `degrau ${i}: o de baixo nunca adianta`);
+    assert.ok(shift(items[0]) < shift(items[1]) && shift(items[1]) < shift(items[2]), 'escada visível de cima para baixo');
+    for (let i = 1; i < items.length; i++) assert.ok(Number(items[i].style.opacity || 1) <= Number(items[i - 1].style.opacity || 1), `degrau ${i}: surge depois do de cima`);
+    assert.ok(Math.abs(shift(items[3]) - stair.p * 400) < 0.01, 'a última linha ainda espera a vez, no ponto de partida');
+    assert.equal(items[3].style.opacity, '0.000', 'esperando a vez fica invisível');
+    assert.ok(items.every((el) => el.style.willChange), 'camada só durante o movimento');
     assert.equal(offscreen.style.transform, undefined, 'fora da tela não é animado');
-    stair.render(0.4);
-    for (let i = 1; i < items.length; i++) assert.ok(shift(items[i]) > shift(items[i - 1]), `degrau ${i}: o de baixo atrasa`);
-    stair.render(1);
+    // smooth: between consecutive frames no row jumps more than the panel itself moved
+    let prev = items.map(shift);
+    for (let t = 1200; t < 1260; t += 16) {
+      stair.draw(t);
+      const now = items.map(shift);
+      assert.ok(now.every((x, i) => x <= prev[i] + 0.01), 'com o painel parado as linhas só se aproximam, sem saltos para trás');
+      prev = now;
+    }
+    let t = 1260;
+    while (stair.draw(t) && t < 4000) t += 16;
+    assert.ok(t < 4000, 'todas as linhas alcançam o painel');
     assert.ok(items.every((el) => el.style.transform === '' && el.style.opacity === ''), 'aberta: posição natural');
+    stair.push(0.4, 400, t + 16);
+    assert.ok(items.every((el) => el.style.transform === ''), 'ao fechar tudo vai junto');
     stair.release();
     assert.ok(items.every((el) => el.style.willChange === '' && el.style.transition === ''), 'repouso sem camadas extras');
   } finally {
-    g.window = saved;
+    g.window = saved.window;
+    g.requestAnimationFrame = saved.raf;
   }
 });
