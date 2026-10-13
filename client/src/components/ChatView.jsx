@@ -3,7 +3,7 @@ import { tr, useLanguage } from '../i18n.js';
 import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import {
   ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2, Brain,
-  ArrowDown, Layers, Info, WifiOff, Check,
+  ArrowDown, Layers, Info, WifiOff, Check, AlertTriangle,
 } from 'lucide-react';
 import { api, uuid } from '../api.js';
 import { useLayer } from '../nav.js';
@@ -25,6 +25,15 @@ const STATUS_NOTE = {
   length: 'Atingiu o limite de tamanho. Use Continuar para seguir.',
   error: 'A geração falhou depois de começar. O trecho recebido foi salvo.',
 };
+
+// A reply that stopped at a size limit: says which limit and what to do instead of leaving a silent stub.
+function lengthNotice(m) {
+  const finish = m.usage?.finish;
+  if (finish === 'length' || finish === 'max_tokens') return tr("O provedor encerrou a resposta pelo limite de tokens. Toque em Continuar para completá-la.");
+  const cut = m.usage?.length?.hardCharacters ?? m.usage?.length?.maxCharacters;
+  if (!cut) return tr(STATUS_NOTE.length);
+  return tr("A resposta passou do teto de {0} caracteres e foi encerrada na última frase completa. Toque em Continuar para seguir ou aumente o tamanho em Estilo e limites.", [Number(cut).toLocaleString('pt-BR')]);
+}
 
 export const fmtTokens = (n) => (n == null ? '–' : n >= 10000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
@@ -681,7 +690,6 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
             aria-label={tr("Ir para o fim")}
           >
             <ArrowDown size={20} />
-            {newContent && <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full bg-accentPurpleLight ring-2 ring-black" />}
           </button>
         )}
       </div>
@@ -808,7 +816,7 @@ const UserBubble = memo(function UserBubble({ m, onLongPress, onBranch }) {
 const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, onContinue, onRegenerate, onLongPress, onVersions }) {
   useLanguage();
   const press = useLongPress(() => onLongPress(m));
-  const note = STATUS_NOTE[m.status];
+  const note = m.status === 'length' ? null : STATUS_NOTE[m.status];
   return (
     <div data-message-id={m.id} className="mc-assistant">
       <div className="rounded-2xl bg-cardDark px-3 py-3">
@@ -816,6 +824,12 @@ const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, on
         <SceneText text={m.content} />
         {m.edited && <span className="mt-1 block text-right text-[11px] text-textMuted">{tr("editada")}</span>}
         </div>
+        {m.status === 'length' && (
+          <div role="status" className="mt-2 flex items-start gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs leading-snug text-yellow-200">
+            <AlertTriangle size={14} className="mt-px shrink-0" />
+            <span>{lengthNotice(m)}</span>
+          </div>
+        )}
         {isLast && !busy && <ChatActions offline={offline} onContinue={onContinue} onRegenerate={onRegenerate} />}
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-textMuted">
@@ -1038,7 +1052,7 @@ function EditSheet({ msg, onCancel, onSave }) {
           setSaving(true); setError('');
           try { await onSave(v); } catch (e) { setError(e.message); }
           finally { setSaving(false); }
-        }} disabled={saving || !v.trim() || v.length > (isUser ? 6000 : 8000)} className="py-1 font-semibold text-accentPurpleLight disabled:opacity-30">
+        }} disabled={saving || !v.trim() || v.length > (isUser ? 6000 : 10800)} className="py-1 font-semibold text-accentPurpleLight disabled:opacity-30">
           {saving ? tr("Salvando…") : isUser ? tr("Reenviar") : tr("Salvar")}
         </button>
       </div>
@@ -1047,7 +1061,7 @@ function EditSheet({ msg, onCancel, onSave }) {
       <textarea
         autoFocus
         value={v}
-        maxLength={isUser ? 6000 : 8000}
+        maxLength={isUser ? 6000 : 10800}
         onChange={(e) => setV(e.target.value)}
         aria-label={tr("Texto da mensagem")}
         spellCheck={true}

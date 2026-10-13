@@ -158,10 +158,10 @@ impl Database {
         Ok(out)
     }
     pub(super) fn flush(&self, v: &str, text: &str) -> Result<Value> {
-        if rules::utf16_len(text) > rules::BOT_LIMIT {
+        if rules::utf16_len(text) > rules::REPLY_STORE_LIMIT {
             return Err(Error::new(
                 422,
-                "A resposta pode ter no máximo 8.000 caracteres.",
+                "A resposta pode ter no máximo 10.800 caracteres.",
             ));
         }
         // Text identical to what is stored changes no row (and does not mark the vault dirty).
@@ -202,10 +202,10 @@ impl Database {
             .text
             .as_deref()
             .unwrap_or(v["content"].as_str().unwrap_or_default());
-        if rules::utf16_len(text) > rules::BOT_LIMIT {
+        if rules::utf16_len(text) > rules::REPLY_STORE_LIMIT {
             return Err(Error::new(
                 422,
-                "A resposta pode ter no máximo 8.000 caracteres.",
+                "A resposta pode ter no máximo 10.800 caracteres.",
             ));
         }
         let has_text = !text.trim().is_empty();
@@ -326,10 +326,10 @@ impl Database {
             }
         }
         self.ensure_idle(c)?;
-        if rules::utf16_len(content) > rules::BOT_LIMIT {
+        if rules::utf16_len(content) > rules::REPLY_STORE_LIMIT {
             return Err(Error::new(
                 422,
-                "A resposta pode ter no máximo 8.000 caracteres.",
+                "A resposta pode ter no máximo 10.800 caracteres.",
             ));
         }
         let text = content.trim();

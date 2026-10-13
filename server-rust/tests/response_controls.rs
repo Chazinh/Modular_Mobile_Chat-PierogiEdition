@@ -1,4 +1,4 @@
-use modularchat_server::{presets, style_policy};
+use modularchat_server::{presets, rules, style_policy};
 use serde_json::json;
 
 #[test]
@@ -145,4 +145,39 @@ fn monologues_include_continuations_actions_and_utf16_without_combining_other_sp
             .contains("no máximo um acontecimento")
     );
     assert!(style_policy::turn_instruction(&json!({"turnPacing":"free"})).contains("Ritmo livre"));
+}
+
+#[test]
+fn approximate_target_is_a_centre_with_room_above_it() {
+    let target = json!({"botChars":2000,"lengthMode":"target"});
+    assert_eq!(rules::reply_bounds(&target), (1700, 2500, 2700));
+    assert_eq!(rules::reply_bounds(&json!({"botChars":2000})), (0, 2000, 2000));
+    // every size gets the same 35%, the largest one included; the store accepts it
+    assert_eq!(rules::reply_bounds(&json!({"botChars":8000,"lengthMode":"target"})), (6800, 10000, 10800));
+    assert_eq!(rules::REPLY_STORE_LIMIT, 10800);
+    // the API budget covers the hard cut, not only the centre
+    let mut p = presets::request(
+        &json!({"presetId":"deepseek-v41-flash","routeId":"cbai/deepseek-v4.1-flash","effort":"high"}),
+        vec![],
+        &json!({}),
+    );
+    let length = presets::apply_length(&mut p, &target);
+    assert_eq!(length["visibleTokens"], 900);
+    assert_eq!(length["hardCharacters"], 2700);
+    assert_eq!(length["rangeMaxCharacters"], 2500);
+    // 2,400 characters are inside the range; 2,600 are above it but below the cut
+    let pct = 0.0;
+    let ok = format!("*{}*", "a".repeat(2398));
+    assert_eq!(style_policy::assess_settings(&ok, 2000, pct, &target)["sizeOk"], true);
+    let long = format!("*{}*", "a".repeat(2598));
+    assert_eq!(style_policy::assess_settings(&long, 2000, pct, &target)["sizeOk"], false);
+}
+
+#[test]
+fn a_cut_reply_ends_at_its_last_complete_sentence() {
+    let cut = "*Ela fecha o livro.* Lia: Vamos sair agora. A atmosfera tem se mostrado ult";
+    assert_eq!(rules::trim_to_sentence(cut), "*Ela fecha o livro.* Lia: Vamos sair agora.");
+    // no boundary in the second half: the text is kept as received
+    assert_eq!(rules::trim_to_sentence("Oi. aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), "Oi. aaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(rules::trim_to_sentence("x".repeat(30).as_str()), "x".repeat(30));
 }

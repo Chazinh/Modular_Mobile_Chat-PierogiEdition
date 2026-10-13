@@ -105,7 +105,7 @@ export default function StyleForm({ onChange }) {
             <button key={value} onClick={() => change({ lengthMode: value })} aria-pressed={s.lengthMode === value} className={`rounded-full px-3 py-1 text-xs ${s.lengthMode === value ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>{tr(label)}</button>
           ))}
         </div>
-        <p className="text-xs text-textMuted">{s.lengthMode === 'target' ? tr("Busca de 85% a 100% deste tamanho, sem ultrapassá-lo.") : tr("Pode responder menos quando a reação estiver completa, sem preencher o limite.")}{tr(" O orçamento de tokens é enviado à API antes de gerar. A conversão é aproximada; o teto também é conferido no servidor, em unidades UTF-16 (um emoji conta como 2).")}</p>
+        <p className="text-xs text-textMuted">{s.lengthMode === 'target' ? tr("Mira em torno deste tamanho: aceita de {0} a {1} e só corta acima de {2}, no fim da última frase completa.", [fmt(Math.ceil(s.botChars * 0.85)), fmt(Math.ceil(s.botChars * 1.25)), fmt(Math.ceil(s.botChars * 1.35))]) : tr("Pode responder menos quando a reação estiver completa, sem preencher o limite.")}{tr(" O orçamento de tokens é enviado à API antes de gerar. A conversão é aproximada; o teto também é conferido no servidor, em unidades UTF-16 (um emoji conta como 2).")}</p>
       </section>
 
       <section className="space-y-3 rounded-2xl bg-cardDark p-4 text-white">

@@ -1,7 +1,7 @@
 import { useConfirm } from './ConfirmProvider.jsx';
 import { tr, useLanguage } from '../i18n.js';
 import React, { memo, useEffect, useRef, useState } from 'react';
-import { Plus, Search, Settings, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, X, Brain, Pencil } from 'lucide-react';
+import { Plus, Search, Settings, RefreshCw, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, X, Brain, Pencil } from 'lucide-react';
 import { api } from '../api.js';
 import { Avatar, timeAgo, useLongPress } from '../ui.jsx';
 import { plainText } from '../format.js';
@@ -14,7 +14,9 @@ function preview(text) {
   return t || tr('Sem mensagens ainda.');
 }
 
-export default function ChatList({ chats, offline, error, archivedView, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
+const PULL_TRIGGER = 96; // finger travel (px) that triggers the refresh when released
+
+export default function ChatList({ chats, offline, status, onRefresh, error, archivedView, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
   const confirm = useConfirm();
   useLanguage();
   const [searching, setSearching] = useState(false);
@@ -27,6 +29,67 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
   const searchTimer = useRef(0);
   const searchSeq = useRef(0);
   useEffect(() => () => clearTimeout(searchTimer.current), []);
+  const scrollRef = useRef(null);
+  const pullRef = useRef(null);
+  const [spinning, setSpinning] = useState(false);
+  const spinningRef = useRef(false);
+  const refreshNow = useRef(onRefresh);
+  refreshNow.current = onRefresh;
+
+  // Pull to refresh. Touch listeners are passive (native scrolling and the elastic stretch stay intact); the
+  // indicator is styled directly so the gesture never re-renders the list.
+  useEffect(() => {
+    const el = scrollRef.current;
+    const ind = pullRef.current;
+    if (!el || !ind) return undefined;
+    let startY = null;
+    let dist = 0;
+    const paint = (p) => {
+      const k = Math.min(p, 1);
+      ind.style.opacity = p > 0 ? String(k) : '';
+      ind.style.transform = p > 0 ? `translate(-50%, ${(k * 18 - 10).toFixed(1)}px) scale(${(0.6 + 0.4 * k).toFixed(3)})` : '';
+      ind.firstChild.style.transform = p > 0 ? `rotate(${Math.round(p * 300)}deg)` : '';
+      ind.classList.toggle('mc-pull-ready', p >= 1);
+      ind.classList.toggle('mc-pull-drag', p > 0);
+    };
+    const start = (e) => {
+      startY = e.touches.length === 1 && el.scrollTop <= 0 && !spinningRef.current ? e.touches[0].clientY : null;
+      dist = 0;
+    };
+    const move = (e) => {
+      if (startY === null) return;
+      const d = e.touches[0].clientY - startY;
+      dist = el.scrollTop <= 0 && d > 0 ? d : 0;
+      paint(dist / PULL_TRIGGER);
+    };
+    const finish = (trigger) => () => {
+      if (startY === null) return;
+      startY = null;
+      const go = trigger && dist >= PULL_TRIGGER;
+      dist = 0;
+      paint(0);
+      if (!go) return;
+      spinningRef.current = true;
+      setSpinning(true);
+      Promise.resolve(refreshNow.current?.()).finally(() => {
+        spinningRef.current = false;
+        setSpinning(false);
+      });
+    };
+    const end = finish(true);
+    const cancel = finish(false);
+    el.addEventListener('touchstart', start, { passive: true });
+    el.addEventListener('touchmove', move, { passive: true });
+    el.addEventListener('touchend', end, { passive: true });
+    el.addEventListener('touchcancel', cancel, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', start);
+      el.removeEventListener('touchmove', move);
+      el.removeEventListener('touchend', end);
+      el.removeEventListener('touchcancel', cancel);
+    };
+  }, []);
+  const statusLabel = status === 'online' ? tr('Conectado ao PC') : status === 'offline' ? tr('Sem conexão com o PC') : tr('Verificando conexão');
 
   const flash = (t) => {
     setToast(t);
@@ -83,8 +146,14 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
       <header className="pointer-events-none fixed inset-x-0 top-0 z-30 px-3" style={{ paddingTop: 'calc(var(--sat) + 8px)' }}>
         <div className="mc-col flex items-center justify-between gap-2">
           {/* Title isolated in its own bubble */}
-          <div className="mc-glass-pill pointer-events-auto flex items-center rounded-full px-4 py-2 shadow-lg">
+          <div className="mc-glass-pill pointer-events-auto flex items-center gap-2.5 rounded-full px-4 py-2 shadow-lg">
             <h1 className="text-[19px] font-extrabold tracking-tight">{archivedView ? tr("Arquivadas") : tr("Conversas")}</h1>
+            <span
+              role="status"
+              title={statusLabel}
+              aria-label={statusLabel}
+              className={`mc-bar-dot shrink-0 ${status === 'online' ? 'mc-on' : ''} ${status === 'checking' || spinning ? 'mc-dot-checking' : ''}`}
+            />
           </div>
 
           {/* Action icons in individual round bubbles */}
@@ -146,6 +215,16 @@ export default function ChatList({ chats, offline, error, archivedView, query, o
       </header>
 
       <div
+        ref={pullRef}
+        aria-hidden="true"
+        className={`mc-pull mc-glass-pill pointer-events-none fixed left-1/2 z-20 flex h-9 w-9 items-center justify-center rounded-full shadow-lg ${spinning ? 'mc-pull-spinning' : ''}`}
+        style={{ top: searching ? 'calc(var(--sat) + 112px)' : 'calc(var(--sat) + 64px)' }}
+      >
+        <RefreshCw size={18} className={spinning ? 'animate-spin' : ''} />
+      </div>
+
+      <div
+        ref={scrollRef}
         className="flex-1 overflow-y-auto pb-6"
         style={{
           paddingTop: searching ? 'calc(var(--sat) + 116px)' : 'calc(var(--sat) + 68px)',

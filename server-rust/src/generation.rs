@@ -51,7 +51,7 @@ pub struct Generation {
     cancel: watch::Sender<bool>,
     pub ended: Notify,
     pub created: Instant,
-    /// Character cap (UTF-16) of the generated text, from the global settings (500–8000).
+    /// Hard cut (UTF-16) of the generated text: the configured size, or 135% of it in "target" mode.
     pub bot_limit: usize,
 }
 impl Generation {
@@ -217,7 +217,7 @@ impl Manager {
                         cancel,
                         ended: Notify::new(),
                         created: Instant::now(),
-                        bot_limit: rules::BOT_LIMIT,
+                        bot_limit: rules::REPLY_STORE_LIMIT,
                     }),
                     true,
                 ));
@@ -281,11 +281,8 @@ impl Manager {
             .await?["ratio"]
             .as_f64();
         let ctx = context::assemble(&data, &json!({}), &mode, &plan, calibration)?;
-        // character cap chosen in the global settings (500–8000) and a matching length hint
-        let bot_limit = (data["globalSettings"]["botChars"]
-            .as_u64()
-            .unwrap_or(rules::BOT_LIMIT as u64) as usize)
-            .clamp(500, rules::BOT_LIMIT);
+        // hard cut of the generated text: the chosen size, or 135% of it in "approximate target" mode
+        let bot_limit = rules::reply_bounds(&data["globalSettings"]).2;
         req.route_id = Some(s(&conv, "routeId"));
         req.preset_id = Some(s(&conv, "presetId"));
         req.effort = conv["effort"].as_str().map(str::to_owned);
@@ -517,6 +514,15 @@ impl Manager {
             "interrupted"
         };
         let mut visible = g.output.lock().await.buffer.clone();
+        // A reply that ran into the hard cut ends at its last complete sentence instead of mid-word.
+        if capped && !stopped {
+            let trimmed = rules::trim_to_sentence(&visible);
+            if trimmed.len() < visible.len() {
+                visible = trimmed.to_owned();
+                g.output.lock().await.buffer = visible.clone();
+            }
+        }
+        let size = rules::reply_size(&data["globalSettings"]);
         if visible.trim().is_empty() && error.is_none() && !stopped {
             error = Some("O modelo retornou uma resposta vazia.".into());
         }
@@ -524,7 +530,7 @@ impl Manager {
             .as_f64()
             .unwrap_or(65.0);
         let before =
-            style_policy::assess_settings(&visible, g.bot_limit, pct, &data["globalSettings"]);
+            style_policy::assess_settings(&visible, size, pct, &data["globalSettings"]);
         let mut style_report = json!({"attempted":false,"before":before,"after":before});
         if !visible.trim().is_empty()
             && !stopped
@@ -562,7 +568,7 @@ impl Manager {
                 let candidate = (filter.push(raw) + &filter.flush()).trim().to_owned();
                 let after = style_policy::assess_settings(
                     &candidate,
-                    g.bot_limit,
+                    size,
                     pct,
                     &data["globalSettings"],
                 );
@@ -573,8 +579,8 @@ impl Manager {
                     && result["choices"][0]["finish_reason"]
                         .as_str()
                         .is_none_or(|r| !matches!(r, "length" | "max_tokens"))
-                    && style_policy::score(&after, g.bot_limit, pct)
-                        < style_policy::score(&before, g.bot_limit, pct);
+                    && style_policy::score(&after, size, pct)
+                        < style_policy::score(&before, size, pct);
                 style_report["usage"] = result["usage"].clone();
                 if accept {
                     visible = candidate;
@@ -798,7 +804,7 @@ impl Manager {
             cancel,
             ended: Notify::new(),
             created: Instant::now(),
-            bot_limit: rules::BOT_LIMIT,
+            bot_limit: rules::REPLY_STORE_LIMIT,
         }))
     }
     pub async fn stream(

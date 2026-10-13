@@ -103,11 +103,14 @@ pub fn assemble(
         .unwrap_or(rules::BOT_LIMIT as i64)
         .clamp(500, rules::BOT_LIMIT as i64);
     let content = gs["content"].as_str().unwrap_or_default().trim();
-    let size_target = if gs["lengthMode"] == "target" {
+    let size_target = if rules::target_mode(gs) {
+        let (minimum, stretch, hard) = rules::reply_bounds(gs);
         format!(
-            "Tamanho alvo: entre {} e {} unidades UTF-16. Desenvolva a cena dentro dessa faixa, sem enchimento e sem ultrapassar o teto.",
-            thousands((bot_chars * 85 + 99) / 100),
-            thousands(bot_chars)
+            "Tamanho alvo: em torno de {} unidades UTF-16 (faixa aceitável de {} a {}). É um alvo aproximado, não um teto: desenvolva a cena até concluí-la, sem enchimento, terminando numa frase completa. Nunca passe de {} unidades.",
+            thousands(bot_chars),
+            thousands(minimum as i64),
+            thousands(stretch as i64),
+            thousands(hard as i64)
         )
     } else {
         format!(
@@ -150,7 +153,7 @@ pub fn assemble(
         .replace("{{style_detail}}", style_detail)
         .replace("{{size_target}}", &size_target)
         .replace("{{turn_control}}", &turn_control)
-        .replace("{{limit}}", &thousands(bot_chars))
+        .replace("{{limit}}", &thousands(rules::reply_bounds(gs).2 as i64))
         .replace("{{content_block}}", &content_block);
     let card = s(conv, "prompt")
         .replace("{{user}}", persona)

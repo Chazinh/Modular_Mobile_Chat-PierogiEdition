@@ -194,11 +194,11 @@ pub fn thinking_enabled(preset: &Value, settings: &Value) -> bool {
 /// The API cap includes text and, on some routes, thinking. The reserve is a planning
 /// margin, not a separate reasoning control at the provider.
 pub fn apply_length(plan: &mut Plan, settings: &Value) -> Value {
-    let chars = settings["botChars"]
-        .as_u64()
-        .unwrap_or(8000)
-        .clamp(500, 8000);
-    let visible = chars.div_ceil(3);
+    let chars = crate::rules::reply_size(settings) as u64;
+    // In "target" mode the API budget covers the hard cut (135%), so the provider never stops a reply that is
+    // still inside the acceptable range.
+    let (minimum, stretch, hard) = crate::rules::reply_bounds(settings);
+    let visible = (hard as u64).div_ceil(3);
     let text_budget = (visible * 6).div_ceil(5);
     let effort = plan.controls["requestedEffort"].as_str();
     let thinking = if plan.controls["thinkingEnabled"] == false {
@@ -216,7 +216,7 @@ pub fn apply_length(plan: &mut Plan, settings: &Value) -> Value {
     let total = (text_budget + thinking).min(max_output);
     plan.body["max_tokens"] = json!(total);
     plan.controls["sentParams"]["max_tokens"] = json!(total);
-    let length = json!({"maxCharacters":chars,"minCharacters":if settings["lengthMode"]=="target"{(chars*85).div_ceil(100)}else{0},"mode":if settings["lengthMode"]=="target"{"target"}else{"maximum"},"visibleTokens":visible,"textTokenBudget":text_budget.min(total),"reasoningReserve":total.saturating_sub(text_budget),"apiMaxTokens":total,"thinkingEnabled":plan.controls["thinkingEnabled"],"method":"estimated","monologueChars":settings["monologueChars"].as_u64().unwrap_or(300),"turnPacing":settings["turnPacing"].as_str().unwrap_or("interactive")});
+    let length = json!({"maxCharacters":chars,"minCharacters":minimum,"rangeMaxCharacters":stretch,"hardCharacters":hard,"mode":if settings["lengthMode"]=="target"{"target"}else{"maximum"},"visibleTokens":visible,"textTokenBudget":text_budget.min(total),"reasoningReserve":total.saturating_sub(text_budget),"apiMaxTokens":total,"thinkingEnabled":plan.controls["thinkingEnabled"],"method":"estimated","monologueChars":settings["monologueChars"].as_u64().unwrap_or(300),"turnPacing":settings["turnPacing"].as_str().unwrap_or("interactive")});
     plan.controls["length"] = length.clone();
     length
 }

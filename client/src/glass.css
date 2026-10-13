@@ -264,6 +264,23 @@ button.mc-glass-pill:active::after { opacity: .55; }
   background: radial-gradient(circle at 35% 30%, rgb(calc(190 * var(--mc-tr, 1)) calc(255 * var(--mc-tg, 1)) calc(225 * var(--mc-tb, 1))), rgb(calc(52 * var(--mc-tr, 1)) calc(211 * var(--mc-tg, 1)) calc(153 * var(--mc-tb, 1))) 60%);
   box-shadow: 0 0 0 2px rgba(0, 0, 0, .3), 0 0 10px rgb(calc(52 * var(--mc-tr, 1)) calc(211 * var(--mc-tg, 1)) calc(153 * var(--mc-tb, 1)) / .7);
 }
+/* home list: the connection is being verified */
+.mc-bar-dot.mc-dot-checking { animation: mc-dot-pulse 1.1s ease-in-out infinite; }
+@keyframes mc-dot-pulse { 50% { opacity: .35; } }
+/* pull-to-refresh indicator on the home list (styled inline while dragging) */
+.mc-pull {
+  opacity: 0;
+  transform: translate(-50%, -10px) scale(.6);
+  transition: opacity .18s ease, transform .22s cubic-bezier(.2, .9, .3, 1.2);
+}
+.mc-pull > svg { transition: color .15s ease; }
+.mc-pull.mc-pull-drag { transition: none; }
+.mc-pull.mc-pull-ready > svg { color: rgb(calc(167 * var(--mc-tr, 1)) calc(139 * var(--mc-tg, 1)) calc(250 * var(--mc-tb, 1))); }
+.mc-pull.mc-pull-spinning { opacity: 1; transform: translate(-50%, 8px) scale(1); }
+@media (prefers-reduced-motion: reduce) {
+  .mc-bar-dot.mc-dot-checking { animation: none; opacity: .6; }
+  .mc-pull { transition: none; }
+}
 .mc-glass-pill.mc-bar-bubble,
 .mc-bar-ring {
   position: fixed;

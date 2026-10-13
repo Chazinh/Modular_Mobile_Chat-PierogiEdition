@@ -148,6 +148,12 @@ pub fn assess_settings(text: &str, limit: usize, pct: f64, settings: &Value) -> 
     if settings["lengthMode"] != "target" {
         a["minCharacters"] = json!(0);
         a["sizeOk"] = json!(!text.trim().is_empty() && rules::utf16_len(text) <= limit);
+    } else {
+        // `limit` is the centre of the approximate target; the acceptable range reaches 125% of it.
+        let stretch = (limit * rules::TARGET_STRETCH_PCT).div_ceil(100);
+        let chars = rules::utf16_len(text);
+        a["maxCharacters"] = json!(stretch);
+        a["sizeOk"] = json!(chars >= a["minCharacters"].as_u64().unwrap_or(0) as usize && chars <= stretch);
     }
     let monologue_limit = settings["monologueChars"].as_u64().unwrap_or(300) as usize;
     let longest = longest_monologue(text);
@@ -235,7 +241,7 @@ pub fn score(a: &Value, limit: usize, pct: f64) -> f64 {
         + a["characters"]
             .as_u64()
             .unwrap_or(0)
-            .saturating_sub(limit as u64) as f64
+            .saturating_sub(a["maxCharacters"].as_u64().unwrap_or(limit as u64)) as f64
             / limit as f64
         + if a["languageOk"] == true { 0.0 } else { 2.0 }
         + if a["monologueOk"] == false {

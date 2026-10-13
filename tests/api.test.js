@@ -100,7 +100,7 @@ test('Sonnet low e configuração global: uma revisão na mesma rota ajusta tama
     const request=router.correctionRequests.at(-1).body;
     assert.equal(request.model,'cc/claude-sonnet-5-5');assert.equal(request.reasoning_effort,'low');
     assert.ok(request.messages.at(-1).content.includes('português do Brasil'));
-    assert.ok(request.messages.at(-1).content.includes('425 e 500'));
+    assert.ok(request.messages.at(-1).content.includes('425 e 625'), 'alvo aproximado: de 85% a 125% do tamanho');
   } finally {
     await j('PUT','/api/settings/global',DEFAULT_STYLE);
     router.set({...DEFAULTS(),correctionText:null,correctionStatus:null});
@@ -534,6 +534,28 @@ test('limites obrigatórios: usuário 6000, bot 8000 com emoji, persistencia e H
   router.set(DEFAULTS());
 });
 
+test('alvo aproximado: passa do tamanho escolhido sem corte e, no teto (135%), termina na última frase completa', async () => {
+  const sentence = '*Mira observa a carta com atenção.* ';
+  router.set({ ...DEFAULTS(), chunks: [sentence.repeat(40)], correctionText: null, correctionStatus: null });
+  try {
+    await j('PUT', '/api/settings/global', { ...DEFAULT_STYLE, botChars: 500, dialoguePct: 0, lengthMode: 'target' });
+    const c = await mkChat();
+    const result = await sse(`/api/chats/${c.id}/message`, { mode: 'send', content: 'Oi', opId: 'target-ceiling' });
+    const ack = result.events[0].ack;
+    assert.equal(ack.length.hardCharacters, 675);
+    assert.equal(ack.length.rangeMaxCharacters, 625);
+    assert.equal(ack.length.visibleTokens, 225, 'o orçamento da API cobre o teto, não só o alvo');
+    const saved = (await j('GET', `/api/chats/${c.id}`)).body.history.at(-1);
+    assert.equal(saved.status, 'length');
+    assert.ok(saved.content.length > 500 && saved.content.length <= 675, `tamanho ${saved.content.length}`);
+    assert.ok(saved.content.endsWith('atenção.*'), 'termina numa frase completa, sem palavra cortada');
+    const system = router.requests.at(-1).body.messages.map((m) => m.content).join('\n');
+    assert.ok(system.includes('em torno de 500') && system.includes('Nunca passe de 675'));
+  } finally {
+    await j('PUT', '/api/settings/global', DEFAULT_STYLE);
+    router.set(DEFAULTS());
+  }
+});
 test('ajustes globais pelo app: teto de caracteres por texto gerado, proporção e conteúdo valem na próxima resposta', async () => {
   router.set(DEFAULTS());
   const initial = await j('GET', '/api/settings/global');

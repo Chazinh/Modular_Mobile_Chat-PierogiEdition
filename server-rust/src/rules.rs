@@ -5,6 +5,49 @@ use std::{collections::HashSet, sync::LazyLock};
 use unicode_normalization::UnicodeNormalization;
 pub const USER_LIMIT: usize = 6000;
 pub const BOT_LIMIT: usize = 8000;
+/// Largest stored model reply: the biggest selectable size (BOT_LIMIT) plus the 35% an approximate target may use.
+pub const REPLY_STORE_LIMIT: usize = BOT_LIMIT * TARGET_CEILING_PCT / 100;
+/// "Approximate target": the chosen size is the centre, not a ceiling. The reply should land between 85% and
+/// 125% of it and is only cut at 135%, for every size (2,000 → 1,700–2,500, cut at 2,700; 8,000 → cut at 10,800).
+pub const TARGET_MIN_PCT: usize = 85;
+pub const TARGET_STRETCH_PCT: usize = 125;
+pub const TARGET_CEILING_PCT: usize = 135;
+/// Configured reply size (500–BOT_LIMIT).
+pub fn reply_size(settings: &Value) -> usize {
+    (settings["botChars"].as_u64().unwrap_or(BOT_LIMIT as u64) as usize).clamp(500, BOT_LIMIT)
+}
+pub fn target_mode(settings: &Value) -> bool {
+    settings["lengthMode"] == "target"
+}
+fn scaled(size: usize, pct: usize) -> usize {
+    (size * pct).div_ceil(100)
+}
+/// (minimum, upper end of the acceptable range, hard cut) in UTF-16 units.
+pub fn reply_bounds(settings: &Value) -> (usize, usize, usize) {
+    let size = reply_size(settings);
+    if target_mode(settings) {
+        (scaled(size, TARGET_MIN_PCT), scaled(size, TARGET_STRETCH_PCT), scaled(size, TARGET_CEILING_PCT))
+    } else {
+        (0, size, size)
+    }
+}
+/// A reply cut by the hard limit ends at the last complete sentence (or paragraph) instead of mid-word.
+/// Keeps the text untouched when no boundary is found in its second half.
+pub fn trim_to_sentence(t: &str) -> &str {
+    let mut best = None;
+    let mut chars = t.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let next = chars.peek().map(|(_, n)| *n);
+        let closes = matches!(c, '.' | '!' | '?' | '…' | '*' | ')' | '"' | '”' | '»');
+        if (closes && next.is_none_or(char::is_whitespace)) || (c == '\n' && next == Some('\n')) {
+            best = Some(i + c.len_utf8());
+        }
+    }
+    match best {
+        Some(end) if end * 2 >= t.len() => t[..end].trim_end(),
+        _ => t,
+    }
+}
 pub fn utf16_len(t: &str) -> usize {
     t.encode_utf16().count()
 }

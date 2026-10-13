@@ -547,5 +547,11 @@
   "Não consegui falar com o PC. Confira os endereços, o certificado e o firewall.": "Could not reach the PC. Check the addresses, certificate and firewall.",
   "Informe o endereço HTTPS do PC e faça o pareamento.": "Enter the PC's HTTPS address and pair this device.",
   "Não consegui conectar ao PC por HTTPS. Confira os endereços e o certificado.": "Could not connect to the PC over HTTPS. Check the addresses and certificate.",
-  "A conexão mudou. Tente novamente.": "The connection changed. Try again."
+  "A conexão mudou. Tente novamente.": "The connection changed. Try again.",
+  "Conectado ao PC": "Connected to the PC",
+  "Sem conexão com o PC": "Not connected to the PC",
+  "Verificando conexão": "Checking connection",
+  "Mira em torno deste tamanho: aceita de {0} a {1} e só corta acima de {2}, no fim da última frase completa.": "Aims around this size: accepts {0} to {1} and only cuts above {2}, at the end of the last complete sentence.",
+  "A resposta passou do teto de {0} caracteres e foi encerrada na última frase completa. Toque em Continuar para seguir ou aumente o tamanho em Estilo e limites.": "The reply went past the {0}-character ceiling and was ended at its last complete sentence. Tap Continue to go on or raise the size in Style and limits.",
+  "O provedor encerrou a resposta pelo limite de tokens. Toque em Continuar para completá-la.": "The provider ended the reply at its token limit. Tap Continue to complete it."
 }

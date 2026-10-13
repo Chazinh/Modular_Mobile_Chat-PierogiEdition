@@ -698,11 +698,11 @@ async fn empty_first_turn_and_new_limit() {
         ))
         .await
         .unwrap();
-    let rejected=store.call(Request::FinishGeneration(serde_json::from_value::<FinishRequest>(json!({"generationId":begin["generationId"],"status":"complete","text":"x".repeat(8001)})).unwrap())).await.unwrap_err();
+    let rejected=store.call(Request::FinishGeneration(serde_json::from_value::<FinishRequest>(json!({"generationId":begin["generationId"],"status":"complete","text":"x".repeat(10801)})).unwrap())).await.unwrap_err();
     assert_eq!(rejected.status, 422);
-    let f=store.call(Request::FinishGeneration(serde_json::from_value::<FinishRequest>(json!({"generationId":begin["generationId"],"status":"length","text":"x".repeat(8000)})).unwrap())).await.unwrap();
+    let f=store.call(Request::FinishGeneration(serde_json::from_value::<FinishRequest>(json!({"generationId":begin["generationId"],"status":"length","text":"x".repeat(10800)})).unwrap())).await.unwrap();
     assert_eq!(f["status"], "length");
-    assert_eq!(f["message"]["content"].as_str().unwrap().len(), 8000);
+    assert_eq!(f["message"]["content"].as_str().unwrap().len(), 10800);
 }
 #[test]
 fn mandatory_context_overflow() {

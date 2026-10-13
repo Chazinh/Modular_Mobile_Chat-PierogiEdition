@@ -1,6 +1,7 @@
 import { tr, useLanguage } from './i18n.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, config, ApiError } from './api.js';
+import { invalidateConnection } from './server-connection.js';
 import { useLayer, installNativeBack, closeTopLayer } from './nav.js';
 import ChatList from './components/ChatList.jsx';
 import ChatView from './components/ChatView.jsx';
@@ -45,6 +46,8 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [offline, setOffline] = useState(false);
   const [error, setError] = useState('');
+  // Home status dot: 'checking' until the first answer, then 'online'/'offline'; a manual check returns to 'checking'.
+  const [status, setStatus] = useState('checking');
   const [openId, setOpenId] = useState(null);
   const [openSettings, setOpenSettings] = useState(false);
   const [globalOpen, setGlobalOpen] = useState(false);
@@ -64,9 +67,11 @@ export default function App() {
       const list = await api.listChats(archivedView, query);
       setChats((prev) => shareItems(prev, list));
       setOffline(false);
+      setStatus('online');
       setError('');
     } catch (e) {
       setOffline(true);
+      setStatus('offline');
       if (e.status && e.status !== 401) setError(e.message);
       if (!archivedView && !query) setChats((prev) => (prev.length ? prev : []));
     }
@@ -118,6 +123,13 @@ export default function App() {
     };
   }, [needsServer, unpaired, refresh]);
 
+  // Pull to refresh: discard the cached endpoint choice, verify the connection again and reload the list.
+  const checkNow = useEvent(async () => {
+    invalidateConnection();
+    setStatus('checking');
+    await Promise.all([refresh(), new Promise((r) => setTimeout(r, 450))]);
+  });
+
   const openChat = useEvent((id) => {
     setOpenSettings(false);
     setOpenId(id);
@@ -155,6 +167,8 @@ export default function App() {
         <ChatList
           chats={chats}
           offline={offline}
+          status={status}
+          onRefresh={checkNow}
           error={error}
           archivedView={archivedView}
           query={query}

@@ -44,6 +44,11 @@
    over inner lists (pointercancel) and the drawer stops following the finger. */
 .mc-drawer-panel,
 .mc-drawer-panel * { touch-action: pan-y; }
+/* Content of the menu/sheet pages: a permanent compositor layer, so the elastic stretch (elastic.js) only moves it
+   and never re-creates the layer mid-gesture (that re-raster made the glass bubbles flicker). The inner list does
+   not chain its scroll to the chat behind nor show the native overscroll on top of the elastic one. */
+.mc-elastic-wrapper { will-change: transform; backface-visibility: hidden; }
+.mc-drawer-panel .overflow-y-auto { overscroll-behavior: contain; }
 
 /* ---- glass rows and button ---- */
 .mc-row {

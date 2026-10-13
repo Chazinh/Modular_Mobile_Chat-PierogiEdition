@@ -2,24 +2,56 @@
 // resistance and it springs back; a flung scroll that hits the edge does a small bounce. Scrolling itself stays
 // NATIVE: we only listen to touches (passive, never cancelled) and move the content with transform.
 // Touch events keep arriving during native scrolling (pointer events do not), which is why touch is used.
-import { rubber, springStep, clamp } from './drawer-motion.js';
+//
+// Smoothness: finger moves are coalesced into one write per display frame (requestAnimationFrame, so 90/120 Hz
+// screens get every frame and never two writes in one), offsets snap to device pixels, the elements to move are
+// measured once per gesture, and the compositor layer is kept for the whole gesture. Creating and dropping that
+// layer every time the stretch crossed zero is what made the glass bubbles flicker.
+import { rubber, unrubber, springStep, clamp } from './drawer-motion.js';
 
 const SCROLLER = '.overflow-y-auto, .mc-scroll, .mc-sheet-body';
 const LIMIT = 48; // maximum soft offset (px) while pulling
 const anim = new WeakMap(); // scroller -> { raf, x }
+const state = new WeakMap(); // scroller -> { x, movers, layered }
 
 const movers = (el) => {
   const wrapper = el.querySelector(':scope > .mc-elastic-wrapper');
   if (wrapper) return [wrapper];
   return Array.from(el.children).filter((c) => getComputedStyle(c).position !== 'fixed');
 };
+const snap = (x) => {
+  const d = window.devicePixelRatio || 1;
+  return Math.round(x * d) / d;
+};
+function info(el) {
+  let s = state.get(el);
+  if (!s) state.set(el, (s = { x: 0, movers: null, layered: false }));
+  return s;
+}
+// The wrapper of the menu/sheet pages already lives on its own layer (CSS); plain lists get one only while moving.
+function layer(el, on) {
+  const s = info(el);
+  if (s.layered === on) return;
+  s.layered = on;
+  s.movers ||= movers(el);
+  for (const c of s.movers) if (!c.classList.contains('mc-elastic-wrapper')) c.style.willChange = on ? 'transform' : '';
+}
 function apply(el, x) {
-  el.dataset.elasticY = x === 0 ? '' : x.toFixed(2); // reading measurements subtract the stretch in progress
-  const t = x === 0 ? '' : `translate3d(0, ${x.toFixed(2)}px, 0)`;
-  for (const c of movers(el)) {
-    c.style.transform = t;
-    c.style.willChange = x === 0 ? '' : 'transform';
-  }
+  const s = info(el);
+  const v = x === 0 ? 0 : snap(x);
+  if (v === s.x) return;
+  s.x = v;
+  if (v !== 0) layer(el, true);
+  s.movers ||= movers(el);
+  el.dataset.elasticY = v === 0 ? '' : String(v); // reading measurements subtract the stretch in progress
+  const t = v === 0 ? '' : `translate3d(0, ${v}px, 0)`;
+  for (const c of s.movers) c.style.transform = t;
+}
+// Back at rest: drop the temporary layer and the cached elements (the list may re-render before the next gesture).
+function rest(el) {
+  apply(el, 0);
+  layer(el, false);
+  info(el).movers = null;
 }
 function stop(el) {
   const a = anim.get(el);
@@ -29,8 +61,8 @@ function stop(el) {
 // Spring back to 0 from x (px) with velocity v (px/s).
 function settle(el, x, v) {
   stop(el);
-  const state = { raf: 0, x };
-  anim.set(el, state);
+  const a = { raf: 0, x };
+  anim.set(el, a);
   let last = performance.now();
   let s = { x, v };
   const tick = (now) => {
@@ -38,15 +70,15 @@ function settle(el, x, v) {
     last = now;
     s = springStep(s, 0, dt, 340, 36);
     if (Math.abs(s.x) < 0.3 && Math.abs(s.v) < 8) {
-      apply(el, 0);
       anim.delete(el);
+      rest(el);
       return;
     }
-    state.x = s.x;
+    a.x = s.x;
     apply(el, clamp(s.x, -LIMIT * 1.2, LIMIT * 1.2));
-    state.raf = requestAnimationFrame(tick);
+    a.raf = requestAnimationFrame(tick);
   };
-  state.raf = requestAnimationFrame(tick);
+  a.raf = requestAnimationFrame(tick);
 }
 
 export function installElastic() {
@@ -56,8 +88,24 @@ export function installElastic() {
   let g = null;
   let touching = false;
   let releasedAt = -Infinity; // end of the last touch: only a scroll flung by it may bounce
+  let frame = 0;
+  let pending = null; // [scroller, offset] waiting for the next display frame
 
   const edges = (el) => ({ top: el.scrollTop <= 0, bottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 1 });
+  const flush = () => {
+    frame = 0;
+    if (pending) apply(...pending);
+    pending = null;
+  };
+  const queue = (el, x) => {
+    pending = [el, x];
+    if (!frame) frame = requestAnimationFrame(flush);
+  };
+  const drop = () => {
+    cancelAnimationFrame(frame);
+    frame = 0;
+    pending = null;
+  };
 
   document.addEventListener('touchstart', (e) => {
     touching = true;
@@ -66,9 +114,13 @@ export function installElastic() {
     const el = e.target?.closest?.(SCROLLER);
     if (!el) return;
     const t = e.touches[0];
+    drop();
+    // Touching during a bounce grabs the content where it is (no jump back to 0 under the finger).
+    const current = anim.has(el) ? info(el).x : 0;
     stop(el);
-    apply(el, 0);
-    g = { el, x0: t.clientX, y: t.clientY, anchor: t.clientY, over: 0, dir: 0, samples: [[performance.now(), t.clientY]], moved: false };
+    const dir = Math.sign(current);
+    const over = dir ? unrubber(Math.abs(current), LIMIT) : 0;
+    g = { el, x0: t.clientX, y: t.clientY, anchor: t.clientY - dir * over, over, dir, samples: [[performance.now(), t.clientY]], moved: false };
   }, { passive: true, capture: true });
 
   document.addEventListener('touchmove', (e) => {
@@ -76,7 +128,11 @@ export function installElastic() {
     const t = e.touches[0];
     if (!g.moved) {
       // only gestures more vertical than horizontal (the drawer and sheets handle horizontal ones)
-      if (Math.abs(t.clientX - g.x0) > Math.abs(t.clientY - g.anchor) * 1.2 && Math.abs(t.clientX - g.x0) > 8) { g = null; return; }
+      if (Math.abs(t.clientX - g.x0) > Math.abs(t.clientY - g.anchor) * 1.2 && Math.abs(t.clientX - g.x0) > 8) {
+        if (g.dir) settle(g.el, info(g.el).x, 0);
+        g = null;
+        return;
+      }
       g.moved = true;
     }
     const y = t.clientY;
@@ -90,7 +146,7 @@ export function installElastic() {
     else g.anchor = y; // native scrolling in progress (or returning from the stretch): the anchor follows the finger
     g.over = over;
     g.dir = dir;
-    apply(g.el, over > 0 ? dir * rubber(over, LIMIT) : 0);
+    queue(g.el, over > 0 ? dir * rubber(over, LIMIT) : 0);
   }, { passive: true, capture: true });
 
   const end = () => {
@@ -99,7 +155,11 @@ export function installElastic() {
     if (!g) return;
     const { el, over, dir, samples } = g;
     g = null;
-    if (over <= 0) return;
+    drop();
+    if (over <= 0) {
+      rest(el);
+      return;
+    }
     const [t0, y0] = samples[0];
     const [t1, y1] = samples[samples.length - 1];
     const v = t1 > t0 ? ((y1 - y0) / (t1 - t0)) * 1000 : 0; // finger px/s
