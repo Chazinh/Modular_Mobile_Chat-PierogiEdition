@@ -1,7 +1,5 @@
 Hi! ><
-
-<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/2c71c641-7646-4648-b643-f22e364888a9" /> <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/2ee77414-0984-4812-a41f-e91f0e2802f1" />
-
+<img width="1024" height="1024" alt="dsed-1" src="https://github.com/user-attachments/assets/9aaf063c-1d6d-456d-81fc-45219ca5992c" />
 
 <img width="1018" height="1545" alt="image" src="https://github.com/user-attachments/assets/643d8d69-cc95-4d62-a7ce-e21896ccfbe0" />
 
