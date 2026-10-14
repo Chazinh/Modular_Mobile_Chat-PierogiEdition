@@ -10,6 +10,7 @@ import ServerSetup from './components/ServerSetup.jsx';
 import { useResume, useNativeLifecycle } from './lifecycle.js';
 import { privacyNeedsPairing } from './private-storage.js';
 import { useEvent } from './ui.jsx';
+import { transitionTo } from './press-feedback.js';
 
 // Keeps the reference of items that did not change between two lists from the server (rows are memoized).
 function shareItems(prev, next) {
@@ -43,6 +44,8 @@ export default function App() {
   useNativeLifecycle();
   const [chats, setChats] = useState([]);
   const [archivedView, setArchivedView] = useState(false);
+  const [switchingArchived, setSwitchingArchived] = useState(false);
+  const switchingRef = useRef(false);
   const [query, setQuery] = useState('');
   const [offline, setOffline] = useState(false);
   const [error, setError] = useState('');
@@ -55,6 +58,8 @@ export default function App() {
   const [unpaired, setUnpaired] = useState(privacyNeedsPairing);
   const [fontSize, setFontSize] = useFontSize();
   const refreshTimer = useRef(null);
+  const listViewRef = useRef(null);
+  listViewRef.current = { archivedView, query };
 
   useLayer(!!openId, () => setOpenId(null));
   useLayer(globalOpen, () => setGlobalOpen(false));
@@ -65,11 +70,13 @@ export default function App() {
   const refresh = useCallback(async () => {
     try {
       const list = await api.listChats(archivedView, query);
+      if (listViewRef.current.archivedView !== archivedView || listViewRef.current.query !== query) return;
       setChats((prev) => shareItems(prev, list));
       setOffline(false);
       setStatus('online');
       setError('');
     } catch (e) {
+      if (listViewRef.current.archivedView !== archivedView || listViewRef.current.query !== query) return;
       setOffline(true);
       setStatus('offline');
       if (e.status && e.status !== 401) setError(e.message);
@@ -130,19 +137,33 @@ export default function App() {
     await Promise.all([refresh(), new Promise((r) => setTimeout(r, 450))]);
   });
 
-  const openChat = useEvent((id) => {
-    setOpenSettings(false);
-    setOpenId(id);
+  const openChat = useEvent((id, origin) => {
+    transitionTo(() => { setOpenSettings(false); setOpenId(id); }, '.mc-chat', origin);
   });
-  const toggleArchived = useEvent(() => setArchivedView((v) => !v));
-  const openGlobal = useEvent(() => setGlobalOpen(true));
+  const toggleArchived = useEvent(async (event) => {
+    if (switchingRef.current) return;
+    const origin = event?.currentTarget;
+    const next = !archivedView;
+    switchingRef.current = true;
+    setSwitchingArchived(true);
+    try {
+      const list = await api.listChats(next, query);
+      transitionTo(() => {
+        setArchivedView(next);
+        setChats(prev => shareItems(prev, list));
+        setOffline(false); setStatus('online'); setError('');
+      }, '.mc-list', origin);
+    } catch (e) { setError(e.message); }
+    finally { switchingRef.current = false; setSwitchingArchived(false); }
+  });
+  const openGlobal = useEvent((event) => transitionTo(() => setGlobalOpen(true), '.mc-screen', event?.currentTarget));
 
-  async function create() {
+  async function create(event) {
+    const origin = event?.currentTarget;
     try {
       const chat = await api.createChat({});
       await refresh();
-      setOpenSettings(true);
-      setOpenId(chat.id);
+      transitionTo(() => { setOpenSettings(true); setOpenId(chat.id); }, '.mc-chat', origin);
     } catch (e) {
       setError(tr("Não foi possível criar o chat: {0}", [e.message]));
     }
@@ -171,6 +192,7 @@ export default function App() {
           onRefresh={checkNow}
           error={error}
           archivedView={archivedView}
+          switchingArchived={switchingArchived}
           query={query}
           onQuery={setQuery}
           onToggleArchived={toggleArchived}
@@ -184,8 +206,8 @@ export default function App() {
         <ChatView
           key={openId}
           chatId={openId}
-          status={status}
           openSettingsInitially={openSettings}
+          status={status}
           onBack={closeTopLayer}
           onChanged={refresh}
           onCreate={create}

@@ -87,8 +87,8 @@ export function SheetButton({ icon, label, onClick, danger, detail, disabled }) 
 export function Screen({ title, onClose, action, children }) {
   useLanguage();
   useLayer(true, onClose);
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-bgDark">
+  return createPortal(
+    <div className="mc-screen fixed inset-0 z-50 flex flex-col bg-bgDark">
       {/* Detached floating header with liquid-glass bubbles */}
       <header className="pointer-events-none fixed inset-x-0 top-0 z-30 px-3" style={{ paddingTop: 'calc(var(--sat) + 8px)' }}>
         <div className="mc-col flex items-center gap-2">
@@ -103,9 +103,7 @@ export function Screen({ title, onClose, action, children }) {
             <h2 className="truncate text-[16px] font-semibold">{title}</h2>
           </div>
           {action && (
-            action?.props?.className?.includes('mc-glass') ? (
-              action
-            ) : (
+            action.props?.className?.includes('mc-glass') ? action : (
               <div className="mc-glass-pill pointer-events-auto flex items-center rounded-full px-3 py-1.5 shadow-lg shrink-0">
                 {action}
               </div>
@@ -122,6 +120,6 @@ export function Screen({ title, onClose, action, children }) {
       >
         <div className="mc-col">{children}</div>
       </div>
-    </div>
+    </div>, document.body
   );
 }

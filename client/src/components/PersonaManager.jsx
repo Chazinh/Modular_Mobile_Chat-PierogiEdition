@@ -43,7 +43,7 @@ export default function PersonaManager({ chat, onClose, onChosen }) {
       action={
         <button
           onClick={() => setEdit({ name: '', description: '', avatar: null, isDefault: false })}
-          className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+          className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
           aria-label={tr("Novo perfil")}
         >
           <Plus size={20} />
@@ -55,7 +55,7 @@ export default function PersonaManager({ chat, onClose, onChosen }) {
         </p>
         {error && <p className="text-sm text-red-300">{tr(error)}</p>}
         {list?.map((p) => (
-          <div key={p.id} className={`flex items-start gap-3 rounded-2xl p-3 ${activeId === p.id ? 'bg-accentPurple/20 ring-1 ring-accentPurpleLight/50' : 'bg-cardDark'}`}>
+          <div key={p.id} className={`mc-bubble flex items-start gap-3 rounded-[28px] p-3 ${activeId === p.id ? 'mc-selected' : ''}`}>
             <button onClick={() => choose(p)} className="flex min-w-0 flex-1 items-start gap-3 text-left" disabled={!chat}>
               <Avatar name={p.name} avatar={p.avatar} size={48} round />
               <div className="min-w-0 flex-1">
@@ -134,7 +134,7 @@ function EditPersona({ p, onClose, onSaved, onError }) {
         </label>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />{tr(" Padrão para chats novos\n        ")}</label>
-        <button onClick={save} disabled={!name.trim()} className="w-full rounded-full bg-accentPurple py-3.5 font-semibold text-white disabled:opacity-40">{tr("\n          Salvar\n        ")}</button>
+        <button onClick={save} disabled={!name.trim()} className="mc-bubble mc-glass-accent w-full rounded-full py-3.5 font-semibold text-white disabled:opacity-40">{tr("\n          Salvar\n        ")}</button>
         {p.id && (
           <button onClick={remove} className="flex w-full items-center justify-center gap-2 rounded-full bg-red-500/15 py-3 text-sm text-red-300">
             <Trash2 size={16} />{tr(" Apagar perfil\n          ")}</button>

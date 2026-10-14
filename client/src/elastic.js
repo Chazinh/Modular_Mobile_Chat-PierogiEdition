@@ -9,7 +9,8 @@
 // layer every time the stretch crossed zero is what made the glass bubbles flicker.
 import { rubber, unrubber, springStep, clamp, frameDt } from './drawer-motion.js';
 
-const SCROLLER = '.overflow-y-auto, .mc-scroll, .mc-sheet-body';
+const SCROLLER = '.overflow-y-auto, .mc-sheet-body';
+const NATIVE_ONLY = 'input, textarea, select, [contenteditable="true"], .mc-scroll, .mc-drawer-panel';
 const LIMIT = 48; // maximum soft offset (px) while pulling
 const anim = new WeakMap(); // scroller -> { raf, x }
 const state = new WeakMap(); // scroller -> { x, movers, layered }
@@ -111,6 +112,7 @@ export function installElastic() {
     touching = true;
     g = null;
     if (e.touches?.length !== 1) return;
+    if (e.target?.closest?.(NATIVE_ONLY)) return;
     const el = e.target?.closest?.(SCROLLER);
     if (!el) return;
     const t = e.touches[0];
@@ -183,6 +185,8 @@ export function installElastic() {
     if (!g) return;
     const { el, over, dir, samples } = g;
     g = null;
+    // Release starts at the last painted frame, never at a queued, unseen finger position.
+    const painted = info(el).x;
     drop();
     if (over <= 0) {
       // a spring already returning the content keeps going; cutting it to 0 here was another jump
@@ -192,7 +196,7 @@ export function installElastic() {
     const [t0, y0] = samples[0];
     const [t1, y1] = samples[samples.length - 1];
     const v = t1 > t0 ? ((y1 - y0) / (t1 - t0)) * 1000 : 0; // finger px/s
-    settle(el, dir * rubber(over, LIMIT), v * 0.25);
+    settle(el, painted, v * 0.25);
   };
   document.addEventListener('touchend', end, { passive: true, capture: true });
   document.addEventListener('touchcancel', end, { passive: true, capture: true });
@@ -202,7 +206,7 @@ export function installElastic() {
   const track = new WeakMap(); // scroller -> { top, t }
   document.addEventListener('scroll', (e) => {
     const el = e.target;
-    if (!(el instanceof Element) || touching || !el.matches?.(SCROLLER)) return;
+    if (!(el instanceof Element) || el.closest(NATIVE_ONLY) || touching || !el.matches?.(SCROLLER)) return;
     const now = performance.now();
     const prev = track.get(el);
     track.set(el, { top: el.scrollTop, t: now });

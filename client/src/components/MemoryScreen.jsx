@@ -20,7 +20,8 @@ export default function MemoryScreen({ chatId, onClose }) {
 
   async function reload() {
     try {
-      setData(await api.memory(chatId));
+      const [memory, status] = await Promise.all([api.memory(chatId), api.status().catch(() => null)]);
+      setData({ ...memory, local: status?.local ?? memory.local });
       setError('');
     } catch (e) {
       setError(e.message);
@@ -35,7 +36,7 @@ export default function MemoryScreen({ chatId, onClose }) {
   }, [chatId]);
 
   const local = data?.local;
-  const degraded = local && !local.chat.ok;
+  const degraded = local?.chat && !local.chat.ok;
 
   return (
     <Screen
@@ -43,15 +44,15 @@ export default function MemoryScreen({ chatId, onClose }) {
       onClose={onClose}
       action={
         tab === 'memories' ? (
-          <button onClick={() => setAdding(true)} className="rounded-full bg-accentPurple p-2 text-white" aria-label={tr("Adicionar memória")}>
+          <button onClick={() => setAdding(true)} className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-full" aria-label={tr("Adicionar memória")}>
             <Plus size={18} />
           </button>
         ) : null
       }
     >
-      <div className="flex gap-2 overflow-x-auto px-4 pt-3">
+      <div className="flex flex-wrap gap-2 px-4 pt-3">
         {TABS.map(([k, label]) => (
-          <button key={k} onClick={() => setTab(k)} className={`shrink-0 rounded-full px-4 py-2 text-sm ${tab === k ? 'bg-accentPurple text-white' : 'bg-cardDark'}`}>{tr(label)}</button>
+          <button key={k} onClick={() => setTab(k)} aria-pressed={tab === k} className={`mc-bubble shrink-0 rounded-full px-4 py-2 text-sm ${tab === k ? 'mc-selected' : ''}`}>{tr(label)}</button>
         ))}
       </div>
       {error && <p className="px-4 pt-3 text-sm text-red-300">{tr(error)}</p>}
@@ -78,12 +79,12 @@ function Scene({ data, chatId }) {
   const s = data.scene;
   return (
     <>
-      <div className={`rounded-xl px-3 py-2 text-xs ${data.sync.synced ? 'bg-emerald-500/10 text-emerald-200' : 'bg-yellow-500/10 text-yellow-200'}`}>
-        {data.sync.synced ? tr("Estado sincronizado com a conversa.") : tr("{0} turno(s) ainda não processado(s): o histórico recente vale mais que este estado.", [data.sync.lag])}
+      <div className={`rounded-xl px-3 py-2 text-xs ${data.sync?.synced ? 'bg-emerald-500/10 text-emerald-200' : 'bg-yellow-500/10 text-yellow-200'}`}>
+        {data.sync?.synced ? tr("Estado sincronizado com a conversa.") : tr("{0} turno(s) ainda não processado(s): o histórico recente vale mais que este estado.", [data.sync?.lag ?? 0])}
       </div>
       {!s && <p className="py-6 text-center text-sm text-textMuted">{tr("Ainda não há estado de cena extraído.")}</p>}
       {s && (
-        <div className="space-y-2 rounded-2xl bg-cardDark p-4 text-sm">
+        <div className="space-y-2 mc-bubble rounded-[26px] p-4 text-sm">
           <Line k={tr("Local")} v={s.location} />
           <Line k={tr("Momento")} v={s.time} />
           <Line k={tr("Clima")} v={s.mood} />
@@ -95,7 +96,7 @@ function Scene({ data, chatId }) {
         </div>
       )}
       {data.timeline?.days?.map(day => (
-        <div key={day.key} className="space-y-2 rounded-2xl bg-cardDark p-4 text-sm">
+        <div key={day.key} className="space-y-2 mc-bubble rounded-[26px] p-4 text-sm">
           <b>{day.date || tr("{0}Dia {1} desde o início", [day.months ? tr("{0} mês(es) + ", [day.months]) : '', day.days])}</b>
           {(day.blocks || []).map(block => (
             <div key={`${block.sourceId}:${block.start}`} className="border-t border-borderDark pt-2">
@@ -142,11 +143,11 @@ function Memories({ chatId, data, onChanged }) {
   return (
     <>
       <p className="text-xs text-textMuted">{tr("Fixe (📌) o que nunca pode ser esquecido: memórias fixadas entram em todas as respostas, além das 8 recuperadas por relevância.")}</p>
-      {data.memories.length === 0 && <p className="py-6 text-center text-sm text-textMuted">{tr("Nenhuma memória ainda. Elas surgem após cada resposta (quando o modelo local está disponível).")}</p>}
-      {data.memories.map((m) => (
-        <div key={m.id} className="rounded-2xl bg-cardDark p-3">
+      {(data.memories || []).length === 0 && <p className="py-6 text-center text-sm text-textMuted">{tr("Nenhuma memória ainda. Elas surgem após cada resposta (quando o modelo local está disponível).")}</p>}
+      {(data.memories || []).map((m) => (
+        <div key={m.id} className="mc-bubble rounded-[26px] p-3">
           <div className="mb-1 flex items-center gap-2 text-[11px] text-textMuted">
-            <span className="rounded-full bg-composer px-2 py-0.5">{tr(KIND[m.kind] || m.kind)}</span>
+            <span className="mc-bubble rounded-full px-2 py-0.5">{tr(KIND[m.kind] || m.kind)}</span>
             {m.subject && <span>{m.subject}</span>}
             <button onClick={() => toggleVis(m)} className="ml-auto flex items-center gap-1" title={tr("Alternar entre restrita e pública")}>
               {m.visibility === 'private' ? <><Lock size={11} />{tr(" restrita")}</> : <><Globe size={11} />{tr(" pública")}</>}
@@ -156,7 +157,7 @@ function Memories({ chatId, data, onChanged }) {
             <button onClick={() => del(m)} aria-label={tr("Apagar")}><Trash2 size={13} /></button>
           </div>
           <p className="text-sm" onClick={() => setSel(sel === m.id ? null : m.id)}>{m.content}</p>
-          {m.knowledge.length > 0 && (
+          {(m.knowledge || []).length > 0 && (
             <p className="mt-1 text-[11px] text-textMuted">
               {m.knowledge.map((k) => `${k.name}: ${k.state === 'knows' ? tr('sabe') : k.state === 'believes' ? tr('acredita') : tr('desconhece')}${k.via ? ` (${tr(VIA[k.via] || k.via)})` : ''}`).join(' · ')}
             </p>
@@ -171,7 +172,7 @@ function Memories({ chatId, data, onChanged }) {
           ) : (
             <div className="space-y-3 px-2 pb-4 text-sm">
               {src.user && <p className="rounded-2xl bg-accentPurple/20 p-3">{src.user}</p>}
-              <p className="whitespace-pre-wrap rounded-2xl bg-cardDark p-3">{src.assistant}</p>
+              <p className="whitespace-pre-wrap mc-bubble rounded-[26px] p-3">{src.assistant}</p>
             </div>
           )}
         </Sheet>
@@ -185,16 +186,16 @@ function Story({ data }) {
   return (
     <>
       <h3 className="text-xs font-semibold uppercase tracking-wide text-textMuted">{tr("Relações")}</h3>
-      {data.relationships.length === 0 && <p className="text-sm text-textMuted">{tr("Nenhuma.")}</p>}
-      {data.relationships.map((r) => (
-        <p key={r.id} className="rounded-2xl bg-cardDark p-3 text-sm"><b>{r.a}</b> ↔ <b>{r.b}</b>: {r.description}</p>
+      {(data.relationships || []).length === 0 && <p className="text-sm text-textMuted">{tr("Nenhuma.")}</p>}
+      {(data.relationships || []).map((r) => (
+        <p key={r.id} className="mc-bubble rounded-[26px] p-3 text-sm"><b>{r.a}</b> ↔ <b>{r.b}</b>: {r.description}</p>
       ))}
       <h3 className="pt-2 text-xs font-semibold uppercase tracking-wide text-textMuted">{tr("Threads abertas")}</h3>
-      {data.threads.length === 0 && <p className="text-sm text-textMuted">{tr("Nenhuma.")}</p>}
-      {data.threads.map((t) => <p key={t.id} className="rounded-2xl bg-cardDark p-3 text-sm">{t.text}</p>)}
+      {(data.threads || []).length === 0 && <p className="text-sm text-textMuted">{tr("Nenhuma.")}</p>}
+      {(data.threads || []).map((t) => <p key={t.id} className="mc-bubble rounded-[26px] p-3 text-sm">{t.text}</p>)}
       <h3 className="pt-2 text-xs font-semibold uppercase tracking-wide text-textMuted">{tr("Episódios resumidos")}</h3>
-      {data.episodes.length === 0 && <p className="text-sm text-textMuted">{tr("Os resumos surgem quando os turnos saem da janela recente; os originais continuam guardados.")}</p>}
-      {data.episodes.map((e) => <p key={e.id} className="rounded-2xl bg-cardDark p-3 text-sm"><span className="text-xs text-textMuted">{tr("turnos ")}{e.from_seq}–{e.to_seq}</span><br />{e.summary}</p>)}
+      {(data.episodes || []).length === 0 && <p className="text-sm text-textMuted">{tr("Os resumos surgem quando os turnos saem da janela recente; os originais continuam guardados.")}</p>}
+      {(data.episodes || []).map((e) => <p key={e.id} className="mc-bubble rounded-[26px] p-3 text-sm"><span className="text-xs text-textMuted">{tr("turnos ")}{e.from_seq}–{e.to_seq}</span><br />{e.summary}</p>)}
     </>
   );
 }
@@ -202,18 +203,18 @@ function Story({ data }) {
 function State({ chatId, data, onChanged }) {
   useLanguage();
   const j = data.jobs || {};
-  const l = data.local;
+  const l = data.local || {};
   return (
     <>
-      <div className="space-y-1.5 rounded-2xl bg-cardDark p-4 text-sm">
+      <div className="space-y-1.5 mc-bubble rounded-[26px] p-4 text-sm">
         <Line k={tr("Pendentes")} v={String((j.pending || 0) + (j.running || 0))} />
         <Line k={tr("Falharam")} v={String(j.failed || 0)} />
         <Line k={tr("Concluídos")} v={String(j.done || 0)} />
-        <Line k={tr("Modelo de memória (GPU sob demanda)")} v={l.chat.ok ? tr("Qwen3-4B Q4 disponível") : tr("indisponível")} />
-        <Line k={tr("Embeddings (CPU)")} v={l.embed.ok ? tr("BGE-M3 disponível") : tr("indisponível")} />
+        <Line k={tr("Modelo de memória (GPU sob demanda)")} v={l.chat?.ok ? (l.chat.model || tr("Disponível")) : tr("indisponível")} />
+        <Line k={tr("Embeddings (CPU)")} v={l.embed?.ok ? (l.embed.model || tr("Disponível")) : tr("indisponível")} />
       </div>
       {(j.failed || 0) > 0 && (
-        <button onClick={async () => { await api.retryJobs(chatId); onChanged(); }} className="flex w-full items-center justify-center gap-2 rounded-full bg-composer py-3 text-sm">
+        <button onClick={async () => { await api.retryJobs(chatId); onChanged(); }} className="flex w-full items-center justify-center gap-2 mc-bubble rounded-full py-3 text-sm">
           <RefreshCw size={16} />{tr(" Tentar de novo os que falharam\n        ")}</button>
       )}
     </>
@@ -246,7 +247,7 @@ function AddMemory({ chatId, cast, onClose, onSaved }) {
             ))}
           </div>
         )}
-        <button onClick={save} disabled={content.trim().length < 6} className="w-full rounded-full bg-accentPurple py-3.5 font-semibold text-white disabled:opacity-40">{tr("Salvar")}</button>
+        <button onClick={save} disabled={content.trim().length < 6} className="mc-bubble mc-glass-accent w-full rounded-full py-3.5 font-semibold text-white disabled:opacity-40">{tr("Salvar")}</button>
       </div>
     </Sheet>
   );

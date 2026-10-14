@@ -196,7 +196,7 @@ textarea::placeholder,
 /* The height follows the text without measuring scrollHeight in JS (the Composer only measures when the browser lacks support). */
 .mc-composer-input { field-sizing: content; }
 /* Off-screen list rows skip layout/paint; the typical height avoids scrollbar jumps. */
-.mc-list-row { content-visibility: auto; contain-intrinsic-size: auto 84px; }
+.mc-list-row { content-visibility: auto; contain-intrinsic-size: auto 76px; }
 .mc-generation {
   display: flex;
   align-items: center;

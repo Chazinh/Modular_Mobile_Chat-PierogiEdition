@@ -555,5 +555,12 @@
   "Sem conexão com o PC": "Not connected to the PC",
   "Verificando conexão": "Checking connection",
   "Mira em torno deste tamanho: aceita de {0} a {1} e só corta acima de {2}, no fim da última frase completa.": "Aims around this size: accepts {0} to {1} and only cuts above {2}, at the end of the last complete sentence.",
-  "O provedor encerrou a resposta pelo limite de tokens. Toque em Continuar para completá-la.": "The provider ended the reply at its token limit. Tap Continue to complete it."
+  "O provedor encerrou a resposta pelo limite de tokens. Toque em Continuar para completá-la.": "The provider ended the reply at its token limit. Tap Continue to complete it.",
+  "Enviar regras na primeira mensagem": "Send rules in the first message",
+  "Ligado: inclui as regras do app na primeira mensagem enviada ao modelo, antes da conversa. Desligado: o app escolhe o formato compatível com a rota. Suas mensagens salvas não são alteradas.": "On: includes the app rules in the first message sent to the model, before the conversation. Off: the app chooses the format supported by the route. Your saved messages are unchanged.",
+  "Expandir mensagem": "Expand message",
+  "Recolher mensagem": "Collapse message",
+  "Rascunho salvo": "Draft saved",
+  "Escrever mensagem": "Write a message",
+  "Disponível": "Available"
 }

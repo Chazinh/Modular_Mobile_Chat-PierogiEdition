@@ -325,3 +325,20 @@ button.mc-glass-pill:active::after { opacity: .55; }
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+
+/* Keep the chat islands' glass surface stable across the pop and all direction changes. */
+[data-bar-item] .mc-glass-pill { -webkit-backdrop-filter: none; backdrop-filter: none; }
+.mc-identity-pill {
+  height: 44px;
+}
+.mc-screen .bg-cardDark { border-radius: 26px; background: linear-gradient(180deg, var(--gl-top), var(--gl-bot)); box-shadow: inset 1px 1px 1px rgba(var(--mc-white-rgb, 255,255,255), .18), 0 6px 18px -8px var(--gl-shadow); }
+.mc-screen .bg-composer, .mc-sheet .bg-composer, .mc-drawer-panel .bg-composer { border-radius: 20px; background-color: rgb(calc(12 * var(--mc-tr, 1)) calc(12 * var(--mc-tg, 1)) calc(22 * var(--mc-tb, 1)) / .32); }
+.mc-composer-shell { width: 100%; min-height: 44px; transition: width .24s cubic-bezier(.22,1,.36,1); }
+.mc-composer-content { display: flex; position: relative; align-items: flex-end; gap: 8px; padding: 4px 12px 4px 20px; max-height: 168px; opacity: 1; transition: max-height .24s cubic-bezier(.22,1,.36,1), opacity .14s ease; }
+.mc-composer-collapsed { width: 68px; }
+.mc-composer-collapsed .mc-composer-content { max-height: 0; padding-block: 0; overflow: hidden; opacity: 0; pointer-events: none; }
+.mc-composer-capsule { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; opacity: 0; visibility: hidden; }
+.mc-composer-collapsed .mc-composer-capsule { opacity: 1; visibility: visible; transition: opacity .16s ease .08s; }
+@media (prefers-reduced-motion: reduce) { .mc-composer-shell, .mc-composer-content, .mc-composer-capsule { transition: none; } }
+.mc-chat .mc-scroll, .mc-composer-input { scrollbar-width: none; }
+.mc-chat .mc-scroll::-webkit-scrollbar, .mc-composer-input::-webkit-scrollbar { display: none; }

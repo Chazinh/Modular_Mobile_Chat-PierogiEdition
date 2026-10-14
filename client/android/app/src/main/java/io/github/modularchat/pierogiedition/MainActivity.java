@@ -9,6 +9,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.view.Gravity;
 import androidx.appcompat.app.AlertDialog;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
@@ -21,6 +23,8 @@ public class MainActivity extends BridgeActivity {
     private boolean perf;
     private boolean unlocked = false;
     private boolean prompting = false;
+    private boolean resumed = false;
+    private boolean transientRetried = false;
     private BiometricPrompt prompt;
     private final ArrayList<Runnable> unlockCallbacks = new ArrayList<>();
     public void whenUnlocked(Runnable callback) { runOnUiThread(() -> { if (unlocked) callback.run(); else unlockCallbacks.add(callback); }); }
@@ -45,14 +49,20 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-        privacyCover = new View(this);
+        TextView unlockView = new TextView(this);
+        unlockView.setText(LanguagePlugin.text(this, "Toque para desbloquear", "Tap to unlock"));
+        unlockView.setTextColor(0xffe7e7ea);
+        unlockView.setGravity(Gravity.CENTER);
+        privacyCover = unlockView;
         privacyCover.setBackgroundColor(0xff1b1b1d);
         privacyCover.setClickable(true);
+        privacyCover.setOnClickListener(v -> { if (resumed && !prompting && !unlocked) authenticate(); });
         addContentView(privacyCover, new FrameLayout.LayoutParams(-1, -1));
         prompt = new BiometricPrompt(this, ContextCompat.getMainExecutor(this), new BiometricPrompt.AuthenticationCallback() {
             @Override public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
                 super.onAuthenticationSucceeded(result);
                 prompting = false;
+                if (!resumed) return;
                 unlocked = true;
                 privacyCover.setVisibility(View.GONE);
                 for (Runnable callback : new ArrayList<>(unlockCallbacks)) callback.run();
@@ -61,13 +71,32 @@ public class MainActivity extends BridgeActivity {
             @Override public void onAuthenticationError(int code, CharSequence message) {
                 super.onAuthenticationError(code, message);
                 prompting = false;
-                if (!isFinishing() && getLifecycle().getCurrentState().isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) finish();
+                // A system cancellation during Recents is not the user choosing Exit.
+                if (code == BiometricPrompt.ERROR_CANCELED) {
+                    if (resumed && !transientRetried) {
+                        transientRetried = true;
+                        privacyCover.post(() -> { if (resumed && hasWindowFocus() && !unlocked && !prompting && !isFinishing()) authenticate(); });
+                    }
+                    return;
+                }
+                if (resumed && (code == BiometricPrompt.ERROR_NEGATIVE_BUTTON || code == BiometricPrompt.ERROR_USER_CANCELED)) finish();
             }
         });
     }
     @Override public void onResume() {
         super.onResume();
-        if (privacyCover != null && !unlocked && !prompting) authenticate();
+        resumed = true;
+        transientRetried = false;
+        // Wait for the window to return from Recents before opening the system prompt.
+        if (hasWindowFocus() && privacyCover != null && !unlocked && !prompting) authenticate();
+    }
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && resumed && privacyCover != null && !unlocked && !prompting) authenticate();
+    }
+    @Override public void onPause() {
+        resumed = false;
+        super.onPause();
     }
     @Override public void onStop() {
         // icon change chosen in the app: applied only while the app is off screen (see AppIconPlugin)

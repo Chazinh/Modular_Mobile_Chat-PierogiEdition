@@ -1,7 +1,8 @@
 import { useConfirm } from './ConfirmProvider.jsx';
 import { tr, useLanguage } from '../i18n.js';
 import React, { memo, useEffect, useRef, useState } from 'react';
-import { Plus, Settings, RefreshCw, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, Brain, Pencil } from 'lucide-react';
+import { Plus, Settings, RefreshCw, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, Pencil } from 'lucide-react';
+import BrainIcon from './BrainIcon.jsx';
 import { api } from '../api.js';
 import { Avatar, timeAgo, useLongPress } from '../ui.jsx';
 import { plainText } from '../format.js';
@@ -16,7 +17,7 @@ function preview(text) {
 
 const PULL_TRIGGER = 96; // finger travel (px) that triggers the refresh when released
 
-export default function ChatList({ chats, offline, status, onRefresh, error, archivedView, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
+export default function ChatList({ chats, offline, status, onRefresh, error, archivedView, switchingArchived, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
   const confirm = useConfirm();
   useLanguage();
   const [sheet, setSheet] = useState(null);
@@ -90,7 +91,6 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
     setTimeout(() => setToast(''), 2200);
   };
 
-
   async function act(fn, ok) {
     setSheet(null);
     try {
@@ -137,6 +137,8 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
           <div className="flex items-center gap-2">
             <button
               onClick={onToggleArchived}
+              disabled={switchingArchived}
+              aria-busy={switchingArchived}
               className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
               aria-label={tr("Arquivadas")}
             >
@@ -257,7 +259,7 @@ const ChatRow = memo(function ChatRow({ chat, onOpen, onMenu, onViewAvatar }) {
   useLanguage();
   const press = useLongPress(() => onMenu(chat), 550);
   return (
-    <button {...press} className="mc-list-row flex w-full items-center gap-3 px-4 py-3 text-left active:bg-cardDarkHover" onClick={() => onOpen(chat.id)}>
+    <button {...press} className="mc-list-row flex w-full items-center gap-3 px-3 py-2 text-left active:bg-cardDarkHover" onClick={(e) => onOpen(chat.id, e.currentTarget)}>
       <span
         role="button"
         tabIndex={0}
@@ -286,7 +288,7 @@ const ChatRow = memo(function ChatRow({ chat, onOpen, onMenu, onViewAvatar }) {
           )}
           {chat.pendingJobs > 0 && (
             <span className="flex items-center gap-1">
-              <Brain size={11} />{tr(" memória pendente (")}{chat.pendingJobs})
+              <BrainIcon size={11} />{tr(" memória pendente (")}{chat.pendingJobs})
             </span>
           )}
         </div>

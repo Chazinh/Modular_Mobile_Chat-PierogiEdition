@@ -147,7 +147,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
       <div ref={panelRef} className="mc-drawer-panel">
         {page === null && (
           <>
-            <div className="flex-1 overflow-y-auto">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               <StairList className="min-h-full">
                 <div className="mc-bubble mx-[10px] mb-[10px] mt-1 flex items-center gap-3 rounded-[30px] py-2.5 pl-2.5 pr-4">
                   <button onClick={() => fileRef.current?.click()} className="relative shrink-0" aria-label={tr("Trocar avatar")}>
@@ -224,7 +224,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
                 />
               </label>
               <label className="flex items-center justify-between gap-3 rounded-[20px] bg-composer px-3.5 py-3 text-white">
-                <span>{tr("\n                  Regras no primeiro turno\n                  ")}<span className="block text-xs text-textMuted">{tr("Automático: system onde a rota respeita; primeiro turno só onde é descartado (cbai).")}</span>
+                <span>{tr("\n                  Enviar regras na primeira mensagem\n                  ")}<span className="block text-xs text-textMuted">{tr("Ligado: inclui as regras do app na primeira mensagem enviada ao modelo, antes da conversa. Desligado: o app escolhe o formato compatível com a rota. Suas mensagens salvas não são alteradas.")}</span>
                 </span>
                 <input
                   type="checkbox"
@@ -480,17 +480,15 @@ function GlassAvatar({ name, avatar }) {
 function SubPage({ title, onBack, children, action, footer }) {
   useLanguage();
   return (
-    <div className="flex h-full flex-col">
-      <div className="px-[10px] pb-[10px] pt-1">
-        <div className="mc-glass-pill flex items-center gap-2 rounded-full px-3 py-2">
-          <button onClick={onBack} className="p-1 active:scale-90" aria-label={tr("Voltar")}>
-            <ChevronLeft size={22} />
-          </button>
-          <h2 className="flex-1 truncate font-semibold text-[15px]">{title}</h2>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="relative z-10 shrink-0 px-[10px] pb-[10px] pt-1">
+        <div className="mc-bubble flex h-11 items-center gap-2 rounded-full px-3">
+          <button onClick={onBack} className="p-1" aria-label={tr("Voltar")}><ChevronLeft size={22} /></button>
+          <h2 className="flex-1 truncate text-[15px] font-semibold">{title}</h2>
           {action}
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto">
+      <div className="mc-subpage-scroller min-h-0 flex-1 overflow-y-auto">
         <StairList className="min-h-full pt-1">
           {children}
         </StairList>
@@ -562,7 +560,7 @@ function PromptPage({ chat, onBack, onSaved, onClosePage }) {
 
           autoCorrect="on"
           autoCapitalize="sentences"
-          className="min-h-[300px] flex-1 resize-none rounded-xl bg-composer p-3 text-[15px] leading-relaxed outline-none"
+          className="h-[50dvh] min-h-[180px] w-full shrink-0 resize-none overflow-y-auto rounded-[20px] bg-composer p-3 text-[16px] leading-relaxed outline-none"
         />
         <input ref={fileRef} type="file" accept=".txt,text/plain" className="hidden" onChange={async (e) => { const f = e.target.files?.[0]; if (f) setV(await f.text()); e.target.value = ''; }} />
         <button onClick={() => fileRef.current?.click()} className="mt-3 flex items-center justify-center gap-2 rounded-full bg-composer py-3 text-sm text-gray-300">

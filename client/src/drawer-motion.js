@@ -264,6 +264,7 @@ export class PanelMotion {
   begin(finger) {
     if (this.dead) return;
     this.stop();
+    if (this.stagger) this.stagger.onDone = null;
     const raw = this.x < 0 ? -unrubber(-this.x, 24) : this.x;
     this.drag = { finger, raw };
     this.tracker.reset();
@@ -302,11 +303,19 @@ export class PanelMotion {
   settle(target, v0) {
     if (this.dead) return;
     this.stop();
+    this.drag = null;
+    this.panel.classList.remove('mc-dragging');
+    if (this.stagger) {
+      this.stagger.dragging = false;
+      this.stagger.onDone = null;
+    }
     this.v = this.axis === 'x' ? clamp(v0 || 0, -this.closed * 2, this.closed * 2) : v0 || 0;
     if (reduced()) {
+      this.goal = target === 'open' ? 0 : this.closed;
       this.x = target === 'open' ? 0 : this.closed;
       this.v = 0;
       this.render();
+      this.stagger?.release();
       this.finish(target);
       return;
     }
@@ -341,7 +350,8 @@ export class PanelMotion {
   finish(target) {
     // closing: the menu is only removed after the last row has left (staircase top to bottom)
     if (target === 'closed' && this.stagger?.items && !this.dead) {
-      this.stagger.onDone = () => this.onClosed?.();
+      this.stagger.onDone = () => { if (!this.dead && !this.drag && this.goal >= this.closed) this.onClosed?.(); };
+      this.stagger.kick();
       return;
     }
     if (target === 'closed') this.onClosed?.();

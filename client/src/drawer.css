@@ -47,11 +47,13 @@
 /* Content of the menu/sheet pages: a permanent compositor layer, so the elastic stretch (elastic.js) only moves it
    and never re-creates the layer mid-gesture (that re-raster made the glass bubbles flicker). The inner list does
    not chain its scroll to the chat behind nor show the native overscroll on top of the elastic one. */
-.mc-elastic-wrapper { will-change: transform; backface-visibility: hidden; }
+.mc-elastic-wrapper { backface-visibility: visible; }
 /* Plain box around each menu item (StairList in SettingsDrawer.jsx): the staircase moves this box, never the bubble.
    flow-root keeps the item's own margins inside the box, so the spacing is the same as before the box existed. */
 .mc-stair { display: flow-root; }
-.mc-drawer-panel .overflow-y-auto { overscroll-behavior: contain; }
+.mc-drawer-panel .overflow-y-auto { overscroll-behavior: contain; scrollbar-width: none; }
+.mc-drawer-panel .overflow-y-auto::-webkit-scrollbar { display: none; }
+.mc-subpage-scroller { border-radius: 26px; }
 /* While the rows move in a staircase (drawer-motion.js), the scroller's clipping box is widened far beyond the panel
    (negative margin + equal padding: the content box and the layout of the rows do not change), so rows trailing to
    the left or right of the panel are not cut by a straight line across the screen. */
@@ -140,3 +142,7 @@
   animation: rpModalScaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+
+/* Text fields own their scroll; it cannot chain into the surrounding glass page. */
+textarea, [contenteditable="true"] { overscroll-behavior: contain; touch-action: pan-y; }
+.mc-chat .mc-scroll { overscroll-behavior-y: contain; }

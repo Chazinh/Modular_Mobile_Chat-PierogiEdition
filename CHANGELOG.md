@@ -5,6 +5,16 @@ implemented features.
 
 ## Released
 
+### Mobile UI refinements, compact composer capsule, gesture tuning and portal screens — 2026-10-14
+
+- **Compact Composer Capsule**: Introduced a compact 68px floating input capsule displaying a keyboard icon when collapsed. Expands on tap with focus; collapses on tap outside, back navigation, or virtual keyboard dismissal while preserving message drafts.
+- **Card-to-Chat Seamless Expansion**: Chat opening now expands smoothly from the tapped chat card's bounding rectangle (`press-feedback.js`), popping the glass rim at the target apex without disjoint circular overlays.
+- **Custom Brain Vector Icon**: Added custom dual-hemisphere vector graphic component (`BrainIcon.jsx`) used for conversation memory access and pending memory indicators.
+- **Portal Rendering for Sheets and Screens**: Rendered secondary views (`CastScreen`, `MemoryScreen`, `PersonaManager`, `StyleForm`) via React portals to `document.body` to decouple them from transformed drawer parent containers.
+- **Gesture and Scroll Improvements**: Enforced single-owner native scrolling for reading history, removed competing elastic offsets from history and drawer panel, and prevented drawer unmount glitches during mid-gesture reversals.
+- **Home List & Typography Refinements**: Adjusted chat card margins (12px horizontal, 8px vertical padding) and intrinsic layout estimates (76px). Synchronized conversation and archived list switching to prevent displaying stale responses.
+- **Biometrics Activity Lifecycle Fix**: Prevented activity teardown on system cancellation (`ERROR_CANCELED`) in AndroidX `BiometricPrompt` during Recents task switching, resuming authentication on window focus.
+
 ### Android host-trust auto-detection and network security configuration — 2026-10-14
 
 - Updated `client/android/app/build.gradle` to auto-detect the local `host-trust` directory (`${rootDir}/host-trust/xml/modularchat_host_security_config.xml`), embedding local CA anchors without requiring explicit environment variables.

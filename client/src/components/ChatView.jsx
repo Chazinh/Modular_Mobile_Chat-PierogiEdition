@@ -2,8 +2,8 @@ import { useConfirm } from './ConfirmProvider.jsx';
 import { tr, useLanguage } from '../i18n.js';
 import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import {
-  ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2, Brain,
-  ArrowDown, Layers, Info, WifiOff, Check, AlertTriangle,
+  ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2,
+  ArrowDown, Keyboard, Layers, Info, WifiOff, Check, AlertTriangle,
 } from 'lucide-react';
 import { api, uuid } from '../api.js';
 import { useLayer } from '../nav.js';
@@ -13,6 +13,7 @@ import { Sheet, SheetButton } from './Sheet.jsx';
 import SettingsDrawer from './SettingsDrawer.jsx';
 import CastScreen from './CastScreen.jsx';
 import MemoryScreen from './MemoryScreen.jsx';
+import BrainIcon from './BrainIcon.jsx';
 import { flushStyleSettings } from '../style-settings.js';
 import { useResume } from '../lifecycle.js';
 import { useReadingGesture, useDrawerGesture, useTopBar } from '../gestures.js';
@@ -55,7 +56,7 @@ function mergeChat(prev, next) {
   return { chat: { ...next, history: same ? prev.history : history }, historyChanged: !same };
 }
 
-export default function ChatView({ chatId, status, openSettingsInitially, onBack, onChanged, onCreate, onDeleted }) {
+export default function ChatView({ chatId, openSettingsInitially, status, onBack, onChanged, onCreate, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
   const [chat, setChat] = useState(null);
@@ -576,7 +577,7 @@ export default function ChatView({ chatId, status, openSettingsInitially, onBack
                 <ChevronLeft size={24} />
               </button>
             </div>
-            <div data-bar-item className="flex min-w-0"><div className="mc-glass-pill mc-identity-pill pointer-events-auto flex min-w-0 items-center gap-2 rounded-full py-1 pl-1 pr-3.5 shadow-lg">
+            <div data-bar-item className="flex min-w-0"><div className="mc-glass-pill mc-identity-pill pointer-events-auto flex min-w-0 items-center gap-2 h-11 rounded-full pl-1 pr-3.5 shadow-lg">
               <button
                 onClick={() => setViewerAvatar({ name: chat?.name, avatar: chat?.avatar })}
                 className="shrink-0 active:scale-95 transition-transform"
@@ -617,7 +618,7 @@ export default function ChatView({ chatId, status, openSettingsInitially, onBack
                 className="mc-glass-pill pointer-events-auto relative flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
                 aria-label={tr("Memória")}
               >
-                <Brain size={22} />
+                <BrainIcon size={22} />
                 {chat?.memorySummary?.pending > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accentPurpleLight ring-2 ring-black/40" />}
               </button>
             </div>
@@ -865,7 +866,16 @@ const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, on
 const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend }, ref) {
   useLanguage();
   const [value, setValue] = useState(() => api.getDraft(chatId));
+  const [collapsed, setCollapsed] = useState(true);
+  const collapsedRef = useRef(true);
+  const shellRef = useRef(null);
+  const openHeight = useRef(0);
   const textRef = useRef(null);
+  const expand = () => {
+    openHeight.current = window.visualViewport?.height || window.innerHeight;
+    collapsedRef.current = false; setCollapsed(false);
+    requestAnimationFrame(() => textRef.current?.focus({ preventScroll: true }));
+  };
   const valueRef = useRef(value);
   const draftTimer = useRef(0);
   const autosize = useRef(typeof CSS === 'undefined' || !CSS.supports?.('field-sizing', 'content'));
@@ -877,6 +887,33 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
     draftTimer.current = 0;
     api.setDraft(chatId, valueRef.current);
   }, [chatId]);
+
+  const collapse = useCallback(() => {
+    if (collapsedRef.current) return;
+    collapsedRef.current = true;
+    setCollapsed(true);
+    textRef.current?.blur();
+    flushDraft();
+  }, [flushDraft]);
+  useLayer(!collapsed, collapse);
+  useEffect(() => {
+    if (collapsed) return;
+    const outside = event => { if (!shellRef.current?.contains(event.target)) collapse(); };
+    let keyboardSeen = false;
+    const viewport = () => {
+      const height = window.visualViewport?.height || window.innerHeight;
+      if (height < openHeight.current - 120) keyboardSeen = true;
+      else if (keyboardSeen && height >= openHeight.current - 60) collapse();
+    };
+    document.addEventListener('pointerdown', outside, true);
+    window.addEventListener('resize', viewport);
+    window.visualViewport?.addEventListener('resize', viewport);
+    return () => {
+      document.removeEventListener('pointerdown', outside, true);
+      window.removeEventListener('resize', viewport);
+      window.visualViewport?.removeEventListener('resize', viewport);
+    };
+  }, [collapsed, collapse]);
 
   useImperativeHandle(ref, () => ({
     clear() {
@@ -919,7 +956,11 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
     <>
       <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 px-3" style={{ paddingBottom: 'calc(var(--sab) + 8px)' }}>
         <div className="mc-col">
-          <div className="mc-glass-pill pointer-events-auto flex items-end gap-2 rounded-[28px] px-3.5 py-1 shadow-xl">
+          <div ref={shellRef} className={`mc-composer-shell mc-glass-pill pointer-events-auto mx-auto rounded-[28px] shadow-xl ${collapsed ? 'mc-composer-collapsed' : ''}`}>
+            <button onClick={expand} className="mc-composer-capsule" aria-label={tr('Expandir mensagem')} aria-expanded={!collapsed} tabIndex={collapsed ? 0 : -1} aria-hidden={!collapsed}>
+              <Keyboard size={22} />
+            </button>
+            <div className="mc-composer-content" inert={collapsed ? true : undefined} aria-hidden={collapsed}>
             <textarea
               ref={textRef}
               rows={1}
@@ -943,6 +984,7 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
             >
               <SendHorizontal size={20} />
             </button>
+            </div>
           </div>
           {value.length > 4800 && (
             <p className="pointer-events-auto px-4 pt-1 text-right text-xs text-textMuted">

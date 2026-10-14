@@ -6,15 +6,19 @@
 import { clamp, frameDt, rubber, springStep, VelocityTracker } from './drawer-motion.js';
 
 const RANGE = 130; // px of drag to go from 0 to 1
+export const TOP_BAR_OPEN_SPRING = { k: 320, c: 28 };
 const BUBBLE = 64; // bubble diameter (px) at its peak, before popping
 const GROW_END = 0.5; // up to here the dot only swells
-const POP_END = 0.7; // pop: the bubble expands and fades, the ring spreads
+export const TOP_BAR_POP_END = 0.7;
+const POP_END = TOP_BAR_POP_END; // pop: the bubble expands and fades, the ring spreads
 const ease = (t) => 1 - Math.pow(1 - t, 3);
 const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+export const topBarPopProgress = (p) => clamp((p - GROW_END) / (POP_END - GROW_END), 0, 1);
+
 export class TopBarMotion {
-  constructor({ bar, handle, bubble, ring, onState }) {
-    Object.assign(this, { bar, handle, bubble, ring, onState });
+  constructor({ bar, handle, bubble, ring, onState, origin, onProgress }) {
+    Object.assign(this, { bar, handle, bubble, ring, onState, origin, onProgress });
     this.p = 0;
     this.v = 0;
     this.raf = 0;
@@ -32,7 +36,7 @@ export class TopBarMotion {
     const items = Array.from(this.bar.querySelectorAll('[data-bar-item]'));
     for (const el of items) el.style.transform = '';
     const h = this.handle.getBoundingClientRect();
-    const cx = h.left + h.width / 2, cy = h.top + h.height / 2;
+    const cx = this.origin?.x ?? h.left + h.width / 2, cy = this.origin?.y ?? h.top + h.height / 2;
     this.center = { x: cx, y: cy };
     const spread = Math.max(1, ...items.map((el) => { const r = el.getBoundingClientRect(); return Math.abs(r.left + r.width / 2 - cx); }));
     this.items = items.map((el) => {
@@ -45,8 +49,9 @@ export class TopBarMotion {
 
   render() {
     const p = this.p;
+    this.onProgress?.(p);
     const grow = clamp(p / GROW_END, 0, 1);
-    const pop = clamp((p - GROW_END) / (POP_END - GROW_END), 0, 1);
+    const pop = topBarPopProgress(p);
     // bubble: swells (with a slight spring breathing from the velocity), then pops by expanding and fading
     const wobble = 1 + clamp(this.v / 40, -0.08, 0.08);
     const size = (9 + (BUBBLE - 9) * ease(grow)) * (1 + pop * 0.55);
@@ -60,7 +65,8 @@ export class TopBarMotion {
     // buttons: leave the bubble center for their places, growing; past 1 (rubber band) they stretch a little
     const over = Math.max(0, p - 1);
     for (const it of this.items) {
-      const q = ease(clamp((p - POP_END + 0.08 - it.delay) / (1 - POP_END), 0, 1));
+      const start = POP_END - 0.08 + it.delay;
+      const q = ease(clamp((p - start) / (1 - start), 0, 1));
       const k = 1 - q;
       const s = 0.25 + 0.75 * q;
       const stretch = 1 + over * 0.25;
@@ -135,7 +141,8 @@ export class TopBarMotion {
       return;
     }
     this.goal = goal;
-    this.v = v0;
+    this.drag = null;
+    this.v = goal ? Math.max(0, v0) : Math.min(0, v0);
     this.setState(goal ? 'opening' : 'closing');
     let last = 0;
     const tick = (now) => {
@@ -143,7 +150,7 @@ export class TopBarMotion {
       const dt = frameDt(now, last);
       last = now;
       // a slightly loose spring: overshoots and comes back, like a bubble
-      const s = springStep({ x: this.p, v: this.v }, goal, dt, 170, goal ? 15 : 22);
+      const s = springStep({ x: this.p, v: this.v }, goal, dt, TOP_BAR_OPEN_SPRING.k, goal ? TOP_BAR_OPEN_SPRING.c : 36);
       this.p = Math.max(0, s.x);
       this.v = s.v;
       if (Math.abs(this.p - goal) < 0.002 && Math.abs(this.v) < 0.02) {

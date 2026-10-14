@@ -47,7 +47,7 @@ export default function CastScreen({ chatId, persona, onClose, onChanged }) {
       title={tr("Elenco")}
       onClose={onClose}
       action={
-        <button onClick={() => setEdit({ isNew: true, name: '', aliases: [], description: '', kind: 'npc' })} className="rounded-full bg-accentPurple p-2 text-white" aria-label={tr("Adicionar personagem")}>
+        <button onClick={() => setEdit({ isNew: true, name: '', aliases: [], description: '', kind: 'npc' })} className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-full" aria-label={tr("Adicionar personagem")}>
           <Plus size={18} />
         </button>
       }
@@ -66,7 +66,7 @@ export default function CastScreen({ chatId, persona, onClose, onChanged }) {
         {error && <p className="text-sm text-yellow-200">{tr(error)}</p>}
         {cast?.length === 0 && <p className="py-8 text-center text-sm text-textMuted">{tr("Nenhum personagem ainda. A ficha será analisada ao salvar.")}</p>}
         {cast?.map((c) => (
-          <button key={c.id} onClick={() => setEdit(c)} className="flex w-full items-center gap-3 rounded-2xl bg-cardDark p-3 text-left active:bg-cardDarkHover">
+          <button key={c.id} onClick={() => setEdit(c)} className="flex w-full items-center gap-3 mc-bubble rounded-[26px] p-3 text-left active:bg-cardDarkHover">
             <Avatar name={c.name} avatar={c.avatar} size={48} round />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">

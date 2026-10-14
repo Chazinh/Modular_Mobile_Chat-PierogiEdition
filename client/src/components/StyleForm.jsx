@@ -83,7 +83,7 @@ export default function StyleForm({ onChange }) {
     <div className="space-y-5 px-5 pb-6 text-sm text-textMuted">
       <p>{tr("Valem para ")}<b className="text-white">{tr("todos os chats")}</b>{tr(", a partir da próxima resposta. ")}{saved && <span className="text-accentPurpleLight">{tr(saved)}</span>}</p>
 
-      <section className="space-y-2 rounded-2xl bg-cardDark p-4 text-white">
+      <section className="space-y-2 mc-bubble rounded-[26px] p-4 text-white">
         <div className="flex items-center justify-between">
           <span className="font-medium">{tr("Tamanho da resposta")}</span>
           <span className="rounded-md bg-accentPurple/20 px-2 py-0.5 font-mono text-accentPurpleLight">{fmt(s.botChars)}</span>
@@ -95,37 +95,37 @@ export default function StyleForm({ onChange }) {
         />
         <div className="flex flex-wrap gap-2">
           {[500, 1000, 2000, 4000, 6000, 8000].map((n) => (
-            <button key={n} onClick={() => change({ botChars: n })} aria-pressed={s.botChars === n} className={`rounded-full px-3 py-1 text-xs ${s.botChars === n ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>
+            <button key={n} onClick={() => change({ botChars: n })} aria-pressed={s.botChars === n} className={`mc-bubble rounded-full px-3 py-1 text-xs ${s.botChars === n ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>
               {fmt(n)}
             </button>
           ))}
         </div>
         <div className="flex flex-wrap gap-2" role="group" aria-label={tr("Como usar o tamanho da resposta")}>
           {[['maximum', 'Até este tamanho'], ['target', 'Alvo aproximado']].map(([value, label]) => (
-            <button key={value} onClick={() => change({ lengthMode: value })} aria-pressed={s.lengthMode === value} className={`rounded-full px-3 py-1 text-xs ${s.lengthMode === value ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>{tr(label)}</button>
+            <button key={value} onClick={() => change({ lengthMode: value })} aria-pressed={s.lengthMode === value} className={`mc-bubble rounded-full px-3 py-1 text-xs ${s.lengthMode === value ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>{tr(label)}</button>
           ))}
         </div>
         <p className="text-xs text-textMuted">{s.lengthMode === 'target' ? tr("Mira em torno deste tamanho: aceita de {0} a {1} e só corta acima de {2}, no fim da última frase completa.", [fmt(Math.ceil(s.botChars * 0.85)), fmt(Math.ceil(s.botChars * 1.25)), fmt(Math.ceil(s.botChars * 1.35))]) : tr("Pode responder menos quando a reação estiver completa, sem preencher o limite.")}{tr(" O orçamento de tokens é enviado à API antes de gerar. A conversão é aproximada; o teto também é conferido no servidor, em unidades UTF-16 (um emoji conta como 2).")}</p>
       </section>
 
-      <section className="space-y-3 rounded-2xl bg-cardDark p-4 text-white">
+      <section className="space-y-3 mc-bubble rounded-[26px] p-4 text-white">
         <div className="flex items-center justify-between gap-2">
           <span className="font-medium">{tr("Falas seguidas de cada personagem")}</span>
           <span className="font-mono text-accentPurpleLight">{s.monologueChars === 0 ? tr("Livre") : tr("{0} caracteres", [fmt(s.monologueChars)])}</span>
         </div>
         <input type="range" min={limits.monologueCharsMin || 100} max={limits.monologueCharsMax || 2000} step="50" value={s.monologueChars || 300} disabled={s.monologueChars === 0} onChange={(e) => change({ monologueChars: Number(e.target.value) })} className="w-full accent-[#7c3aed] disabled:opacity-30" aria-label={tr("Limite de falas seguidas por personagem")} />
         <div className="flex flex-wrap gap-2">
-          {[150, 300, 600, 0].map((n) => <button key={n} onClick={() => change({ monologueChars: n })} aria-pressed={s.monologueChars === n} className={`rounded-full px-3 py-1 text-xs ${s.monologueChars === n ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>{n === 0 ? tr("Livre") : fmt(n)}</button>)}
+          {[150, 300, 600, 0].map((n) => <button key={n} onClick={() => change({ monologueChars: n })} aria-pressed={s.monologueChars === n} className={`mc-bubble rounded-full px-3 py-1 text-xs ${s.monologueChars === n ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>{n === 0 ? tr("Livre") : fmt(n)}</button>)}
         </div>
         <p className="text-xs text-textMuted">{tr("Conta as falas seguidas do mesmo personagem, inclusive quando separadas por ações ou parágrafos (ações entre asteriscos não entram; emoji conta como 2). Um excesso recebe uma tentativa de reescrita; o resultado pode variar conforme o modelo.")}</p>
         <span className="block font-medium">{tr("Avanço da cena por resposta")}</span>
         <div className="flex flex-wrap gap-2" role="group" aria-label={tr("Avanço da cena por resposta")}>
-          {[['interactive', 'Devolver a vez'], ['balanced', 'Equilibrado'], ['free', 'Livre']].map(([value, label]) => <button key={value} onClick={() => change({ turnPacing: value })} aria-pressed={s.turnPacing === value} className={`rounded-full px-3 py-1 text-xs ${s.turnPacing === value ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>{tr(label)}</button>)}
+          {[['interactive', 'Devolver a vez'], ['balanced', 'Equilibrado'], ['free', 'Livre']].map(([value, label]) => <button key={value} onClick={() => change({ turnPacing: value })} aria-pressed={s.turnPacing === value} className={`mc-bubble rounded-full px-3 py-1 text-xs ${s.turnPacing === value ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>{tr(label)}</button>)}
         </div>
         <p className="text-xs text-textMuted">{s.turnPacing === 'interactive' ? tr("Uma reação curta por personagem relevante e uma pausa para você responder, sem longas conversas entre eles.") : s.turnPacing === 'balanced' ? tr("Desenvolve a reação e até um acontecimento novo antes de devolver a vez.") : tr("Permite desenvolver mais a cena, sempre preservando suas escolhas e ações.")}</p>
       </section>
 
-      <section className="space-y-2 rounded-2xl bg-cardDark p-4 text-white">
+      <section className="space-y-2 mc-bubble rounded-[26px] p-4 text-white">
         <span className="font-medium">{tr("Narração × personagens")}</span>
         <div className="flex items-center justify-between text-xs">
           <span><b className="font-mono text-accentPurpleLight">{narration}%</b>{tr(" narração")}</span>
@@ -139,15 +139,15 @@ export default function StyleForm({ onChange }) {
         <p className="text-xs text-textMuted">{tr("Proporção alvo do texto da próxima resposta. Nos extremos, 0% gera só narração e 100% só falas. Padrão: 35% narração / 65% falas.")}</p>
       </section>
 
-      <section className="space-y-2 rounded-2xl bg-cardDark p-4 text-white">
+      <section className="space-y-2 mc-bubble rounded-[26px] p-4 text-white">
         <span className="font-medium">{tr("Peso e explicitude do conteúdo")}</span>
         <div className="flex flex-wrap gap-2">
           {CONTENT_PRESETS.map(([label, text]) => (
-            <button key={tr(label)} onClick={() => change({ content: text })} aria-pressed={s.content === text} className={`rounded-full px-3 py-1 text-xs ${s.content === text ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>
+            <button key={tr(label)} onClick={() => change({ content: text })} aria-pressed={s.content === text} className={`mc-bubble rounded-full px-3 py-1 text-xs ${s.content === text ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}>
               {tr(label)}
             </button>
           ))}
-          <button onClick={() => change({ content: '' })} className="rounded-full bg-composer px-3 py-1 text-xs">{tr("Limpar")}</button>
+          <button onClick={() => change({ content: '' })} className="mc-bubble rounded-full px-3 py-1 text-xs">{tr("Limpar")}</button>
         </div>
         <textarea
           value={s.content}
