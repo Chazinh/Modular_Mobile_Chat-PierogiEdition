@@ -65,7 +65,7 @@ $env:OPENROUTER_API_KEY = "sk-or-..."              # whatever your providers.jso
 .\start-server.bat
 ```
 
-Open `http://127.0.0.1:3000` on the PC. The console prints a **6-digit pairing code** (valid for 5 minutes, single use); pairing is required for every device, including the PC's own browser. You can also generate a new code later in **Configurações → Pareamento**.
+Open `http://127.0.0.1:3000` on the PC. The console prints a **6-digit pairing code** (valid for 5 minutes, single use); pairing is required for every device, including the PC's own browser. You can also generate a new code later in **Settings → Pairing**.
 
 `start-server.ps1` takes an encrypted, verified snapshot of the vault before opening it (`data\backups\`), stops a previous ModularChat instance on the same port, and prints the LAN addresses for your phone. Useful switches:
 
@@ -105,7 +105,7 @@ glass styling, bottom sheets and reduced motion retain their existing flow.
 
 ## Interface language and controls
 
-Open **Configurações → Idioma** to choose Portuguese (Brazil) or English. The
+Open **Settings → Language** to choose Portuguese (Brazil) or English. The
 choice applies immediately, stays on this device/browser and synchronizes across
 browser tabs. The Android biometric prompts use the same saved preference. Saved
 messages, character sheets, persona names, provider routes and generation settings
@@ -289,6 +289,6 @@ start-server.ps1   Windows launcher (backup, sandbox, environment)
 ## Security notes
 
 - The vault is encrypted at rest; the plain database exists only in memory.
-- Every device must pair; tokens can be revoked in **Settings → Pairing.**.
+- Every device must pair; tokens can be revoked in **Settings → Pairing**.
 - Provider API keys never leave the PC.
 - Conversation text is sent to the provider you choose for generation and to the local memory models.
