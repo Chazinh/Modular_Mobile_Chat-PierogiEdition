@@ -1,7 +1,8 @@
 <p align="center">Hi! &gt;&lt;</p>
 
 <p align="center">
-  <img width="671" alt="Pierogi Edition presentation" src="https://github.com/user-attachments/assets/1ba91d5f-9995-4cd1-975d-8217168f8048" />
+  <img width="40%" alt="Pierogi Dark" src="client/public/icons/pierogi-dark-512.png" />
+  <img width="40%" alt="Pierogi Light" src="client/public/icons/pierogi-light-512.png" />
 </p>
 
 <p align="center">

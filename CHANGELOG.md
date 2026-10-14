@@ -3,6 +3,14 @@
 Project changes are recorded here. The **Unreleased** section collects changes
 without a published version; assessments do not represent implemented features.
 
+## Unreleased
+
+### README icons — 2026-10-14
+
+- Replaced the combined icon banner with the existing transparent Pierogi Dark
+  and Pierogi Light icons, centered side by side. Each uses 40% of the available
+  width so the pair fits on smaller screens without a black rectangular backdrop.
+
 ## Released
 
 ### Side menu performance and on-device measurement — 2026-10-13
