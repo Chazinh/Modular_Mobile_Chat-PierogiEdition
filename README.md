@@ -290,6 +290,6 @@ OPERACAO.md        Portable private HTTPS hosting and Android trust instructions
 ## Security notes
 
 - The vault is encrypted at rest; the plain database exists only in memory.
-- Every device must pair; tokens can be revoked in **Configurações → Pareamento**.
+- Every device must pair; tokens can be revoked in **Settings → Pairing.**.
 - Provider API keys never leave the PC.
 - Conversation text is sent to the provider you choose for generation and to the local memory models.
