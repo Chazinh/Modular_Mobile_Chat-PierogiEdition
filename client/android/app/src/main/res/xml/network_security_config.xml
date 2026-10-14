@@ -3,6 +3,7 @@
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
+            <certificates src="user" />
         </trust-anchors>
     </base-config>
     <!-- Only the internal Capacitor origin uses HTTP. Remote connections require HTTPS. -->

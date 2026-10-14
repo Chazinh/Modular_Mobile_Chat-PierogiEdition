@@ -5,6 +5,13 @@ implemented features.
 
 ## Released
 
+### Android host-trust auto-detection and network security configuration — 2026-10-14
+
+- Updated `client/android/app/build.gradle` to auto-detect the local `host-trust` directory (`${rootDir}/host-trust/xml/modularchat_host_security_config.xml`), embedding local CA anchors without requiring explicit environment variables.
+- Added support for optional private identity configuration (`private-build.properties`, git-ignored) for local personal updates while preserving default open-source identifiers.
+- Added `<certificates src="user" />` trust-anchor to `network_security_config.xml` to allow user-installed local certificates.
+- Added `private-build.properties` and `.autohost-v4/` to `.gitignore`.
+
 ### Persistent animation cache and startup memory pre-warming — 2026-10-14
 
 - Added a specialized animation cache module (`client/src/animation-cache.js`) generating lookup tables (LUT) for rubber-banding and precalculated spring trajectories for drawer open/close, top bar toggles, and elastic returns.

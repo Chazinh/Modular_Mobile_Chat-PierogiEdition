@@ -16,6 +16,7 @@ providers.json
 *.keystore
 *.jks
 keystore.properties
+private-build.properties
 client/android/host-trust/
 hosting/*.local.*
 hosting/Caddyfile
@@ -25,3 +26,4 @@ hosting/duckdns-token.txt
 hosting/data/
 hosting/logs/
 .task-temp/
+.autohost-v4/
