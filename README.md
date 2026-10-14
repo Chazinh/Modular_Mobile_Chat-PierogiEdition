@@ -81,8 +81,7 @@ Keep the vault (`modularchat.db.vault`) **and** its key file (`modularchat.db.ke
 
 ## Private HTTPS hosting
 
-See [OPERACAO.md](OPERACAO.md) for the complete Windows/Caddy, DNS, pairing and
-Android certificate workflow. Hosting is optional and no setup script runs
+Hosting is optional and no setup script runs
 automatically. The repository ships no personal hostname, IP, credentials,
 certificate, signing key or device identifier.
 
@@ -227,7 +226,7 @@ keyPassword=...
 
 Keep the keystore safe: Android refuses updates signed with a different key. Install `client/android/app/build/outputs/apk/release/app-release.apk` (or `adb install -r <apk>`), open it, enter the PC's **local HTTPS address** and the pairing code. You can also configure an optional internet HTTPS address for the same PC. Pair for the first time on the local network.
 
-See [OPERACAO.md](OPERACAO.md) for the HTTPS gateway, certificate trust and firewall setup. For a private local CA, generate the host-specific trust resources before building the APK. The Rust backend can run on loopback HTTP behind the HTTPS gateway; Android connects to the gateway over HTTPS.
+For a private local CA, generate the host-specific trust resources before building the APK. The Rust backend can run on loopback HTTP behind the HTTPS gateway; Android connects to the gateway over HTTPS.
 
 ## Tests
 
@@ -284,7 +283,6 @@ scripts/           Route validation, benchmarks, UI checks, model download
 hosting/           Generic Caddy template (private runtime state stays outside the repository)
 tests/             Node integration tests and fixtures (fictional data only)
 start-server.ps1   Windows launcher (backup, sandbox, environment)
-OPERACAO.md        Portable private HTTPS hosting and Android trust instructions
 ```
 
 ## Security notes

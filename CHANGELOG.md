@@ -368,7 +368,7 @@ current message.
   controls excluded from the edge gesture, cleanup of old events and protection
   against animation after destruction. Preserved opening by button, Back, drag,
   bottom sheets and existing styles.
-- Updated the README and OPERACAO.md with portable instructions, certificate
+- Updated the README with portable instructions, certificate
   requirements, local pairing and CGNAT/IPv6 limits. Deliveries and private
   settings of the source installation do not represent an installation of this
   project.
