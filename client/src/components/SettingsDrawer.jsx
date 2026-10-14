@@ -149,7 +149,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
           <>
             <div className="min-h-0 flex-1 overflow-y-auto">
               <StairList className="min-h-full">
-                <div className="mc-bubble mx-[10px] mb-[10px] mt-1 flex items-center gap-3 rounded-[30px] py-2.5 pl-2.5 pr-4">
+                <div className="mc-bubble mx-[10px] mb-[10px] mt-1 flex items-center gap-3 rounded-[30px] py-3 pl-3 pr-[18px]">
                   <button onClick={() => fileRef.current?.click()} className="relative shrink-0" aria-label={tr("Trocar avatar")}>
                     <GlassAvatar name={chat.name} avatar={chat.avatar} />
                     <span className="mc-tile-mini absolute -bottom-1 -right-1">
@@ -163,7 +163,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
                   <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && pickAvatar(e.target.files[0])} />
                 </div>
                 <Row lead={<Cpu size={20} />} label={tr("Modelo e esforço")} value={`${preset?.label || chat.routeId}${chat.effort ? ` · ${chat.effort}` : ''}`} onClick={() => setPage('model')} />
-                {preset?.thinkingCanDisable && <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-4 py-3">
+                {preset?.thinkingCanDisable && <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-[18px] py-3.5">
                   <button role="switch" aria-label={tr("Pensamento do modelo")} aria-checked={thinkingOn} disabled={busy || thinkingSaving} onClick={async () => { setThinkingSaving(true); try { await save({ settings: { thinkingEnabled: !thinkingOn } }); } finally { setThinkingSaving(false); } }} className="flex w-full items-center justify-between gap-3 text-left disabled:opacity-50">
                     <span><span className="block font-medium">{tr("Pensamento do modelo")}</span><span className="block text-xs text-textMuted">{thinkingSaving ? tr("Salvando…") : thinkingOn ? tr("Ligado") : tr("Desligado")}{tr(" · nesta conversa")}</span></span>
                     <Switch on={thinkingOn} />
@@ -184,10 +184,8 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
                 {error && <p className="mx-4 mt-3 text-sm text-red-400">{tr(error)}</p>}
               </StairList>
             </div>
-            <div className="px-[10px] pt-1">
-              <button onClick={onCreate} className="mc-bubble mc-glass-accent flex w-full items-center justify-center gap-2 rounded-full py-4 font-semibold">
-                <MessageSquarePlus size={20} />{tr(" Novo Chat\n              ")}</button>
-            </div>
+            <button onClick={onCreate} className="mc-bubble mc-glass-accent mx-[10px] mt-1 flex shrink-0 items-center justify-center gap-2 overflow-hidden rounded-full py-[18px] font-semibold">
+              <MessageSquarePlus size={20} />{tr(" Novo Chat\n              ")}</button>
           </>
         )}
 
@@ -448,7 +446,7 @@ function SamplingInfo({ preset, chat, temp, thinkingOn, onTemp }) {
     usesTemp ? tr('temperatura {0}', [Number(temp).toLocaleString(currentLanguage(), { minimumFractionDigits: 2, maximumFractionDigits: 2 })]) : tr('amostragem da rota'),
   ].filter(Boolean);
   return (
-    <div className="px-4 py-3.5">
+    <div className="px-[18px] py-4">
       <div className="flex flex-wrap gap-1.5">
         {facts.map((f) => (
           <span key={f} className="rounded-full bg-composer px-2.5 py-0.5 text-[11.5px] text-gray-300">{f}</span>

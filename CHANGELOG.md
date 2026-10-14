@@ -5,6 +5,11 @@ implemented features.
 
 ## Released
 
+### Side drawer layout refinements and spacing polish — 2026-10-14
+
+- **New Chat Button Layout**: Removed the outer rectangular wrapper container around the "New Chat" button in `SettingsDrawer.jsx`, embedding the button directly into the transparent panel with rounded clipping (`overflow-hidden rounded-full py-[18px]`).
+- **Drawer Internal Spacing Polish**: Expanded internal padding (+2px) across main side drawer items in `SettingsDrawer.jsx` and `drawer.css` (`.mc-row` padding updated to `10px 16px 10px 10px`, avatar bubble to `py-3 pl-3 pr-[18px]`, thinking bubble to `px-[18px] py-3.5`, and sampling info to `px-[18px] py-4`), providing cleaner margins around labels and icons.
+
 ### Mobile UI refinements, compact composer capsule, gesture tuning and portal screens — 2026-10-14
 
 - **Compact Composer Capsule**: Introduced a compact 68px floating input capsule displaying a keyboard icon when collapsed. Expands on tap with focus; collapses on tap outside, back navigation, or virtual keyboard dismissal while preserving message drafts.
