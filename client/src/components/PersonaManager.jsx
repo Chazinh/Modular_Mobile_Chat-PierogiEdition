@@ -41,8 +41,12 @@ export default function PersonaManager({ chat, onClose, onChosen }) {
       title={chat ? tr("Persona desta conversa") : tr("Perfis de persona")}
       onClose={onClose}
       action={
-        <button onClick={() => setEdit({ name: '', description: '', avatar: null, isDefault: false })} className="rounded-full bg-accentPurple p-2 text-white" aria-label={tr("Novo perfil")}>
-          <Plus size={18} />
+        <button
+          onClick={() => setEdit({ name: '', description: '', avatar: null, isDefault: false })}
+          className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+          aria-label={tr("Novo perfil")}
+        >
+          <Plus size={20} />
         </button>
       }
     >

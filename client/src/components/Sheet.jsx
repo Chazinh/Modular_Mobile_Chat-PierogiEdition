@@ -103,9 +103,13 @@ export function Screen({ title, onClose, action, children }) {
             <h2 className="truncate text-[16px] font-semibold">{title}</h2>
           </div>
           {action && (
-            <div className="mc-glass-pill pointer-events-auto flex items-center rounded-full px-3 py-1.5 shadow-lg shrink-0">
-              {action}
-            </div>
+            action?.props?.className?.includes('mc-glass') ? (
+              action
+            ) : (
+              <div className="mc-glass-pill pointer-events-auto flex items-center rounded-full px-3 py-1.5 shadow-lg shrink-0">
+                {action}
+              </div>
+            )
           )}
         </div>
       </header>

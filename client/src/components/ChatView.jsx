@@ -55,7 +55,7 @@ function mergeChat(prev, next) {
   return { chat: { ...next, history: same ? prev.history : history }, historyChanged: !same };
 }
 
-export default function ChatView({ chatId, openSettingsInitially, onBack, onChanged, onCreate, onDeleted }) {
+export default function ChatView({ chatId, status, openSettingsInitially, onBack, onChanged, onCreate, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
   const [chat, setChat] = useState(null);
@@ -535,6 +535,13 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
     && (!recentReply.model || recentReply.model === chat?.routeId)
     && (recentReply.effort == null || recentReply.effort === chat?.effort);
   const connected = !offline && (modelOnline ?? recoveredOnline);
+  const serverOnline = !offline && (status ? status === 'online' : true);
+  const isChecking = status === 'checking';
+  const handleTitle = isChecking
+    ? tr("Verificando conexão · toque ou puxe para baixo")
+    : serverOnline
+    ? tr("Conectado ao PC · toque ou puxe para baixo")
+    : tr("Sem conexão com o PC · toque ou puxe para baixo");
 
   return (
     <div {...drawerGesture} className="mc-chat fixed inset-0 z-30 flex flex-col bg-bgDark">
@@ -546,9 +553,9 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
         style={{ top: 'var(--sat)' }}
         aria-label={tr("Mostrar barra superior")}
         aria-expanded={topBar.open}
-        title={connected ? tr("Modelo conectado · toque ou puxe para baixo") : tr("Conexão do modelo ainda não confirmada · toque ou puxe para baixo")}
+        title={handleTitle}
       >
-        <span className={`mc-bar-dot ${connected ? 'mc-on' : ''}`} />
+        <span className={`mc-bar-dot ${serverOnline ? 'mc-on' : ''} ${isChecking ? 'mc-dot-checking' : ''}`} />
       </button>
       {/* the bubble that swells from the dot and the pop ring (moved by top-bar-motion.js) */}
       {/* Each one is a plain box (moved every frame by top-bar-motion.js) around the face that holds the heavy glass style:

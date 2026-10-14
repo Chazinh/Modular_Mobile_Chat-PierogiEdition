@@ -184,6 +184,7 @@ export default function App() {
         <ChatView
           key={openId}
           chatId={openId}
+          status={status}
           openSettingsInitially={openSettings}
           onBack={closeTopLayer}
           onChanged={refresh}

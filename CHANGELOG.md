@@ -5,6 +5,12 @@ implemented features.
 
 ## Released
 
+### Status dot connection alignment and persona button styling — 2026-10-14
+
+- Aligned the collapsed top bar status dot inside the chat (`ChatView.jsx`) with the PC/server connection state (`status` prop from `App.jsx`), matching the behavior of the main chat list (`ChatList.jsx`). The handle dot now turns green when connected to the server and pulses when checking connection, while the inner dot in the model menu continues to reflect confirmed AI model responses.
+- Added localized tooltips for the top bar handle indicating connection state ("Connected to PC", "No connection to PC", "Checking connection").
+- Fixed the "Add persona" button styling in `PersonaManager.jsx` by adopting the circular floating glass pill style (`mc-glass-pill mc-glass-accent`) matching the main screen. Updated `Screen` in `Sheet.jsx` to render actions directly if they already define their own `mc-glass` container, avoiding redundant double-capsule wrapping.
+
 ### README icons — 2026-10-14
 
 - Replaced the combined icon banner with the existing transparent Pierogi Dark
