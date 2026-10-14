@@ -5,6 +5,12 @@ implemented features.
 
 ## Released
 
+### Server build optimizations (mimalloc and x86-64-v3) — 2026-10-14
+
+- Configured `mimalloc` as the global memory allocator for the Windows server binary (`main.rs`, scoped under `[target.'cfg(windows)'.dependencies]` in `server-rust/Cargo.toml`), improving allocation performance while keeping the Android JNI library safely on the default bionic allocator.
+- Added `.cargo/config.toml` targeting `x86_64-pc-windows-msvc` with `-C target-cpu=x86-64-v3` to enable modern vector extensions (AVX, AVX2, BMI1/2, FMA) for cryptography, SQLite, and hashing on the host without affecting cross-compilation for ARM Android targets.
+- Preserved `panic = "unwind"` behavior across the FFI boundary to prevent unhandled panics in the JNI layer.
+
 ### Status dot connection alignment, persona button styling and search cleanup — 2026-10-14
 
 - Aligned the collapsed top bar status dot inside the chat (`ChatView.jsx`) with the PC/server connection state (`status` prop from `App.jsx`), matching the behavior of the main chat list (`ChatList.jsx`). The handle dot now turns green when connected to the server and pulses when checking connection, while the inner dot in the model menu continues to reflect confirmed AI model responses.

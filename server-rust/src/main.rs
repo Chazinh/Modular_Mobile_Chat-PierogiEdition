@@ -4,6 +4,11 @@ use modularchat_server::{
     config::Config,
 };
 use std::{future::IntoFuture, path::PathBuf, time::Duration};
+
+#[cfg(windows)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() {
     // Without RUST_LOG: our own events at `info`, dependencies only from `warn` up.
