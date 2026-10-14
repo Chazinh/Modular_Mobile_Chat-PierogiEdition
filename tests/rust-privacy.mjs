@@ -1,4 +1,4 @@
-// Encrypted vault (DPAPI + MCVAULT1): the contract executable creates the vault, the Rust server opens it,
+// Encrypted vault (MCVAULT1 + DPAPI on Windows / private sandbox key elsewhere): the contract executable creates the vault, the Rust server opens it,
 // and the same master key reopens the vault later. Node is only the fixture driver.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +9,9 @@ import {RustStore} from './rust-store.js';
 import {newConv,turn,mockRouter} from './helpers.js';
 import {startRust} from './rust-http.js';
 
-test('cofre Rust: dados e pareamento preservados, cookie/cache/export/ficha/backup protegidos e reabertura com a mesma chave',{skip:process.platform!=='win32'},async()=>{
+const keySuffix=process.platform==='win32'?'.key':'.sandbox.key';
+
+test('cofre Rust: dados e pareamento preservados, cookie/cache/export/ficha/backup protegidos e reabertura com a mesma chave',async()=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mc-rust-private-')),file=path.join(dir,'modularchat.db');
   const previousMode=process.env.MC_ENCRYPTED_STORAGE;process.env.MC_ENCRYPTED_STORAGE='1';
   let store=new RustStore(file),runtime,upstream;
@@ -19,7 +21,7 @@ test('cofre Rust: dados e pareamento preservados, cookie/cache/export/ficha/back
     await store.call('setGlobalSettings',{botChars:1500,dialoguePct:40});
     await store.close();store=null;
     assert.equal(await fs.stat(file).then(()=>true,()=>false),false,'nenhum SQLite em texto claro');
-    const beforeKey=await fs.readFile(file+'.key');
+    const beforeKey=await fs.readFile(file+keySuffix);
     const vault=await fs.readFile(file+'.vault');assert.ok(!vault.includes(Buffer.from('USUARIO_PRIVADO_UM')),'o cofre não guarda texto claro');
     upstream=await mockRouter();runtime=await startRust({dataDir:dir,upstream:upstream.url,review:false});
     let token=null;
@@ -48,7 +50,7 @@ test('cofre Rust: dados e pareamento preservados, cookie/cache/export/ficha/back
     assert.ok(!(await fs.readFile(backup.body.file)).includes(Buffer.from('CORRECAO_PRIVADA_RUST')));
     assert.equal(await fs.stat(file).then(()=>true,()=>false),false);
     await runtime.close();runtime=null;
-    assert.deepEqual(await fs.readFile(file+'.key'),beforeKey,'master key remains unchanged');
+    assert.deepEqual(await fs.readFile(file+keySuffix),beforeKey,'master key remains unchanged');
     store=new RustStore(file);await store.ready();
     const reopened=await store.call('getConversation',c.id);
     assert.equal(reopened.prompt,'FICHA_PRIVADA_RUST');assert.ok(reopened.history.some(m=>m.content.includes('CORRECAO_PRIVADA_RUST')));
@@ -68,7 +70,7 @@ test('cofre Rust: dados e pareamento preservados, cookie/cache/export/ficha/back
 
 // Vault persistence: what the client sees as confirmed is written before the ack (survives a process killed by
 // force); derived state goes in batches and is flushed on a clean shutdown.
-test('cofre Rust: ack durável sobrevive a processo morto, derivado é descarregado no encerramento e gravações caem por turno',{skip:process.platform!=='win32'},async()=>{
+test('cofre Rust: ack durável sobrevive a processo morto, derivado é descarregado no encerramento e gravações caem por turno',async()=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mc-rust-durable-')),file=path.join(dir,'modularchat.db');
   const previousMode=process.env.MC_ENCRYPTED_STORAGE;process.env.MC_ENCRYPTED_STORAGE='1';
   let store=new RustStore(file);

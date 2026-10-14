@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readSSE, api } from '../client/src/api.js';
+import { readSSE, api, publicPresets } from '../client/src/api.js';
+import { privateSet } from '../client/src/private-storage.js';
 import { gestureAxis } from '../client/src/gestures.js';
 import { queueStyleSettings, flushStyleSettings } from '../client/src/style-settings.js';
 
@@ -15,6 +16,24 @@ test('SSE: CRLF fragmentado, Unicode e terminal explícito; EOF incompleto exige
   assert.deepEqual(events, [{ delta: '🚀 **fala**' }, { done: true }]);
   await assert.rejects(readSSE(new Response('data: {"delta":"parcial"}\n\n'), () => {}, true), /Fluxo interrompido/);
   await assert.rejects(readSSE(new Response('data: {"done":true}\n\n'), () => { throw Error('callback'); }, true), /callback/);
+});
+
+test('presets: mobile-local/mobile-api sobrevivem à whitelist e não expõem presets internos', () => {
+  assert.deepEqual(publicPresets({ presets: [{ id: 'mobile-local' }, { id: 'mobile-api' }, { id: 'private-provider' }] }).presets,
+    [{ id: 'mobile-local' }, { id: 'mobile-api' }]);
+});
+
+test('presets: cache nativo mobile não é substituído pelos defaults PC', async () => {
+  const previous = globalThis.localStorage;
+  const mobile = { presets: [{ id: 'mobile-local', label: 'Local' }, { id: 'mobile-api', label: 'API' }] };
+  const saved = new Map([['mc.kv.presets', JSON.stringify(mobile)]]);
+  globalThis.localStorage = { getItem: k => saved.get(k) || null, setItem: (k, v) => saved.set(k, v), removeItem: k => saved.delete(k) };
+  try { assert.deepEqual(await api.cachedPresets(), mobile); }
+  finally { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous; }
+});
+
+test('privacidade: checkpoint de sync nunca cai no localStorage plaintext quando proteção indisponível', async () => {
+  await assert.rejects(privateSet('mc.sync.fixture', '{"hash":"marker"}'), /armazenamento protegido/);
 });
 
 test('gestos: diagonais com projeção vertical >= 50% pertencem à leitura, em ambos os sentidos', () => {

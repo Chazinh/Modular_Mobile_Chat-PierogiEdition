@@ -197,6 +197,9 @@ impl Database {
         }
         let c = s(&job, "conv_id");
         let iid = s(&job, "interaction_id");
+        if self.conv(&c, false).is_err() {
+            return Ok(json!({"job": job, "gone": true}));
+        }
         let inter = self.one(
             "SELECT * FROM interactions WHERE id=? AND conv_id=? AND deleted_at IS NULL",
             &[json!(iid), json!(c)],

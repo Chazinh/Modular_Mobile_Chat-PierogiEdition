@@ -110,6 +110,8 @@ async fn invoke(store: &Store, name: &str, args: &[Value]) -> Result<Value> {
         "exportAll" => Request::Export(None),
         "importConversation" => Request::ImportOne(p),
         "importAll" => Request::Import(p),
+        "syncStatus" => Request::SyncStatus(p),
+        "syncDelta" => Request::SyncDelta { value: p, embedding_model: b },
         "purgeTrash" => Request::PurgeTrash(p),
         "maybeQueueCuration" => Request::MaybeQueueCuration(a),
         "curationCandidates" => Request::CurationCandidates(a),

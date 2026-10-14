@@ -1,7 +1,9 @@
-//! Persisted local-only jobs; one supervisor, bounded work, source/version checks.
+//! Persisted jobs; one supervisor, explicit mobile backend policy and source/version checks.
 use crate::{
     Error, Result,
     local::LocalModels,
+    memory_backend::{MemoryBackend, MemoryMode, MemoryPolicy, PolicySnapshot},
+    providers::RuntimeProviders,
     review, rules, s,
     store::{EmbeddingItem, Request, Store},
 };
@@ -30,6 +32,9 @@ pub struct Runner {
     state: Arc<Mutex<State>>,
     stop: watch::Sender<bool>,
     review: bool,
+    providers: RuntimeProviders,
+    policy: PolicySnapshot,
+    client: reqwest::Client,
 }
 impl Runner {
     pub fn new(
@@ -40,6 +45,14 @@ impl Runner {
         review: bool,
     ) -> Self {
         let (stop, _) = watch::channel(false);
+        let policy = Arc::new(std::sync::RwLock::new(MemoryPolicy {
+            mode: if local.is_mobile() {
+                MemoryMode::Deferred
+            } else {
+                MemoryMode::Local
+            },
+            api: None,
+        }));
         Self {
             store,
             local,
@@ -48,11 +61,24 @@ impl Runner {
             state: Arc::default(),
             stop,
             review,
+            providers: RuntimeProviders::default(),
+            policy,
+            client: reqwest::Client::new(),
         }
+    }
+    pub fn set_backends(
+        &mut self,
+        providers: RuntimeProviders,
+        policy: PolicySnapshot,
+        client: reqwest::Client,
+    ) {
+        self.providers = providers;
+        self.policy = policy;
+        self.client = client;
     }
     pub async fn state(&self) -> Value {
         let s = self.state.lock().await;
-        json!({"running":s.running,"lastError":s.last_error})
+        json!({"running":s.running,"lastError":s.last_error,"policy":self.policy.read().unwrap().clone(),"concurrency":1})
     }
     pub fn start(&self) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
@@ -92,14 +118,38 @@ impl Runner {
         self.wake.notify_one();
     }
     async fn cycle(&self) -> Result<bool> {
+        let backend = if self.local.is_mobile() {
+            let policy = self.policy.read().unwrap().clone();
+            let Some(backend) =
+                MemoryBackend::mobile(&self.local, &self.providers, &policy, &self.client).await?
+            else {
+                return Ok(false);
+            };
+            backend
+        } else {
+            MemoryBackend::Local {
+                local: self.local.clone(),
+                compact: false,
+            }
+        };
         let job = self.store.call(Request::ClaimJob).await?;
         if job.is_null() {
             return Ok(self.embeddings().await? > 0);
         }
-        let outcome = self.handle(&job).await;
+        let outcome = self.handle(&job, &backend).await;
         let (status, error, continue_work) = match outcome {
             Ok(status) => (status, None, true),
-            Err(e) if e.extra["code"] == "LOCAL_UNAVAILABLE" => {
+            Err(e)
+                if matches!(
+                    e.extra["code"].as_str(),
+                    Some(
+                        "LOCAL_UNAVAILABLE"
+                            | "LOCAL_DOWNLOADING"
+                            | "MEMORY_BACKEND_UNAVAILABLE"
+                            | "PROVIDER_UNAVAILABLE"
+                    )
+                ) =>
+            {
                 self.state.lock().await.last_error = Some(e.message.clone());
                 self.store
                     .call(Request::DeferJob {
@@ -148,19 +198,19 @@ impl Runner {
         }
         Ok(continue_work)
     }
-    async fn handle(&self, job: &Value) -> Result<String> {
+    async fn handle(&self, job: &Value, backend: &MemoryBackend) -> Result<String> {
         match job["kind"].as_str() {
-            Some("turn") => self.turn(job).await,
-            Some("episode") => self.episode(job).await,
-            Some("cast") => self.cast(job).await,
-            Some("curate") => self.curate(job).await,
+            Some("turn") => self.turn(job, backend).await,
+            Some("episode") => self.episode(job, backend).await,
+            Some("cast") => self.cast(job, backend).await,
+            Some("curate") => self.curate(job, backend).await,
             _ => Ok("skipped".into()),
         }
     }
     /// Memory curation: groups near-duplicate memories (deterministic decision) and asks the local model,
     /// in a single call, only which one to keep and the summary sentence. Without groups, the model is not called.
-    async fn curate(&self, job: &Value) -> Result<String> {
-        if !self.local.chat_available() {
+    async fn curate(&self, job: &Value, backend: &MemoryBackend) -> Result<String> {
+        if !backend.available() {
             return Err(
                 Error::new(503, "Modelo local indisponível.").extra("code", "LOCAL_UNAVAILABLE")
             );
@@ -182,16 +232,25 @@ impl Runner {
                 .await?;
             return Ok("skipped".into());
         }
-        let raw = self
-            .local
-            .chat_json(
-                crate::curation::messages(&clusters),
-                crate::curation::schema(),
-                900,
-                0.1,
-            )
-            .await?;
-        let decisions = crate::curation::sanitize(&raw, &clusters);
+        let mut decisions = Vec::new();
+        // Complete groups keep their ids/provenance. Mobile processes one group per prompt;
+        // no partial mutation is applied if a later group fails its schema/budget.
+        let batches = if backend.compact() {
+            clusters.chunks(1).collect::<Vec<_>>()
+        } else {
+            vec![clusters.as_slice()]
+        };
+        for batch in batches {
+            let raw = backend
+                .chat_json(
+                    crate::curation::messages(batch),
+                    crate::curation::schema(),
+                    900,
+                    0.1,
+                )
+                .await?;
+            decisions.extend(crate::curation::sanitize(&raw, batch));
+        }
         let out = self
             .store
             .call(Request::ApplyCuration(
@@ -207,12 +266,12 @@ impl Runner {
         let input = self.store.call(Request::JobInput(s(job, "id"))).await?;
         Ok(input["gone"] != true && input["versionIds"] == expected["versionIds"])
     }
-    async fn turn(&self, job: &Value) -> Result<String> {
+    async fn turn(&self, job: &Value, backend: &MemoryBackend) -> Result<String> {
         let input = self.store.call(Request::JobInput(s(job, "id"))).await?;
         if input["gone"] == true || s(&input, "text").trim().is_empty() {
             return Ok("skipped".into());
         }
-        if !self.local.chat_available() {
+        if !backend.available() {
             return Err(
                 Error::new(503, "Modelo local indisponível.").extra("code", "LOCAL_UNAVAILABLE")
             );
@@ -228,16 +287,24 @@ impl Runner {
         let assistant = s(&input, "assistantText");
         if self.review && job["payload"]["skipReview"] != true {
             let mut flags = Vec::new();
-            for (start, _, text) in rules::chunks(&assistant, 8000, 240) {
-                let prefix = format!(
+            for (start, _, text) in
+                rules::chunks(&assistant, if backend.compact() { 800 } else { 8000 }, 120)
+            {
+                let mut prefix = format!(
                     "{}\n{}",
                     s(&input, "prelude"),
                     &assistant[..rules::byte_at(&assistant, start)]
                 );
-                let raw = self
-                    .local
+                let mut review_input = input.clone();
+                if backend.compact() {
+                    prefix = compact_excerpt(&prefix, 300);
+                    review_input["previous"] = json!(compact_excerpt(&s(&input, "previous"), 400));
+                    review_input["scene"] =
+                        json!(compact_excerpt(&input["scene"].to_string(), 400));
+                }
+                let raw = backend
                     .chat_json(
-                        review::messages(&input, &text, &prefix, &secrets),
+                        review::messages(&review_input, &text, &prefix, &secrets),
                         review_schema().clone(),
                         700,
                         0.1,
@@ -282,19 +349,32 @@ impl Runner {
             .min(2);
         let tail = |t: &str, n: usize| -> String {
             let chars = t.chars().count();
-            if level == 0 || chars <= n {
+            if !backend.compact() && level == 0 || chars <= n {
                 t.to_string()
             } else {
                 t.chars().skip(chars - n).collect()
             }
         };
-        for (_, _, text) in rules::chunks(&full, if level == 0 { 5000 } else { 3000 }, 160) {
-            let retrieval = if level == 0 {
+        let chunk_size = if backend.compact() {
+            match level {
+                0 => 1000,
+                1 => 700,
+                _ => 450,
+            }
+        } else if level == 0 {
+            5000
+        } else if level == 1 {
+            3000
+        } else {
+            1800
+        };
+        for (_, _, text) in rules::chunks(&full, chunk_size, 100) {
+            let retrieval = if level == 0 && !backend.compact() {
                 self.store.call(Request::Retrieve(json!({"convId":job["conv_id"],"queryText":text,"beforeSeq":input["interaction"]["seq"],"limit":8}))).await?
             } else {
                 json!({"candidates":[]})
             };
-            let sources = if level >= 2 {
+            let sources = if level >= 2 && !backend.compact() {
                 Vec::new()
             } else {
                 input["recentSources"]
@@ -302,25 +382,41 @@ impl Runner {
                     .cloned()
                     .unwrap_or_default()
             };
-            let prompt = format!(
-                "PERSONA: {}\nCENA ANTERIOR: {scene}\nTEMPO: {}\nFATOS ANTERIORES: {related}\nRECUPERAÇÃO: {}\nTHREADS: {}\nHISTÓRICO ANTERIOR RELEVANTE (fontes identificadas):\n{}\n{}\nTEXTO DO TURNO (fragmento integral):\n{text}",
-                input["conv"]["persona"],
-                input["timeline"]["current"],
-                retrieval["candidates"],
-                input["threads"],
-                tail(&s(&input, "previous"), 1500),
-                crate::provenance::block(&s(&input, "userText"), &sources)
-            );
+            let prompt = if backend.compact() {
+                format!(
+                    "PERSONA: {}\nCONTEXTO PARCIAL (não são fontes de citações):\nCENA: {}\nFATOS: {}\nHISTÓRICO: {}\n{}\nTEXTO DO TURNO (fragmento integral):\n{text}",
+                    input["conv"]["persona"],
+                    compact_excerpt(&scene.to_string(), 300),
+                    compact_excerpt(&related.to_string(), 300),
+                    tail(&s(&input, "previous"), 400),
+                    crate::provenance::block(&s(&input, "userText"), &sources)
+                )
+            } else {
+                format!(
+                    "PERSONA: {}\nCENA ANTERIOR: {scene}\nTEMPO: {}\nFATOS ANTERIORES: {related}\nRECUPERAÇÃO: {}\nTHREADS: {}\nHISTÓRICO ANTERIOR RELEVANTE (fontes identificadas):\n{}\n{}\nTEXTO DO TURNO (fragmento integral):\n{text}",
+                    input["conv"]["persona"],
+                    input["timeline"]["current"],
+                    retrieval["candidates"],
+                    input["threads"],
+                    tail(&s(&input, "previous"), 1500),
+                    crate::provenance::block(&s(&input, "userText"), &sources)
+                )
+            };
             let messages = vec![
-                json!({"role":"system","content":include_str!("extraction-prompt.txt").replace("{{persona}}", input["conv"]["persona"].as_str().unwrap_or("o usuário"))}),
+                json!({"role":"system","content":if backend.compact() { compact_extraction_prompt(&s(&input["conv"], "persona")) } else { include_str!("extraction-prompt.txt").replace("{{persona}}", input["conv"]["persona"].as_str().unwrap_or("o usuário")) }}),
                 json!({"role":"user","content":prompt}),
             ];
-            let raw = self
-                .local
+            let raw = backend
                 .chat_json(
                     messages,
                     serde_json::from_str(include_str!("extraction-schema.json")).unwrap(),
-                    if level == 0 { 2200 } else { 3000 },
+                    if backend.compact() {
+                        1200
+                    } else if level == 0 {
+                        2200
+                    } else {
+                        3000
+                    },
                     0.1,
                 )
                 .await?;
@@ -381,7 +477,7 @@ impl Runner {
             .send(json!({"convId":job["conv_id"],"type":"memory"}));
         Ok("done".into())
     }
-    async fn episode(&self, job: &Value) -> Result<String> {
+    async fn episode(&self, job: &Value, backend: &MemoryBackend) -> Result<String> {
         let payload = &job["payload"];
         let ids = payload["interactionIds"]
             .as_array()
@@ -416,9 +512,11 @@ impl Runner {
         // every continuation, is the input. Summarizing summaries loses the tail.
         let original = sources.join("\n\n");
         let mut summaries = Vec::new();
-        if self.local.chat_available() {
-            for (_, _, text) in rules::chunks(&original, 5000, 0) {
-                let raw=self.local.chat_json(vec![json!({"role":"system","content":"Resuma em até 4 frases o episódio em português, preservando nomes, decisões, segredos revelados e promessas. Responda somente JSON."}),json!({"role":"user","content":text})],json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}),500,0.1).await?;
+        if backend.available() {
+            for (_, _, text) in
+                rules::chunks(&original, if backend.compact() { 1400 } else { 5000 }, 0)
+            {
+                let raw=backend.chat_json(vec![json!({"role":"system","content":"Resuma em até 4 frases o episódio em português, preservando nomes, decisões, segredos revelados e promessas. Responda somente JSON."}),json!({"role":"user","content":text})],json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}),500,0.1).await?;
                 let summary = s(&raw, "summary");
                 if summary.trim().is_empty() {
                     return Err(Error::new(502, "Resumo episódico vazio."));
@@ -436,16 +534,18 @@ impl Runner {
         }
         .into())
     }
-    async fn cast(&self, job: &Value) -> Result<String> {
+    async fn cast(&self, job: &Value, backend: &MemoryBackend) -> Result<String> {
         let conv = self.store.call(Request::GetMeta(s(job, "conv_id"))).await?;
         let text = s(&conv, "prompt");
         let heuristic = crate::local::cast_from_card(&text, &s(&conv, "persona"));
         self.store
             .call(Request::ReanalyzeCast(s(job, "conv_id")))
             .await?;
-        if heuristic.len() < 2 && !text.trim().is_empty() && self.local.chat_available() {
-            for (_, _, text) in rules::chunks(&text, 5000, 160) {
-                let raw=self.local.chat_json(vec![json!({"role":"system","content":include_str!("cast-prompt.txt").replace("{{persona}}", conv["persona"].as_str().unwrap_or("o usuário"))}),json!({"role":"user","content":format!("PERSONA: {}\nFICHA:\n{text}",conv["persona"])})],serde_json::from_str(include_str!("cast-schema.json")).unwrap(),1500,0.1).await?;
+        if heuristic.len() < 2 && !text.trim().is_empty() && backend.available() {
+            for (_, _, text) in
+                rules::chunks(&text, if backend.compact() { 1200 } else { 5000 }, 100)
+            {
+                let raw=backend.chat_json(vec![json!({"role":"system","content":include_str!("cast-prompt.txt").replace("{{persona}}", conv["persona"].as_str().unwrap_or("o usuário"))}),json!({"role":"user","content":format!("PERSONA: {}\nFICHA:\n{text}",conv["persona"])})],serde_json::from_str(include_str!("cast-schema.json")).unwrap(),if backend.compact() { 1000 } else { 1500 },0.1).await?;
                 if let Some(entries) = raw["cast"].as_array() {
                     for entry in entries {
                         let Some(name) = crate::cast::name(&s(entry, "name")) else {
@@ -490,10 +590,16 @@ impl Runner {
         Ok("done".into())
     }
     async fn embeddings(&self) -> Result<usize> {
+        if self.local.is_mobile()
+            && (!self.local.mobile_activated()
+                || self.policy.read().unwrap().mode != MemoryMode::Local)
+        {
+            return Ok(0);
+        }
         if !self.local.embed_available() {
             return Ok(0);
         }
-        let model = self.local.fingerprint();
+        let model = self.local.fingerprint().await;
         let items = self
             .store
             .call(Request::PendingEmbeddings {
@@ -535,6 +641,97 @@ impl Runner {
             None => Ok(saved),
         }
     }
+}
+
+#[cfg(test)]
+mod mobile_backend_tests {
+    use super::*;
+    use crate::{config::Config, providers::MobileProviders};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn deferred_and_standby_preserve_pending_job_attempts_without_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = tempfile::tempdir().unwrap();
+        let config = Config::for_android(dir.path(), native.path()).unwrap();
+        let store = Store::open_for_config(&config).unwrap();
+        let client = reqwest::Client::new();
+        let local = LocalModels::new(&config, client.clone()).unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let count = requests.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let app = axum::Router::new().fallback(move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                axum::Json(json!({"data":[]}))
+            }
+        });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let conv = store
+            .call(Request::CreateConversation(
+                json!({"routeId":"cbai/glm-5.2","presetId":"glm-52"}),
+            ))
+            .await
+            .unwrap();
+        let job = store
+            .call(Request::EnqueueJob(
+                json!({"convId":conv["id"],"kind":"curate"}),
+            ))
+            .await
+            .unwrap();
+        let (events, _) = broadcast::channel(8);
+        let mut runner = Runner::new(
+            store.clone(),
+            local.clone(),
+            Arc::new(Notify::new()),
+            events,
+            false,
+        );
+        let runtime = RuntimeProviders::new(MobileProviders::parse(&json!({"providers":[{"id":"fixture","baseUrl":url,"models":["exact"],"allowLoopback":true}]})).unwrap().runtime().unwrap());
+        let policy = Arc::new(std::sync::RwLock::new(MemoryPolicy::default()));
+        runner.set_backends(runtime, policy.clone(), client);
+        assert!(!runner.cycle().await.unwrap());
+        local.activate().await.unwrap(); // Missing native runtime: no downloads or subprocesses.
+        assert!(
+            !runner.cycle().await.unwrap(),
+            "deferred must gate before claiming even when activated"
+        );
+        local.standby().await.unwrap();
+        for value in [
+            json!({"mode":"local"}),
+            json!({"mode":"api","api":{"provider":"fixture","model":"exact","historyConsent":true}}),
+        ] {
+            *policy.write().unwrap() = MemoryPolicy::parse(&value).unwrap();
+            assert!(!runner.cycle().await.unwrap());
+        }
+        let claimed = store.call(Request::ClaimJob).await.unwrap();
+        assert_eq!(claimed["id"], job["id"]);
+        assert_eq!(
+            claimed["attempts"], 1,
+            "no earlier cycle may spend an attempt"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        local.stop().await.unwrap();
+        store.call(Request::Close).await.unwrap();
+        server.abort();
+    }
+}
+
+fn compact_excerpt(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        text.to_owned()
+    } else {
+        format!("[contexto parcial] {}", rules::clip(text, limit))
+    }
+}
+fn compact_extraction_prompt(persona: &str) -> String {
+    format!(
+        "Extraia memória narrativa em português do fragmento integral. Responda somente JSON conforme o schema, com todos os campos obrigatórios e listas vazias quando ausentes. No máximo 5 fatos essenciais. Não invente acontecimentos, relações ou conhecimento. A persona {persona} é controlada pelo usuário. Em relationships, forneça objetos com a, b e description para vínculos estabelecidos/alterados. Em open_threads/resolved_threads, liste pendências narrativas curtas. Preserve autor original de citações/imitações: attribution.quote deve ser trecho exato e originalSpeaker/sourceId devem corresponder à proveniência fornecida; comentários fora das aspas são separados. Resuma apenas fatos ocorridos; cenas, personagens, segredos, relações e pendências devem ser suportados pelo texto. Não exponha segredos a quem não sabe."
+    )
 }
 pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
     if !raw.is_object()

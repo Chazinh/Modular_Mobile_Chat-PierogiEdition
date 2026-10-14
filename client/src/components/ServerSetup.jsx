@@ -19,12 +19,12 @@ export default function ServerSetup({ needsServer, onDone }) {
     setBusy(true);
     let rollback;
     try {
-      if (needsServer) {
+      if (isNative()) {
         if (!server.trim() && !remote.trim()) throw new Error('Informe pelo menos um endereço HTTPS do PC.');
         rollback = config.configureConnection({ local: server, remote });
-        await api.health();
+        await api.health({ pc: server.trim() || remote.trim() });
       }
-      await api.pair(code.trim(), name.trim() || tr('Aparelho'));
+      await api.pair(code.trim(), name.trim() || tr('Aparelho'), isNative() ? config.connection.local || config.connection.remote : '');
       onDone();
     } catch (err) {
       rollback?.();
@@ -43,11 +43,11 @@ export default function ServerSetup({ needsServer, onDone }) {
           </div>
           <div>
             <h1 className="text-lg font-bold">{tr("Conectar ao PC")}</h1>
-            <p className="text-sm text-textMuted">{tr("O PC guarda as conversas e a memória.")}</p>
+            <p className="text-sm text-textMuted">{tr(config.embeddedReady ? 'O app também funciona sozinho. Pareie para sincronizar com o PC.' : 'O PC guarda as conversas e a memória.')}</p>
           </div>
         </div>
 
-        {needsServer && (
+        {isNative() && (
           <div className="space-y-3">
           <label className="block text-sm">
             <span className="text-textMuted">{tr('Endereço HTTPS na rede local')}</span>
@@ -94,6 +94,7 @@ export default function ServerSetup({ needsServer, onDone }) {
           className="flex w-full items-center justify-center gap-2 rounded-full bg-accentPurple py-3.5 font-semibold text-white disabled:opacity-40"
         >
           {busy && <Loader2 size={18} className="animate-spin" />}{tr(" Conectar\n        ")}</button>
+        {config.embeddedReady && <button type="button" disabled={busy} onClick={onDone} className="w-full py-2 text-sm text-textMuted">{tr('Continuar no aparelho')}</button>}
         <p className="text-xs leading-relaxed text-textMuted">{tr("\n          O código aparece na janela do servidor ao iniciar o ")}<b>start-server.bat</b>{tr(", ou no PC em ")}<b>{tr("⋯ → Configurações → Gerar código")}</b>{tr(". Ele vale por 5 minutos e só pode ser usado uma vez.\n        ")}</p>
       </form>
     </div>

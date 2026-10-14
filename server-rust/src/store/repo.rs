@@ -372,7 +372,7 @@ impl Database {
             "UPDATE conversations SET deleted_at=?,deleted_batch=? WHERE id=?",
             &[json!(time), json!(id()), json!(c)],
         )?;
-        self.exec("UPDATE jobs SET status='skipped',updated_at=? WHERE conv_id=? AND status IN ('pending','blocked')",&[json!(time),json!(c)])?;
+        self.exec("UPDATE jobs SET status='skipped',updated_at=? WHERE conv_id=? AND status IN ('pending','running','blocked','failed')",&[json!(time),json!(c)])?;
         Ok(json!({"ok":true,"deletedAt":time}))
     }
     pub(super) fn restore_conv(&self, c: &str) -> Result<Value> {

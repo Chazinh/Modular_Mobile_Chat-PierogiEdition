@@ -39,6 +39,10 @@ pub struct AppState {
     pub events: broadcast::Sender<Value>,
     pub locks: Locks,
     pub validation: Value,
+    pub providers: crate::providers::RuntimeProviders,
+    pub policy: crate::memory_backend::PolicySnapshot,
+    mobile_providers: Arc<tokio::sync::Mutex<crate::providers::MobileProviders>>,
+    configuration_gate: Arc<tokio::sync::Mutex<()>>,
     /// Route list as last fetched from the providers (see `models`).
     models_cache: ModelsCache,
     client: reqwest::Client,
@@ -58,9 +62,47 @@ impl AppState {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90))
+            .redirect(if config.is_android() {
+                reqwest::redirect::Policy::none()
+            } else {
+                reqwest::redirect::Policy::limited(10)
+            })
             .build()
             .map_err(|_| Error::new(500, "Cliente HTTP não iniciou."))?;
         let local = LocalModels::new(&config, client.clone())?;
+        let mobile_providers = if config.is_android() {
+            let value = store.call(Request::LoadMobileProviders).await?;
+            if value.is_null() {
+                crate::providers::MobileProviders::default()
+            } else {
+                crate::providers::MobileProviders::parse(&value)?
+            }
+        } else {
+            crate::providers::MobileProviders::default()
+        };
+        let providers = crate::providers::RuntimeProviders::new(if config.is_android() {
+            mobile_providers.runtime()?
+        } else {
+            config.providers.clone()
+        });
+        let memory_policy = if config.is_android() {
+            let value = store.call(Request::LoadMobilePolicy).await?;
+            if value.is_null() {
+                let policy = crate::memory_backend::MemoryPolicy::default();
+                store
+                    .call(Request::SaveMobilePolicy(policy.clone()))
+                    .await?;
+                policy
+            } else {
+                crate::memory_backend::MemoryPolicy::parse(&value)?
+            }
+        } else {
+            crate::memory_backend::MemoryPolicy {
+                mode: crate::memory_backend::MemoryMode::Local,
+                api: None,
+            }
+        };
+        let policy = Arc::new(std::sync::RwLock::new(memory_policy));
         let (events, _) = broadcast::channel(64);
         let jobs = Arc::new(Notify::new());
         let locks = Locks::default();
@@ -79,13 +121,15 @@ impl AppState {
             jobs.clone(),
         );
         generation.locks = locks.clone();
-        let runner = Runner::new(
+        generation.providers = providers.clone();
+        let mut runner = Runner::new(
             store.clone(),
             local.clone(),
             jobs,
             events.clone(),
             config.review,
         );
+        runner.set_backends(providers.clone(), policy.clone(), client.clone());
         let auth = Auth::new(store.clone(), config.require_pairing || store.encrypted);
         let worker = Arc::new(tokio::sync::Mutex::new(Some(runner.start())));
         let state = Self {
@@ -98,6 +142,10 @@ impl AppState {
             events,
             locks,
             validation,
+            providers,
+            policy,
+            mobile_providers: Arc::new(tokio::sync::Mutex::new(mobile_providers)),
+            configuration_gate: Arc::new(tokio::sync::Mutex::new(())),
             models_cache: Arc::default(),
             client,
             worker,
@@ -131,17 +179,81 @@ impl AppState {
     }
     /// Always asks the providers (`/status` reports whether they answer right now) and refreshes the cache.
     async fn fresh_models(&self) -> Result<Vec<String>> {
-        let Some(providers) = &self.config.providers else {
-            return Ok(Vec::new());
-        };
-        let ids: Vec<String> = providers
-            .models(&self.client)
-            .await?
-            .into_iter()
-            .filter(|id| presets::for_route(id)["id"] != "generic")
-            .collect();
+        let snapshot = self.providers.snapshot();
+        let mut ids: Vec<String> = match snapshot {
+            Some(providers) => providers.models(&self.client).await?,
+            None => Vec::new(),
+        }
+        .into_iter()
+        .filter(|id| presets::for_route(id)["id"] != "generic")
+        .collect();
+        if self.config.is_android() {
+            ids.push("mobile-local".into());
+        }
         *self.models_cache.lock().unwrap() = Some((std::time::Instant::now(), ids.clone()));
         Ok(ids)
+    }
+    async fn local_status(&self) -> Value {
+        let mut status = self.local.status().await;
+        status["memoryPolicy"] = json!(self.policy.read().unwrap().clone());
+        status["memoryConcurrency"] = json!(1);
+        status["localRoute"] = json!("mobile-local");
+        status["providerCount"] = json!(self.mobile_providers.lock().await.providers.len());
+        status
+    }
+    fn require_mobile(&self) -> Result<()> {
+        if self.config.is_android() {
+            Ok(())
+        } else {
+            Err(Error::new(
+                409,
+                "Configuração disponível apenas no host mobile.",
+            ))
+        }
+    }
+    async fn update_providers(&self, body: &Value) -> Result<Value> {
+        self.require_mobile()?;
+        let _gate = self.configuration_gate.lock().await;
+        let mut next = crate::providers::MobileProviders::parse(body)?;
+        let mut old = self.mobile_providers.lock().await;
+        // Omission preserves a key only for the SAME endpoint. Null explicitly removes it.
+        for p in &mut next.providers {
+            let key_omitted = body["providers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|v| v["id"] == p.id)
+                .is_some_and(|v| v.get("apiKey").is_none());
+            if key_omitted
+                && let Some(previous) = old.providers.iter().find(|v| {
+                    v.id == p.id
+                        && v.base_url.trim_end_matches('/') == p.base_url.trim_end_matches('/')
+                })
+            {
+                p.api_key = previous.api_key.clone();
+            }
+        }
+        let runtime = next.runtime()?;
+        self.store
+            .call(Request::SaveMobileProviders(next.clone()))
+            .await?;
+        self.providers.set(runtime);
+        *old = next;
+        *self.models_cache.lock().unwrap() = None;
+        self.runner.kick();
+        Ok(old.redacted())
+    }
+    async fn update_policy(&self, body: &Value) -> Result<Value> {
+        self.require_mobile()?;
+        let _gate = self.configuration_gate.lock().await;
+        let policy = crate::memory_backend::MemoryPolicy::parse(body)?;
+        policy.check_destination(&self.providers)?;
+        self.store
+            .call(Request::SaveMobilePolicy(policy.clone()))
+            .await?;
+        *self.policy.write().unwrap() = policy.clone();
+        self.runner.kick();
+        Ok(json!({"memoryPolicy":policy,"concurrency":1}))
     }
     fn changed(&self, c: &str, kind: &str, value: &Value) {
         let _ = self
@@ -157,6 +269,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/import",
             post(dispatch).layer(DefaultBodyLimit::max(crate::store::IMPORT_LIMIT)),
+        )
+        .route(
+            "/api/sync/delta",
+            any(dispatch).layer(DefaultBodyLimit::max(crate::store::sync::MAX_BYTES)),
         )
         .route("/api/{*path}", any(dispatch))
         .fallback_service(static_service)
@@ -214,7 +330,12 @@ async fn guard(
     let public = matches!(path, "/api/health" | "/api/pair" | "/api/pair/info")
         || (path == "/api/pair/start" && auth::loopback(peer.ip()))
         || !path.starts_with("/api/");
-    if state.auth.required && (state.store.encrypted || !auth::loopback(peer.ip())) && !public {
+    let local_control = path.starts_with("/api/local/");
+    let sync_control = path.starts_with("/api/sync/");
+    if !public
+        && (local_control || sync_control
+            || state.auth.required && (state.store.encrypted || !auth::loopback(peer.ip())))
+    {
         let token = request
             .headers()
             .get("authorization")
@@ -324,6 +445,11 @@ pub async fn write_character(store: &Store, config: &Config, c: &str, text: &str
 }
 pub async fn sync_character(store: &Store, config: &Config, c: &str) -> Result<bool> {
     checked_id(c)?;
+    // Mirrored cards are canonical in the transactional Store. An older protected/plain
+    // sidecar must never restore the pre-sync revision on the next generation.
+    if !store.call(Request::SyncCharacterSource(c.into())).await?.is_null() {
+        return Ok(false);
+    }
     let conv = store.call(Request::GetMeta(c.to_owned())).await?;
     if store.encrypted {
         let value = store.call(Request::ReadPrivateCharacter(c.into())).await?;
@@ -407,21 +533,43 @@ async fn dispatch(
     if !b.is_object() {
         return Err(Error::new(400, "Objeto JSON esperado."));
     }
-    let query = if uri.query().is_some() {
-        reqwest::Url::parse(&format!("http://fixture{uri}"))
-            .unwrap()
-            .query_pairs()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect::<std::collections::HashMap<_, _>>()
-    } else {
-        std::collections::HashMap::new()
-    };
+    let query = uri
+        .query()
+        .map(|q| {
+            reqwest::Url::parse(&format!("http://f/?{q}"))
+                .map(|u| {
+                    u.query_pairs()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect::<std::collections::HashMap<_, _>>()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
     let get = method == Method::GET;
     let post = method == Method::POST;
     let put = method == Method::PUT;
     let delete = method == Method::DELETE;
     let mut status = 200;
     let out = match seg.as_slice() {
+        ["sync", "status"] if get => {
+            let mut out=state.store.call(Request::SyncStatus(crate::store::sync::query(&query, false)?)).await?;
+            out["embeddingFingerprint"]=json!(state.local.fingerprint().await);
+            out
+        }
+        ["sync", "delta"] if get || post => {
+            let value = if get { crate::store::sync::query(&query, true)? } else { b };
+            let out = state.store.call(Request::SyncDelta {
+                value,
+                embedding_model: state.local.fingerprint().await,
+            }).await?;
+            if out["code"] == "CONFLICT" {
+                status = 409;
+            }
+            for c in out["accepted"].as_array().into_iter().flatten().filter_map(|v| v["convId"].as_str()) {
+                state.changed(c, "synced", &json!({"id":c}));
+            }
+            out
+        }
         ["health"] if get => {
             json!({"ok":true,"name":"modularchat","version":2,"release":"2.7.2","runtime":"rust","encrypted":state.store.encrypted})
         }
@@ -429,6 +577,24 @@ async fn dispatch(
             let models = state.fresh_models().await;
             json!({"db":state.store.call(Request::Status).await?,"local":state.local.status().await,"jobs":state.runner.state().await,"router":match models{Ok(m)=>json!({"ok":true,"models":m.len()}),Err(e)=>json!({"ok":false,"error":e.message})},"generating":state.generation.busy_ids().await,"time":crate::now()})
         }
+        ["local", "status"] if get => state.local_status().await,
+        ["local", "providers"] if get => {
+            state.require_mobile()?;
+            state.mobile_providers.lock().await.redacted()
+        }
+        ["local", "providers"] if put => state.update_providers(&b).await?,
+        ["local", "policy"] if get => {
+            state.require_mobile()?;
+            json!({"memoryPolicy":state.policy.read().unwrap().clone(),"concurrency":1})
+        }
+        ["local", "policy"] if put || post => state.update_policy(&b).await?,
+        ["local", "activate"] if post => {
+            status = 202;
+            let out = state.local.activate().await?;
+            state.runner.kick();
+            out
+        }
+        ["local", "standby"] if post => state.local.standby().await?,
         ["pair", "info"] if get => {
             json!({"required":state.auth.required,"loopback":auth::loopback(peer.ip())})
         }
@@ -452,7 +618,7 @@ async fn dispatch(
         }
         ["models"] if get => {
             let ids = state.models().await?;
-            json!({"models":ids,"default":"cbai/deepseek-v4.1-flash","presets":presets::public(&ids,&state.validation),"routes":ids.iter().map(|id|json!({"id":id,"presetId":presets::for_route(id)["id"]})).collect::<Vec<_>>()})
+            json!({"models":ids,"default":if state.config.is_android() { ids.first().map(String::as_str).unwrap_or("mobile-local") } else { "cbai/deepseek-v4.1-flash" },"presets":presets::public(&ids,&state.validation),"routes":ids.iter().map(|id|json!({"id":id,"presetId":presets::for_route(id)["id"]})).collect::<Vec<_>>()})
         }
         ["validation"] if get => state.validation.clone(),
         ["events"] if get => {
@@ -492,6 +658,14 @@ async fn dispatch(
             json!({"chats":state.store.call(Request::ListConversations{archived:query.get("archived").is_some_and(|v|v=="1"),query:query.get("q").cloned().unwrap_or_default()}).await?})
         }
         ["chats"] if post => {
+            if state.config.is_android()
+                && ["routeId", "model", "presetId"]
+                    .iter()
+                    .all(|k| b.get(*k).is_none())
+            {
+                b["routeId"] = json!("mobile-local");
+                b["presetId"] = json!("mobile-local");
+            }
             let route = presets::resolve(&b, None)?;
             let persona = persona(&state, &b).await?;
             b["persona"] = persona["name"].clone();

@@ -202,6 +202,7 @@ pub struct Manager {
     pub local: LocalModels,
     pub client: reqwest::Client,
     pub config: Config,
+    pub providers: crate::providers::RuntimeProviders,
     pub events: broadcast::Sender<Value>,
     pub jobs: Arc<Notify>,
     pub locks: Locks,
@@ -228,11 +229,13 @@ impl Manager {
         jobs: Arc<Notify>,
     ) -> Self {
         let slots = Arc::new(Semaphore::new(config.max_generations));
+        let providers = crate::providers::RuntimeProviders::new(config.providers.clone());
         Self {
             store,
             local,
             client,
             config,
+            providers,
             events,
             jobs,
             locks: Locks::default(),
@@ -344,7 +347,8 @@ impl Manager {
             return Err(Error::new(409, "Já existe uma resposta em andamento.")
                 .extra("generationId", json!(g.id)));
         }
-        if self.config.providers.is_none() {
+        let provider_snapshot = self.providers.snapshot();
+        if provider_snapshot.is_none() && !self.config.is_android() {
             return Err(Error::new(
                 503,
                 "Geração experimental desabilitada; habilite apenas um upstream explícito.",
@@ -391,13 +395,54 @@ impl Manager {
         }
         let validation = self.validation().await;
         let mut plan = presets::request(&conv, vec![], &validation);
+        let requested_route = s(&conv, "routeId");
+        let backend = if self.config.is_android() && requested_route == "mobile-local" {
+            crate::providers::SelectedBackend::Local
+        } else if let Some(providers) = &provider_snapshot {
+            providers
+                .select(if self.config.is_android() {
+                    &requested_route
+                } else {
+                    plan.body["model"].as_str().unwrap_or_default()
+                })
+                .await
+        } else {
+            crate::providers::SelectedBackend::Local
+        };
+        if matches!(backend, crate::providers::SelectedBackend::Local) && !self.config.is_android()
+        {
+            return Err(Error::new(503, "Destino de fallback indisponível."));
+        }
+        if self.config.is_android() {
+            match &backend {
+                crate::providers::SelectedBackend::Local => {
+                    plan = presets::mobile_local_plan(&conv, &data["globalSettings"])
+                }
+                crate::providers::SelectedBackend::Cloud { provider, .. } => {
+                    provider.prepare_mobile_plan(&mut plan)
+                }
+            }
+        }
         let length = presets::apply_length(&mut plan, &data["globalSettings"]);
         let calibration = self
             .store
             .call(Request::Calibration(s(&conv, "routeId")))
             .await?["ratio"]
             .as_f64();
-        let ctx = context::assemble(&data, &json!({}), &mode, &plan, calibration)?;
+        let mut ctx = match context::assemble(&data, &json!({}), &mode, &plan, calibration) {
+            Ok(ctx) => ctx,
+            Err(e) if matches!(backend, crate::providers::SelectedBackend::Local) => {
+                context::Context {
+                    messages: vec![],
+                    raw_estimate: 0,
+                    report: json!({"localPreparationError":e.message,"code":e.extra["code"],"report":e.extra["report"]}),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        if self.config.is_android() {
+            ctx.report["routing"] = backend.diagnostic(&requested_route);
+        }
         // hard cut of the generated text: the chosen size, or 135% of it in "approximate target" mode
         let bot_limit = rules::reply_bounds(&data["globalSettings"]).2;
         req.route_id = Some(s(&conv, "routeId"));
@@ -433,7 +478,8 @@ impl Manager {
         let this = self.clone();
         let task = g.clone();
         tokio::spawn(async move {
-            this.run(task, data, plan, calibration, ctx, permit).await;
+            this.run(task, data, plan, calibration, ctx, permit, backend)
+                .await;
         });
         Ok((g, false))
     }
@@ -445,11 +491,14 @@ impl Manager {
         calibration: Option<f64>,
         mut ctx: context::Context,
         _permit: OwnedSemaphorePermit,
+        backend: crate::providers::SelectedBackend,
     ) {
         let conv = data["conv"].clone();
         let query = s(&data["current"], "userText");
         let enrich = async {
-            let vector = if self.local.embed_available() {
+            let vector = if !matches!(backend, crate::providers::SelectedBackend::Local)
+                && self.local.embed_available()
+            {
                 tokio::time::timeout(Duration::from_secs(4), self.local.embed_text(&query, true))
                     .await
                     .ok()
@@ -457,13 +506,16 @@ impl Manager {
             } else {
                 None
             };
-            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint(),"beforeSeq":data["beforeSeq"],"windowStartSeq":data["pairs"].as_array().and_then(|a|a.get(a.len().saturating_sub(30))).map(|p|p["seq"].clone()).unwrap_or(data["current"]["seq"].clone()),"limit":24}))).await?;
+            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint().await,"beforeSeq":data["beforeSeq"],"windowStartSeq":data["pairs"].as_array().and_then(|a|a.get(a.len().saturating_sub(30))).map(|p|p["seq"].clone()).unwrap_or(data["current"]["seq"].clone()),"limit":24}))).await?;
             context::assemble(&data, &retrieval, &g.mode, &plan, calibration)
         };
         let enriched = tokio::select! {_=g.cancelled()=>None,v=tokio::time::timeout(Duration::from_secs(6),enrich)=>Some(v)};
         if let Some(Ok(Ok(full))) = enriched {
             ctx = full;
             plan.body["messages"] = json!(ctx.messages);
+        }
+        if self.config.is_android() {
+            ctx.report["routing"] = backend.diagnostic(&s(&conv, "routeId"));
         }
         let report = public_report(&ctx.report);
         let _ = self
@@ -503,24 +555,38 @@ impl Manager {
             0usize,
         );
         let since = crate::now();
+        // This guard survives the SSE consumer and style repair. Standby waits for its Drop.
+        let session = if matches!(backend, crate::providers::SelectedBackend::Local) {
+            Some(
+                tokio::select! { _=g.cancelled()=>Err(Error::new(503, "Geração cancelada.")), session=self.local.chat_session()=>session },
+            )
+        } else {
+            None
+        };
+        let mut error_code = Value::Null;
         let consume = async {
-            let request = crate::providers::chat_request(
-                &self.client,
-                self.config.providers.as_ref().unwrap(),
-                &plan.body,
-                Duration::from_secs(900),
-            );
-            let response = request
-                .send()
-                .await
-                .map_err(|e| Error::new(502, format!("Upstream: {}", clipped(&e.to_string()))))?;
+            if let Some(message) = ctx.report["localPreparationError"].as_str() {
+                return Err(Error::new(422, message).extra("code", "LOCAL_CONTEXT_TOO_LARGE"));
+            }
+            let response = match &backend {
+                crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
+                    Ok(session) => session.send(&plan.body, Duration::from_secs(900)).await?,
+                    Err(e) => return Err(e.clone()),
+                },
+                crate::providers::SelectedBackend::Cloud { provider, model, .. } => provider.chat_request(&self.client, model, &plan.body, Duration::from_secs(900)).send().await
+                    .map_err(|_| Error::new(502, "Requisição ao provedor falhou; nenhum destino alternativo foi enviado.").extra("code", "PROVIDER_UNAVAILABLE"))?,
+            };
             if !response.status().is_success() {
                 warn!(generation = %g.id, http = response.status().as_u16(), "provedor respondeu com erro");
                 return Err(Error::new(
                     502,
                     format!(
                         "Provedor {} HTTP {}",
-                        self.config.providers.as_ref().unwrap().resolve(plan.body["model"].as_str().unwrap_or_default()).0.id,
+                        match &backend {
+                            crate::providers::SelectedBackend::Cloud { provider, .. } =>
+                                provider.id.as_str(),
+                            _ => "mobile-local",
+                        },
                         response.status()
                     ),
                 ));
@@ -635,6 +701,7 @@ impl Manager {
         let result = tokio::select! {_=g.cancelled()=>Ok(()),v=consume=>v};
         if let Err(e) = result {
             warn!(generation = %g.id, code = e.status, "geração falhou no provedor");
+            error_code = e.extra["code"].clone();
             error = Some(e.message);
         }
         if self.delta(&g, &filter.flush()).await {
@@ -671,8 +738,7 @@ impl Manager {
         let pct = data["globalSettings"]["dialoguePct"]
             .as_f64()
             .unwrap_or(65.0);
-        let before =
-            style_policy::assess_settings(&visible, size, pct, &data["globalSettings"]);
+        let before = style_policy::assess_settings(&visible, size, pct, &data["globalSettings"]);
         let mut style_report = json!({"attempted":false,"before":before,"after":before});
         if !visible.trim().is_empty()
             && !stopped
@@ -691,13 +757,25 @@ impl Manager {
             messages.push(json!({"role":"assistant","content":visible}));
             messages.push(json!({"role":"user","content":style_policy::instruction_settings(&before,pct,&data["globalSettings"])}));
             let repair = async {
-                let req = crate::providers::chat_request(
-                    &self.client,
-                    self.config.providers.as_ref().unwrap(),
-                    &repair_body,
-                    Duration::from_secs(180),
-                );
-                req.send().await?.error_for_status()?.json::<Value>().await
+                let response = match &backend {
+                    crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
+                        Ok(session) => session.send(&repair_body, Duration::from_secs(180)).await?,
+                        Err(e) => return Err(e.clone()),
+                    },
+                    crate::providers::SelectedBackend::Cloud {
+                        provider, model, ..
+                    } => provider
+                        .chat_request(&self.client, model, &repair_body, Duration::from_secs(180))
+                        .send()
+                        .await
+                        .map_err(|_| Error::new(502, "Revisão de estilo indisponível."))?,
+                };
+                response
+                    .error_for_status()
+                    .map_err(|_| Error::new(502, "Revisão de estilo recusada."))?
+                    .json::<Value>()
+                    .await
+                    .map_err(|_| Error::new(502, "Revisão de estilo inválida."))
             };
             let repaired = tokio::select! { _=g.cancelled()=>None, result=repair=>Some(result) };
             style_report["attempted"] = json!(true);
@@ -708,12 +786,8 @@ impl Manager {
                     .unwrap_or_default();
                 let mut filter = rules::ThinkFilter::default();
                 let candidate = (filter.push(raw) + &filter.flush()).trim().to_owned();
-                let after = style_policy::assess_settings(
-                    &candidate,
-                    size,
-                    pct,
-                    &data["globalSettings"],
-                );
+                let after =
+                    style_policy::assess_settings(&candidate, size, pct, &data["globalSettings"]);
                 let accept = !candidate.is_empty()
                     && after["sizeOk"] == true
                     && after["monologueOk"] == true
@@ -776,7 +850,7 @@ impl Manager {
                         let _=self.store.call(Request::AddFlags(json!({"convId":g.conv,"versionId":g.version,"flags":flags,"source":"heuristic"}))).await;
                     }
                 }
-                json!({"done":true,"status":fin["status"],"error":error,"message":fin["message"],"revision":fin["revision"],"usage":usage})
+                json!({"done":true,"status":fin["status"],"error":error,"code":error_code,"message":fin["message"],"revision":fin["revision"],"usage":usage})
             }
             Err(e) => {
                 json!({"done":true,"status":"error","error":format!("Falha na persistência final; checkpoint preservado: {}",e.message)})
@@ -793,6 +867,7 @@ impl Manager {
         );
         self.active.lock().await.remove(&g.conv);
         // Release capacity before publishing done; its consumer may send immediately.
+        drop(session);
         drop(_permit);
         g.output.lock().await.final_event = Some(final_event.clone());
         let _ = g.wake.send(());
@@ -811,12 +886,12 @@ impl Manager {
         recent.insert(g.id.clone(), g.clone());
         drop(recent);
         self.jobs.notify_one();
-        let request_log = self.config.providers.as_ref().and_then(|p| {
-            p.resolve(plan.body["model"].as_str().unwrap_or_default())
-                .0
-                .request_log
-                .clone()
-        });
+        let request_log = match &backend {
+            crate::providers::SelectedBackend::Cloud { provider, .. } => {
+                provider.request_log.clone()
+            }
+            _ => None,
+        };
         if let Some(file) = request_log {
             let last = plan.body["messages"]
                 .as_array()
@@ -875,6 +950,9 @@ impl Manager {
                     value,
                 })
                 .await;
+        } else if self.config.is_android() {
+            let _ = self.store.call(Request::ProviderCheck { generation_id: g.id.clone(),
+                value: json!({"verification":"unverified","availability":"not_available","effortOk":null,"thinkingOk":null,"reason":"requestLog não disponível no mobile"}) }).await;
         }
     }
     async fn delta(&self, g: &Generation, text: &str) -> bool {

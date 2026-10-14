@@ -11,6 +11,13 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+pub(crate) fn valid_android_token(token: &str) -> bool {
+    (32..=256).contains(&token.len())
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
 pub fn private(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local(),
@@ -62,6 +69,29 @@ impl Auth {
         self.store
             .call(Request::FindDevice(rules::hash(token)))
             .await
+    }
+    /// Register the app-local secret supplied by the native bridge, storing only its hash.
+    /// The bridge must generate >=256 random bits, persist them in its own sandbox and never
+    /// import a desktop pairing token. Reopening with the same secret preserves the device ID.
+    pub(crate) async fn register_android_host(&self, token: &str) -> Result<()> {
+        if !valid_android_token(token) {
+            return Err(Error::new(400, "Token local inválido."));
+        }
+        if !self.store.encrypted || !self.required {
+            return Err(Error::new(
+                409,
+                "O host Android exige cofre e autenticação.",
+            ));
+        }
+        if self.verify(token).await?.is_null() {
+            self.store
+                .call(Request::AddDevice {
+                    name: "Android local".into(),
+                    token_hash: rules::hash(token),
+                })
+                .await?;
+        }
+        Ok(())
     }
     pub async fn pair(&self, p: &Value, ip: IpAddr) -> Result<Value> {
         let mut state = self.state.lock().await;

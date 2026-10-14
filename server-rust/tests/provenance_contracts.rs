@@ -763,6 +763,7 @@ async fn scenario(script: Vec<Value>) -> Scenario {
         providers: None,
         max_generations: 1,
         production: false,
+        native_lib_dir: None,
         review: true,
     };
     let state = AppState::new(config).await.unwrap();

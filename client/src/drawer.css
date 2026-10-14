@@ -53,6 +53,7 @@
 .mc-stair { display: flow-root; }
 .mc-drawer-panel .overflow-y-auto { overscroll-behavior: contain; scrollbar-width: none; }
 .mc-drawer-panel .overflow-y-auto::-webkit-scrollbar { display: none; }
+.mc-drawer-panel .mc-new-chat-button { width: calc(100% - 20px); margin-bottom: 10px; }
 .mc-subpage-scroller { border-radius: 26px; }
 /* While the rows move in a staircase (drawer-motion.js), the scroller's clipping box is widened far beyond the panel
    (negative margin + equal padding: the content box and the layout of the rows do not change), so rows trailing to

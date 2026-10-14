@@ -7,15 +7,62 @@ pub struct Config {
     pub dist: PathBuf,
     pub address: SocketAddr,
     pub require_pairing: bool,
-    /// Model providers (OpenAI-compatible APIs); `None` disables generation. See providers.rs.
+    /// Provider runtime shared with generation/jobs. AppState loads Android's sealed settings before use.
     pub providers: Option<std::sync::Arc<crate::providers::Providers>>,
     pub max_generations: usize,
     pub production: bool,
+    /// `Some` selects the sandboxed Android host. Desktop never sets this field.
+    pub native_lib_dir: Option<PathBuf>,
     /// Automatic review of replies ("to review" flags). Off by default: the local agent
     /// did not understand the flow and wasted processing/VRAM. MC_REVIEW=1 only for tests/diagnostics.
     pub review: bool,
 }
 impl Config {
+    /// Explicit mobile bootstrap: no environment overrides, desktop credentials or build-time paths.
+    /// The bridge supplies the app's private files directory and ApplicationInfo.nativeLibraryDir.
+    /// AppState loads providers only from this sandbox's vault; native models start on explicit activation.
+    pub fn for_android(
+        data_dir: &std::path::Path,
+        native_lib_dir: &std::path::Path,
+    ) -> Result<Self> {
+        for path in [data_dir, native_lib_dir] {
+            if !path.is_absolute()
+                || path.file_name().is_none()
+                || path
+                    .components()
+                    .any(|p| matches!(p, std::path::Component::ParentDir))
+            {
+                return Err(Error::new(
+                    400,
+                    "O host Android exige caminhos absolutos sem ..",
+                ));
+            }
+        }
+        if !native_lib_dir.is_dir() {
+            return Err(Error::new(
+                400,
+                "Diretório de bibliotecas nativas indisponível.",
+            ));
+        }
+        crate::privacy::private_dir(data_dir)?;
+        let data_dir = data_dir.canonicalize()?;
+        Ok(Self {
+            dist: data_dir.join("client-dist"),
+            data_dir,
+            address: "127.0.0.1:3011".parse().expect("fixed loopback address"),
+            require_pairing: true,
+            providers: None,
+            max_generations: 1,
+            production: true,
+            native_lib_dir: Some(native_lib_dir.canonicalize()?),
+            review: false,
+        })
+    }
+
+    pub fn is_android(&self) -> bool {
+        self.native_lib_dir.is_some()
+    }
+
     pub fn from_env() -> Result<Self> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -80,6 +127,7 @@ impl Config {
             providers,
             max_generations,
             production,
+            native_lib_dir: None,
             review: std::env::var("MC_REVIEW").as_deref() == Ok("1"),
         })
     }
@@ -214,4 +262,56 @@ pub fn isolated_dir(dir: &std::path::Path) -> Result<PathBuf> {
         return Err(Error::new(400, "A pasta de produção está protegida."));
     }
     Ok(resolved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn android_profile_is_explicit_sandboxed_and_always_encrypted() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let native = tempfile::tempdir().unwrap();
+        let mut config = Config::for_android(sandbox.path(), native.path()).unwrap();
+        assert!(config.is_android());
+        assert!(config.production && config.require_pairing);
+        assert_eq!(config.address.to_string(), "127.0.0.1:3011");
+        assert_eq!(config.max_generations, 1);
+        assert!(!config.review);
+        assert!(config.providers.is_none());
+        assert_eq!(
+            config.dist,
+            sandbox.path().canonicalize().unwrap().join("client-dist")
+        );
+        assert_eq!(
+            config.native_lib_dir,
+            Some(native.path().canonicalize().unwrap())
+        );
+        let local = crate::local::LocalModels::new(&config, reqwest::Client::new()).unwrap();
+        assert!(!local.chat_available());
+        // The profile itself forces encryption even if a caller changes the desktop mode flag.
+        config.production = false;
+        let store = crate::store::Store::open_for_config(&config).unwrap();
+        assert!(store.encrypted);
+        store
+            .call(crate::store::Request::CreateConversation(
+                serde_json::json!({"name":"sandbox fixture","routeId":"cbai/glm-5.2","presetId":"glm-52"}),
+            ))
+            .await
+            .unwrap();
+        store.call(crate::store::Request::Close).await.unwrap();
+        assert!(!sandbox.path().join("modularchat.db").exists());
+        assert!(sandbox.path().join("modularchat.db.vault").is_file());
+        assert!(
+            crate::privacy::read_snapshot(&sandbox.path().join("modularchat.db.vault")).is_ok()
+        );
+    }
+    #[test]
+    fn android_profile_refuses_relative_parent_paths_and_missing_native_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Config::for_android(std::path::Path::new("relative"), dir.path()).is_err());
+        assert!(Config::for_android(dir.path().ancestors().last().unwrap(), dir.path()).is_err());
+        assert!(Config::for_android(&dir.path().join("child/../escape"), dir.path()).is_err());
+        assert!(Config::for_android(dir.path(), &dir.path().join("absent-native-dir")).is_err());
+    }
 }

@@ -112,9 +112,9 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
   }, [drawer, memoryOpen, renameOpen, viewerAvatar, hideBar]);
 
   // ---------- loading / sync ----------
-  const load = useCallback(async () => {
+  const load = useCallback(async (pending) => {
     try {
-      const c = await api.getChat(chatId);
+      const c = await api.getChat(chatId, pending?.originKind ? { origin: { server: pending.originServer, kind: pending.originKind } } : undefined);
       // Partial snapshots persisted for recovery are not finished messages.
       c.history = c.history.filter(m => m.status !== 'generating');
       const base = chatRef.current;
@@ -137,8 +137,8 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
     api.presets().then((p) => alive && setPresets(p)).catch(() => {});
     load().then((c) => {
       if (!alive || !c || busyRef.current) return;
-      if (c.generation) attach(c.generation);
-      else if (api.getPending(chatId)) recoverPending(api.getPending(chatId));
+      if (api.getPending(chatId)) recoverPending(api.getPending(chatId));
+      else if (c.generation) attach(c.generation);
     });
     return () => {
       alive = false;
@@ -171,7 +171,7 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
   useEffect(() => {
     const on = (e) => {
       const ev = e.detail;
-      if (ev.convId !== chatId || busyRef.current) return;
+      if ((ev.convId !== chatId && ev.type !== 'connection') || busyRef.current) return;
       const cur = chatRef.current;
       if (ev.revision != null && cur && ev.revision <= cur.revision && ev.type !== 'flags') return;
       clearTimeout(reloadTimer.current);
@@ -195,8 +195,8 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
           busyRef.current = false;
         }
         const c = await load();
-        if (c?.generation) await attach(c.generation);
-        else if (c && api.getPending(chatId)) await recoverPending(api.getPending(chatId));
+        if (c && api.getPending(chatId)) await recoverPending(api.getPending(chatId));
+        else if (c?.generation) await attach(c.generation);
       }
     } finally { recoveringRef.current = false; }
   }, [chatId, load]);
@@ -245,13 +245,15 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
     if (!openedRef.current) {
       openedRef.current = true;
       el.scrollTop = el.scrollHeight; // A single jump to the end when the chat opens.
+    } else if (stuck) {
+      el.scrollTop = el.scrollHeight;
     } else if (readingRef.current) {
       const r = readingRef.current;
       const anchor = r.id ? el.querySelector(`[data-message-id="${CSS.escape(r.id)}"]`) : null;
       el.scrollTop = anchor ? el.scrollTop + anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - (Number(el.dataset.elasticY) || 0) - r.offset : r.top;
     }
     rememberReading();
-  }, [chat, stream, error, offline, renderedCount]);
+  }, [chat, stream, error, offline, renderedCount, stuck]);
 
   function onScroll() {
     const el = scrollRef.current;
@@ -279,7 +281,7 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
         gidRef.current = ev.ack.generationId;
         ctx.mode = ev.ack.mode;
         ctx.partId = ev.ack.partId;
-        api.setPending(chatId, { ...ctx.payload, generationId: ev.ack.generationId, mode: ctx.mode, partId: ctx.partId }).catch(()=>setError(tr("Falha ao proteger a confirmação no cache; a resposta continua salva no PC.")));
+        api.setPending(chatId, { ...ctx.payload, ...api.getPending(chatId), generationId: ev.ack.generationId, mode: ctx.mode, partId: ctx.partId }).catch(()=>setError(tr("Falha ao proteger a confirmação no cache; a resposta continua salva no servidor de origem.")));
         setOffline(false);
         if (ev.ack.userMessage && (ev.ack.mode === 'send' || ev.ack.mode === 'edit')) {
           updateChat((c) => {
@@ -326,7 +328,7 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
     if (ctxRef.current !== ctx || ctx.cancelled || ctx.finishing) return;
     ctx.finishing = true;
     // Reconcile before re-enabling the buttons and removing the waiting card.
-    const reconciled = await load();
+    const reconciled = await load(api.getPending(chatId));
     if (ctxRef.current !== ctx || ctx.cancelled) return;
     if (!reconciled) { ctx.finishing = false; return; }
     await api.setPending(chatId, null);
@@ -352,6 +354,7 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
       }, ctrl.signal);
     } catch (e) {
       if (ctrl.signal.aborted || ctx.epoch !== epoch || ctx.cancelled) return 'superseded';
+      if (e.status > 0 || e.code) { ctx.recoveryError = e.message; setError(e.message); return 'failed'; }
       if (tries < 6 && !ctx.done) {
         await new Promise((r) => setTimeout(r, Math.min(8000, 1000 * 2 ** tries)));
         if (!ctx.done && busyRef.current && ctx.epoch === epoch && !ctx.cancelled) return reattach(ctx, tries + 1);
@@ -369,28 +372,42 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
     setError('');
     const result=await reattach(ctx);
     if (result==='done') await finishRun(ctx);
-    else if (result==='failed') { setOffline(true); setError(tr("A resposta continua salva no PC. Reconecte para recebê-la.")); }
+    else if (result==='failed') { setOffline(true); setError(ctx.recoveryError || tr("A resposta continua salva no servidor de origem. Reconecte para recebê-la.")); }
   }
 
   async function attach(gen) {
     busyRef.current = true;
     gidRef.current = gen.id;
-    const ctx = { text: '', acked: true, done: null, mode: gen.mode, partId: gen.partId, payload: api.getPending(chatId) || {} };
+    const payload = { ...api.getPending(chatId), ...(gen.originKind ? { originServer: gen.originServer, originKind: gen.originKind } : {}),
+      generationId: gen.id, mode: gen.mode, partId: gen.partId };
+    const ctx = { text: '', acked: true, done: null, mode: gen.mode, partId: gen.partId, payload };
     ctxRef.current = ctx;
     setStream({ phase: 'waiting', mode: gen.mode, partId: gen.partId });
+    try { await api.setPending(chatId, payload); }
+    catch (e) { busyRef.current = false; setStream(null); setError(e.message); return; }
+    if (ctx.cancelled) return;
     const result=await reattach(ctx);
     if (result==='done') await finishRun(ctx);
-    else if (result==='failed') { setOffline(true); setError(tr("Conexão interrompida. A resposta continua no PC; volte ao app para reconectar.")); }
+    else if (result==='failed') { setOffline(true); setError(ctx.recoveryError || tr("Conexão interrompida. A resposta permanece no servidor de origem; aguarde a recuperação.")); }
   }
 
-  function recoverPending(pending) {
-    return pending.generationId
-      ? attach({ id: pending.generationId, mode: pending.mode, partId: pending.partId })
-      : run(pending, { recovery: true }); // same opId: the server replays, without duplicating
+  async function recoverPending(pending) {
+    try {
+      const generation = await api.queryOperation(chatId, pending);
+      return attach(generation);
+    } catch (e) {
+      setError(e.message);
+      if (!e.status) setOffline(true);
+      return false;
+    }
   }
 
   async function run(payload, { fromComposer = false, recovery = false } = {}) {
     if (busyRef.current || (offline && !recovery)) return false;
+    if (api.getPending(chatId)) {
+      setError(tr('Há um envio pendente de confirmação no servidor de origem. Recupere-o antes de enviar novamente.'));
+      return false;
+    }
     busyRef.current = true;
     setError('');
     const ctrl = new AbortController();
@@ -409,9 +426,6 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
       return false;
     }
     if (ctx.cancelled || ctrl.signal.aborted) return false;
-    try { await api.setPending(chatId, payload); } catch(e) {
-      busyRef.current=false;setStream(null);setError(tr("Não foi possível proteger o envio no aparelho."));return false;
-    }
     try {
       await api.sendMessage(chatId, payload, ev => { if (ctx.epoch === 0) makeHandler(ctx)(ev); }, ctrl.signal);
     } catch (e) {
@@ -419,9 +433,9 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
       if (e.name === 'AbortError' && ctx.acked && !ctx.done) {
         /* manual reconnection in progress */
       } else if (!ctx.acked) {
-        // nothing was saved: the draft stays in the composer
+        // Without ack, receipt is uncertain. Keep the draft and the origin for read-only recovery.
         setError(e.status === 422 ? e.message : e.message);
-        if (e.status > 0) await api.setPending(chatId, null);
+        if (e.status > 0 && !['AMBIGUOUS_WRITE', 'UNKNOWN_ORIGIN', 'OPERATION_MISMATCH'].includes(e.code)) await api.setPending(chatId, null);
         else setOffline(true);
         setStream(null);
         busyRef.current = false;
@@ -437,7 +451,7 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
     if (ctx.cancelled) return false;
     if (ctx.epoch > 1 && !ctx.done) return ctx.acked;
     if (ctx.done) await finishRun(ctx);
-    else { setOffline(true); setError(tr("Conexão interrompida. A resposta continua no PC; volte ao app para reconectar.")); }
+    else { setOffline(true); setError(tr("Conexão interrompida. A resposta permanece no servidor de origem; aguarde a recuperação.")); }
     return ctx.acked;
   }
 
@@ -458,6 +472,10 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
     const content = text.trim();
     if (!content || busy) return;
     if (text.length > 6000) return setError(tr("Sua mensagem pode ter no máximo 6.000 caracteres."));
+    setStuck(true);
+    readingRef.current = null;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
     run({ mode: 'send', content }, { fromComposer: true });
   }
 
@@ -467,8 +485,20 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
   const openMenu = useEvent((m) => { if (!busy) setMenuMsg(m); });
   const onBranch = useEvent((m, d) => switchBranch(m, d));
   const onVersions = useEvent((m) => setVersionsFor(m));
-  const onContinue = useEvent(() => run({ mode: 'continue' }));
-  const onRegenerate = useEvent(() => run({ mode: 'regenerate' }));
+  const onContinue = useEvent(() => {
+    setStuck(true);
+    readingRef.current = null;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    run({ mode: 'continue' });
+  });
+  const onRegenerate = useEvent(() => {
+    setStuck(true);
+    readingRef.current = null;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    run({ mode: 'regenerate' });
+  });
   const onStop = useEvent(() => stop());
   const lastIsAssistant = history.length > 0 && history[history.length - 1].role === 'assistant';
 

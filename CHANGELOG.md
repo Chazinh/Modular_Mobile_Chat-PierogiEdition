@@ -5,6 +5,15 @@ implemented features.
 
 ## Released
 
+### Memory extraction limits, interpersonal relationships, job queue deadlock fix, and connection resilience — 2026-10-14
+
+- **Memory Extraction Engine Optimization**: Capped fact extraction to 5–7 essential facts per turn (`server-rust/src/extraction-prompt.txt`, `server-rust/src/jobs.rs`). Restricted `knowledge` mapping strictly to characters directly involved in each fact rather than exhaustively citing all present entities in scenes with 8–9 characters, permanently resolving local LLM token budget overflow (`finish_reason: length` / HTTP 502).
+- **Interpersonal Relationships & Narrative Threads**: Updated prompt contracts and background runners to emit explicit `{ "a": "...", "b": "...", "description": "..." }` relationship objects as well as open and resolved narrative threads (`open_threads` and `resolved_threads`).
+- **Deleted Conversations & Job Queue Deadlock Fix**: In `server-rust/src/store/jobs.rs`, `store/repo.rs`, and `store/mod.rs`, immediately mark all associated pending/running/failed background tasks as `skipped` upon deleting a conversation (`delete_conv`). Return `gone: true` in `job_input` if a referenced conversation is missing from the database vault, instantly discarding stranded tasks. Automatically reset budget-failed jobs (`error LIKE '%orçamento%'`) back to `pending` on startup (`RequeueJobs`).
+- **Camera and Scroll Anchor Stability on Chat Retry**: In `client/src/components/ChatView.jsx`, preserved bottom scroll pinning (`el.scrollTop = el.scrollHeight`) whenever `stuck` is active. Reset `readingRef.current` to `null` and anchored the view to the bottom upon sending, continuing, or retrying interrupted responses to eliminate backward scroll jumps.
+- **Mobile Background Connection Resilience**: In `client/src/server-connection.js`, resolved function shadowing by renaming parameters to `newLocal` and `newRemote`. Updated the lifecycle listener to ignore `hidden` visibility transitions, keeping network connections, streams, and leases alive while minimized, and only triggering revalidation when the app returns to `visible`.
+- **Cross-Device Mobile Sync & Standalone Host**: Integrated standalone local host adapter (`client/src/local-host.js`) and bidirectional SQLite replication protocol (`client/src/mobile-sync.js`, `server-rust/src/store/sync.rs`) with atomic conflict rollback and 17 dedicated connection test fixtures.
+
 ### Side drawer layout refinements and spacing polish — 2026-10-14
 
 - **New Chat Button Layout**: Removed the outer rectangular wrapper container around the "New Chat" button in `SettingsDrawer.jsx`, embedding the button directly into the transparent panel with rounded clipping (`overflow-hidden rounded-full py-[18px]`).

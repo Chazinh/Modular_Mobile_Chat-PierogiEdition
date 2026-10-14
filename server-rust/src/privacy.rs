@@ -1,5 +1,8 @@
-//! Native vault compatible with MCVAULT1: DPAPI CurrentUser + AES-256-GCM.
+//! Native MCVAULT1 vault: AES-256-GCM, DPAPI CurrentUser on Windows.
 //! Starts no Node/PowerShell and never writes plain-text SQLite.
+//! Non-Windows uses a versioned 256-bit key file in the private sandbox (0700/0600 on Unix).
+//! This is sandbox protection, NOT Android Keystore or protection against root/app-UID access.
+//! DPAPI and sandbox key files are intentionally distinct and are not cross-platform credentials.
 use crate::{Error, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::{
@@ -10,7 +13,7 @@ use rusqlite::{Connection, MAIN_DB};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -18,12 +21,16 @@ use zeroize::{Zeroize, Zeroizing};
 
 const MAGIC: &[u8] = b"MCVAULT1";
 const AAD: &[u8] = b"ModularChat.encrypted-storage.v1";
+#[cfg(windows)]
 const ENTROPY: &[u8] = b"ModularChat.WindowsVault.v1";
+#[cfg(not(windows))]
+const KEY_MAGIC: &[u8] = b"MCKEY001";
 fn invalid() -> Error {
-    Error::new(
-        409,
-        "O cofre/chave está inválido ou não pertence a esta conta do Windows. Preserve ambos os arquivos.",
-    )
+    #[cfg(windows)]
+    let message = "O cofre/chave está inválido ou não pertence a esta conta do Windows. Preserve ambos os arquivos.";
+    #[cfg(not(windows))]
+    let message = "O cofre/chave do sandbox está ausente ou inválido. Preserve ambos os arquivos.";
+    Error::new(409, message)
 }
 
 #[cfg(windows)]
@@ -87,18 +94,151 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Zeroizing<Vec<u8>>> {
     };
     Ok(result)
 }
-#[cfg(not(windows))]
-fn dpapi(_: &[u8], _: bool) -> Result<Zeroizing<Vec<u8>>> {
-    Err(Error::new(400, "O cofre DPAPI requer Windows."))
-}
-
 fn key_for(file: &Path) -> Result<Zeroizing<Vec<u8>>> {
-    safe_file(file)?;
-    let key = dpapi(&fs::read(file)?, false)?;
+    let mut f = open_regular(file, true)?;
+    if f.metadata()?.len() > 65536 {
+        return Err(invalid());
+    }
+    let mut bytes = Zeroizing::new(Vec::new());
+    Read::by_ref(&mut f).take(65537).read_to_end(&mut bytes)?;
+    #[cfg(windows)]
+    let key = dpapi(&bytes, false)?;
+    #[cfg(not(windows))]
+    let key = {
+        let key_end = KEY_MAGIC.len() + 32;
+        if bytes.len() != key_end + 32
+            || !bytes.starts_with(KEY_MAGIC)
+            || ring::digest::digest(&ring::digest::SHA256, &bytes[..key_end]).as_ref()
+                != &bytes[key_end..]
+        {
+            return Err(invalid());
+        }
+        Zeroizing::new(bytes[KEY_MAGIC.len()..key_end].to_vec())
+    };
     if key.len() != 32 {
         return Err(invalid());
     }
     Ok(key)
+}
+fn protected_key(key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    if key.len() != 32 {
+        return Err(invalid());
+    }
+    #[cfg(windows)]
+    {
+        dpapi(key, true)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut bytes = Zeroizing::new(Vec::with_capacity(KEY_MAGIC.len() + 64));
+        bytes.extend_from_slice(KEY_MAGIC);
+        bytes.extend_from_slice(key);
+        // Detect truncated/corrupt key files even before the first vault save. This checksum
+        // is NOT an authentication mechanism; GCM authenticates the database itself.
+        let check = ring::digest::digest(&ring::digest::SHA256, &bytes);
+        bytes.extend_from_slice(check.as_ref());
+        Ok(bytes)
+    }
+}
+fn snapshot_key_path(file: &Path) -> Result<PathBuf> {
+    let base = file
+        .to_str()
+        .and_then(|s| s.strip_suffix(".vault"))
+        .ok_or_else(invalid)?;
+    #[cfg(windows)]
+    let suffix = ".key";
+    #[cfg(not(windows))]
+    let suffix = ".sandbox.key";
+    Ok(PathBuf::from(format!("{base}{suffix}")))
+}
+
+/// The leaf directory must be real. Unix directories created for the vault and backups are private.
+pub(crate) fn private_dir(dir: &Path) -> Result<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+            return Err(Error::new(
+                400,
+                "Diretório do cofre não pode ser um link ou arquivo.",
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(dir)?;
+        }
+        Err(e) => return Err(e.into()),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut opts = fs::OpenOptions::new();
+        opts.read(true);
+        nofollow(&mut opts);
+        let handle = opts.open(dir)?;
+        if !handle.metadata()?.is_dir() || fs::symlink_metadata(dir)?.file_type().is_symlink() {
+            return Err(Error::new(400, "Diretório do cofre inválido."));
+        }
+        handle.set_permissions(fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+fn nofollow(options: &mut fs::OpenOptions) {
+    // Linux/Android's stable O_NOFOLLOW value; avoids following a link between check and open.
+    // Other systems also verify metadata below and never truncate an existing file before validation.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(0x20000);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let _ = options;
+}
+fn verify_regular(path: &Path, file: &fs::File, private: bool) -> Result<()> {
+    let named = fs::symlink_metadata(path)?;
+    let opened = file.metadata()?;
+    if named.file_type().is_symlink() || !named.is_file() || !opened.is_file() {
+        return Err(Error::new(
+            400,
+            "Arquivo do cofre não pode ser um link ou diretório.",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if named.dev() != opened.dev()
+            || named.ino() != opened.ino()
+            || private && opened.nlink() != 1
+        {
+            return Err(Error::new(
+                400,
+                "Arquivo privado do cofre foi substituído ou possui hard links.",
+            ));
+        }
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    Ok(())
+}
+fn open_regular(path: &Path, private: bool) -> Result<fs::File> {
+    safe_file(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    nofollow(&mut options);
+    let file = options.open(path)?;
+    verify_regular(path, &file, private)?;
+    Ok(file)
+}
+fn read_regular(path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open_regular(path, false)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 fn cipher(key: &[u8]) -> Result<aead::LessSafeKey> {
     Ok(aead::LessSafeKey::new(
@@ -154,10 +294,12 @@ pub fn unseal(data: &[u8], key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     Ok(encrypted)
 }
 pub fn safe_file(file: &Path) -> Result<()> {
-    if !file.exists() {
-        return Ok(());
-    }
-    if file.symlink_metadata()?.file_type().is_symlink() {
+    let meta = match fs::symlink_metadata(file) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() {
         return Err(Error::new(
             400,
             "Arquivos do cofre não podem ser links simbólicos.",
@@ -196,19 +338,43 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 pub fn atomic(file: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write(file, bytes, true)
+}
+fn atomic_new(file: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write(file, bytes, false)
+}
+fn atomic_write(file: &Path, bytes: &[u8], replace: bool) -> Result<()> {
     safe_file(file)?;
     let parent = file.parent().ok_or_else(invalid)?;
-    fs::create_dir_all(parent)?;
+    private_dir(parent)?;
     let tmp = parent.join(format!(".mc-{}.tmp", crate::id()));
     let result = (|| {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options.open(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
-        rename_with_retry(&tmp, file)?;
+        if replace {
+            rename_with_retry(&tmp, file)?;
+        } else {
+            // A same-directory hard link publishes the completely flushed key without replacing
+            // an existing key, including a dangling symlink. Never truncate/regenerate key material.
+            fs::hard_link(&tmp, file)?;
+            fs::remove_file(&tmp)?;
+        }
+        #[cfg(unix)]
+        fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
     if result.is_err() {
@@ -216,8 +382,14 @@ pub fn atomic(file: &Path, bytes: &[u8]) -> Result<()> {
     }
     result
 }
-struct Lock(PathBuf);
+struct Lock {
+    #[cfg(windows)]
+    path: PathBuf,
+    #[cfg(not(windows))]
+    file: fs::File,
+}
 impl Lock {
+    #[cfg(windows)]
     fn acquire(dir: &Path) -> Result<Self> {
         let file = dir.join("modularchat.db.vault.lock");
         safe_file(&file)?;
@@ -237,7 +409,52 @@ impl Lock {
             .open(&file)?;
         write!(f, "{}", std::process::id())?;
         f.sync_all()?;
-        Ok(Self(file))
+        Ok(Self { path: file })
+    }
+    #[cfg(not(windows))]
+    fn acquire(dir: &Path) -> Result<Self> {
+        use std::io::{Seek, SeekFrom};
+        let path = dir.join("modularchat.db.vault.lock");
+        safe_file(&path)?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true); // deliberately no truncation
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        nofollow(&mut options);
+        let mut file = options.open(&path)?;
+        verify_regular(&path, &file, true)?;
+        file.try_lock().map_err(|e| match e {
+            fs::TryLockError::WouldBlock => {
+                Error::new(409, "O cofre já está aberto por outro servidor.")
+            }
+            fs::TryLockError::Error(e) => e.into(),
+        })?;
+        // Keep compatibility with legacy PID-only locks. An unlocked file still belonging to a
+        // live legacy writer must not be stolen; a crashed writer's PID can be recovered.
+        let mut owner = String::new();
+        Read::by_ref(&mut file)
+            .take(128)
+            .read_to_string(&mut owner)?;
+        if !owner.trim().is_empty() {
+            let pid = owner.trim().parse::<u32>().ok().filter(|p| *p > 0)
+                .ok_or_else(|| Error::new(409, "Lock do cofre inválido. Preserve os dados e revise o processo proprietário."))?;
+            if active(pid) {
+                return Err(Error::new(
+                    409,
+                    "O cofre já está aberto por outro servidor.",
+                ));
+            }
+        }
+        verify_regular(&path, &file, true)?;
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        write!(file, "{}", std::process::id())?;
+        file.sync_all()?;
+        // The inode persists. Unlinking it would let a second writer lock a different inode.
+        Ok(Self { file })
     }
 }
 #[cfg(windows)]
@@ -257,14 +474,40 @@ fn active(pid: u32) -> bool {
         success == 0 || code == 259
     }
 }
-#[cfg(not(windows))]
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn active(pid: u32) -> bool {
+    // /proc is present on Linux/Android; inaccessible metadata is conservatively treated as live.
+    fs::metadata(format!("/proc/{pid}"))
+        .map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true)
+}
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn active(pid: u32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    let Ok(pid) = std::ffi::c_int::try_from(pid) else {
+        return true;
+    };
+    // signal 0 only probes existence; ESRCH=3 is the POSIX/BSD "no process" result.
+    unsafe { kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(3) }
+}
+#[cfg(not(any(windows, unix)))]
 fn active(_: u32) -> bool {
     true
 }
 impl Drop for Lock {
     fn drop(&mut self) {
-        if fs::read_to_string(&self.0).is_ok_and(|p| p.trim() == std::process::id().to_string()) {
-            let _ = fs::remove_file(&self.0);
+        #[cfg(windows)]
+        if fs::read_to_string(&self.path).is_ok_and(|p| p.trim() == std::process::id().to_string())
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+        #[cfg(not(windows))]
+        {
+            // Clear our PID while still holding the advisory lock; File's drop releases the lock,
+            // also automatically after SIGKILL. Never remove a live instance's lock file.
+            let _ = self.file.set_len(0);
+            let _ = self.file.sync_all();
         }
     }
 }
@@ -296,15 +539,9 @@ pub fn deserialize(data: &mut [u8]) -> Result<Connection> {
 }
 pub fn read_snapshot(file: &Path) -> Result<Connection> {
     safe_file(file)?;
-    let key_file = PathBuf::from(
-        file.to_string_lossy()
-            .strip_suffix(".vault")
-            .ok_or_else(invalid)?
-            .to_owned()
-            + ".key",
-    );
+    let key_file = snapshot_key_path(file)?;
     let key = key_for(&key_file)?;
-    let mut snapshot = unseal(&fs::read(file)?, &key)?;
+    let mut snapshot = unseal(&read_regular(file)?, &key)?;
     deserialize(&mut snapshot)
 }
 pub fn snapshot(source: &Path, target: &Path) -> Result<()> {
@@ -315,38 +552,25 @@ pub fn snapshot(source: &Path, target: &Path) -> Result<()> {
         ));
     }
     let _ = read_snapshot(source)?;
-    let source_key = PathBuf::from(
-        source
-            .to_string_lossy()
-            .strip_suffix(".vault")
-            .ok_or_else(invalid)?
-            .to_owned()
-            + ".key",
-    );
-    let target_key = PathBuf::from(
-        target
-            .to_string_lossy()
-            .strip_suffix(".vault")
-            .ok_or_else(invalid)?
-            .to_owned()
-            + ".key",
-    );
+    let source_key = snapshot_key_path(source)?;
+    let target_key = snapshot_key_path(target)?;
     if target_key.exists() {
         return Err(Error::new(409, "Chave de destino já existe."));
     }
     // A full read observes a consistent version even during an atomic rename.
-    let bytes = fs::read(source)?;
+    let bytes = read_regular(source)?;
     let key = key_for(&source_key)?;
     let mut clear = unseal(&bytes, &key)?;
     let _ = deserialize(&mut clear)?;
-    atomic(&target_key, &fs::read(source_key)?)?;
+    let key_bytes = Zeroizing::new(read_regular(&source_key)?);
+    atomic_new(&target_key, &key_bytes)?;
     atomic(target, &bytes)?;
     let _ = read_snapshot(target)?;
     Ok(())
 }
 impl Vault {
     pub fn open(dir: &Path) -> Result<(Self, Connection)> {
-        fs::create_dir_all(dir)?;
+        private_dir(dir)?;
         if dir.join("modularchat.db").exists() {
             return Err(Error::new(
                 409,
@@ -365,8 +589,16 @@ impl Vault {
             }
         }
         let file = dir.join("modularchat.db.vault");
-        let key_file = dir.join("modularchat.db.key");
+        let key_file = snapshot_key_path(&file)?;
         safe_file(&file)?;
+        safe_file(&key_file)?;
+        #[cfg(windows)]
+        let other_key = dir.join("modularchat.db.sandbox.key");
+        #[cfg(not(windows))]
+        let other_key = dir.join("modularchat.db.key");
+        if !key_file.exists() && fs::symlink_metadata(other_key).is_ok() {
+            return Err(invalid());
+        }
         let key = if key_file.exists() {
             key_for(&key_file)?
         } else {
@@ -375,11 +607,11 @@ impl Vault {
             }
             let mut key = Zeroizing::new(vec![0; 32]);
             SystemRandom::new().fill(&mut key).map_err(|_| invalid())?;
-            atomic(&key_file, &dpapi(&key, true)?)?;
+            atomic_new(&key_file, &protected_key(&key)?)?;
             key
         };
         let db = if file.exists() {
-            let mut data = unseal(&fs::read(&file)?, &key)?;
+            let mut data = unseal(&read_regular(&file)?, &key)?;
             deserialize(&mut data)?
         } else {
             Connection::open_in_memory()?
@@ -457,19 +689,14 @@ impl Vault {
         if file.metadata()?.len() > 800_037 {
             return Err(Error::new(422, "Ficha protegida grande demais."));
         }
-        String::from_utf8(unseal(&fs::read(file)?, &self.key)?.to_vec())
+        String::from_utf8(unseal(&read_regular(file)?, &self.key)?.to_vec())
             .map(Some)
             .map_err(|_| invalid())
     }
     pub fn backup(&self, db: &Connection, file: &Path) -> Result<()> {
-        let key_file = PathBuf::from(
-            file.to_string_lossy()
-                .strip_suffix(".vault")
-                .ok_or_else(invalid)?
-                .to_owned()
-                + ".key",
-        );
-        atomic(&key_file, &fs::read(&self.key_file)?)?;
+        let key_file = snapshot_key_path(file)?;
+        let key_bytes = Zeroizing::new(read_regular(&self.key_file)?);
+        atomic(&key_file, &key_bytes)?;
         atomic(file, &seal(&db.serialize(MAIN_DB)?, &self.key)?)?;
         let _ = read_snapshot(file)?;
         Ok(())
@@ -491,9 +718,8 @@ mod tests {
         a[37] ^= 1;
         assert!(unseal(&a, &key).is_err());
     }
-    #[cfg(windows)]
     #[test]
-    fn native_dpapi_reopens_private_sqlite_and_refuses_live_lock() {
+    fn native_vault_reopens_private_sqlite_and_refuses_live_lock() {
         let dir = tempfile::tempdir().unwrap();
         let (vault, db) = Vault::open(dir.path()).unwrap();
         assert!(Vault::open(dir.path()).is_err());
@@ -539,5 +765,214 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"novo");
         assert_eq!(fs::read(&alias).unwrap(), b"antigo");
         assert_eq!(crate::config::hard_links(&file).unwrap(), 1);
+    }
+    #[test]
+    fn vault_refuses_missing_wrong_and_corrupt_key_or_ciphertext_without_replacing_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let (vault, db) = Vault::open(dir.path()).unwrap();
+        db.execute_batch(
+            "CREATE TABLE secrets(text); INSERT INTO secrets VALUES('PRIVATE_RECORD');",
+        )
+        .unwrap();
+        vault.save(&db).unwrap();
+        let file = vault.file.clone();
+        let key_file = vault.key_file.clone();
+        let original_key = Zeroizing::new(fs::read(&key_file).unwrap());
+        let original_vault = fs::read(&file).unwrap();
+        drop(db);
+        drop(vault);
+
+        fs::remove_file(&key_file).unwrap();
+        assert!(Vault::open(dir.path()).is_err());
+        assert!(
+            !key_file.exists(),
+            "a missing key must never be regenerated for an existing vault"
+        );
+        fs::write(&key_file, &*original_key).unwrap();
+
+        for bad_key in [
+            protected_key(&[42; 32]).unwrap(),
+            Zeroizing::new(vec![1, 2, 3]),
+        ] {
+            fs::write(&key_file, &*bad_key).unwrap();
+            assert!(Vault::open(dir.path()).is_err());
+            assert_eq!(fs::read(&key_file).unwrap(), *bad_key);
+            assert_eq!(fs::read(&file).unwrap(), original_vault);
+        }
+        fs::write(&key_file, &*original_key).unwrap();
+        let mut tampered = original_vault.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        fs::write(&file, &tampered).unwrap();
+        assert!(Vault::open(dir.path()).is_err());
+        assert_eq!(fs::read(&file).unwrap(), tampered);
+        fs::write(&file, &original_vault).unwrap();
+        assert!(Vault::open(dir.path()).is_ok());
+    }
+    #[test]
+    fn key_publication_never_overwrites_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("existing.key");
+        atomic_new(&file, b"original").unwrap();
+        assert!(atomic_new(&file, b"replacement").is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"original");
+        assert!(
+            !fs::read_dir(dir.path()).unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".mc-"))
+        );
+    }
+    #[test]
+    fn legacy_live_or_invalid_pid_lock_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("modularchat.db.vault.lock");
+        for owner in [std::process::id().to_string(), "invalid-owner".into()] {
+            fs::write(&file, &owner).unwrap();
+            assert!(Lock::acquire(dir.path()).is_err());
+            assert_eq!(fs::read_to_string(&file).unwrap(), owner);
+        }
+    }
+    #[test]
+    #[ignore = "subprocess fixture invoked only by process_lock_recovers_after_kill"]
+    fn vault_lock_child_fixture() {
+        let Some(dir) = std::env::var_os("MC_PRIVACY_CHILD_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let (vault, db) = Vault::open(&dir).unwrap();
+        db.execute_batch(
+            "CREATE TABLE secrets(text); INSERT INTO secrets VALUES('ACK_BEFORE_KILL');",
+        )
+        .unwrap();
+        vault.save(&db).unwrap();
+        atomic(&dir.join("child-ready"), b"ready").unwrap();
+        let _ = std::io::stdin().read(&mut [0u8; 1]);
+        drop(db);
+        drop(vault);
+    }
+    #[test]
+    fn process_lock_recovers_after_kill_without_stealing_live_owner() {
+        use std::process::{Command, Stdio};
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "privacy::tests::vault_lock_child_fixture",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("MC_PRIVACY_CHILD_DIR", dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let mut child = ChildGuard(command.spawn().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !dir.path().join("child-ready").exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "child exited before acquiring the vault"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child vault startup timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let lock_file = dir.path().join("modularchat.db.vault.lock");
+        let owner = fs::read(&lock_file).unwrap();
+        assert!(Vault::open(dir.path()).is_err());
+        assert_eq!(fs::read(&lock_file).unwrap(), owner);
+        atomic(
+            &dir.path().join(".mc-crashed.tmp"),
+            b"interrupted ciphertext",
+        )
+        .unwrap();
+        let pid = child.0.id();
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        assert!(!active(pid));
+        let (vault, db) = Vault::open(dir.path()).unwrap();
+        assert_eq!(
+            db.query_row("SELECT text FROM secrets", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ACK_BEFORE_KILL"
+        );
+        assert!(!dir.path().join(".mc-crashed.tmp").exists());
+        drop(db);
+        drop(vault);
+        #[cfg(not(windows))]
+        assert!(
+            lock_file.is_file(),
+            "advisory lock inode must persist across releases"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_permissions_and_key_format_are_private() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let (vault, db) = Vault::open(dir.path()).unwrap();
+        db.execute_batch("CREATE TABLE secrets(text);").unwrap();
+        vault.save(&db).unwrap();
+        assert_eq!(fs::metadata(dir.path()).unwrap().mode() & 0o777, 0o700);
+        for file in [
+            &vault.key_file,
+            &vault.file,
+            &dir.path().join("modularchat.db.vault.lock"),
+        ] {
+            assert_eq!(fs::metadata(file).unwrap().mode() & 0o777, 0o600);
+        }
+        let key = Zeroizing::new(fs::read(&vault.key_file).unwrap());
+        assert!(key.starts_with(KEY_MAGIC));
+        assert_eq!(key.len(), KEY_MAGIC.len() + 64);
+        assert!(!dir.path().join("modularchat.db.key").exists());
+        let mut corrupted = key.clone();
+        corrupted[KEY_MAGIC.len()] ^= 1;
+        fs::write(&vault.key_file, &*corrupted).unwrap();
+        assert!(
+            key_for(&vault.key_file).is_err(),
+            "key checksum detects accidental corruption"
+        );
+        fs::write(&vault.key_file, &*key).unwrap();
+        let temporary = dir.path().join(".mc-permission.tmp");
+        atomic(&temporary, b"encrypted temporary").unwrap();
+        assert_eq!(fs::metadata(&temporary).unwrap().mode() & 0o777, 0o600);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_rejects_symlinks_and_key_hard_links_without_touching_targets() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-target");
+        let key = dir.path().join("modularchat.db.sandbox.key");
+        symlink(&missing, &key).unwrap();
+        assert!(Vault::open(dir.path()).is_err());
+        assert!(fs::symlink_metadata(&key).unwrap().file_type().is_symlink());
+        assert!(!missing.exists());
+        fs::remove_file(&key).unwrap();
+        let linked_dir = dir.path().join("linked-directory");
+        symlink(dir.path(), &linked_dir).unwrap();
+        assert!(Vault::open(&linked_dir).is_err());
+        let (vault, db) = Vault::open(dir.path()).unwrap();
+        let alias = dir.path().join("key-alias");
+        fs::hard_link(&vault.key_file, &alias).unwrap();
+        assert!(key_for(&vault.key_file).is_err());
+        drop(db);
+        drop(vault);
     }
 }

@@ -318,10 +318,14 @@ impl Database {
     ) -> Result<Value> {
         self.conv(c, false)?;
         if let Some(op) = op {
-            let prev = self.one(
+            let mut prev = self.one(
                 "SELECT result_json FROM operations WHERE conv_id=? AND op_id=?",
                 &[json!(c), json!(op)],
             )?;
+            if prev.is_null() {
+                prev = self.one("SELECT json_extract(row_json,'$.result_json') result_json FROM sync_retained WHERE table_name='operations' AND conv_id=? AND row_key=json_array(?,?)",
+                    &[json!(c),json!(c),json!(op)])?;
+            }
             if !prev.is_null() {
                 return Ok(parsed(&prev, "result_json", Value::Null));
             }

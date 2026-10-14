@@ -406,7 +406,10 @@ fn remap_snapshot(v: &mut Value, ids: &HashMap<String, String>) {
         _ => {}
     }
 }
-fn validate(data: &Value) -> Result<()> {
+pub(super) fn validate(data: &Value) -> Result<()> {
+    validate_sync(data, &HashMap::new())
+}
+pub(super) fn validate_sync(data: &Value, removed: &HashMap<&str, HashSet<&str>>) -> Result<()> {
     let fail = || Error::new(400, "Dados/IDs/referências da importação inválidos.");
     let c = data["conversation"]["id"]
         .as_str()
@@ -436,6 +439,11 @@ fn validate(data: &Value) -> Result<()> {
         }
         ids.insert(table, set);
     }
+    for (&table, tombstones) in removed {
+        if let Some(set) = ids.get_mut(table) {
+            set.extend(tombstones);
+        }
+    }
     let check = |v: &Value, table: &str| -> Result<()> {
         if !v.is_null() && !v.as_str().is_some_and(|s| ids[table].contains(s)) {
             return Err(fail());
@@ -460,10 +468,11 @@ fn validate(data: &Value) -> Result<()> {
             if !seen.insert(at.clone()) {
                 return Err(fail());
             }
-            at = s(inter[&at], "parent_id");
+            let row = inter.get(&at).ok_or_else(fail)?;
+            at = s(row, "parent_id");
         }
         if let Some(parent) = i["parent_id"].as_str()
-            && n(inter[parent], "seq") >= n(i, "seq")
+            && inter.get(parent).is_none_or(|row| n(row, "seq") >= n(i, "seq"))
         {
             return Err(fail());
         }

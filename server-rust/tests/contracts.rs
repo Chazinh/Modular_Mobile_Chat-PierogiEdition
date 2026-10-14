@@ -632,6 +632,7 @@ async fn lan_auth_before_large_body() {
         providers: None,
         max_generations: 1,
         production: false,
+        native_lib_dir: None,
         review: true,
     };
     let state = AppState::new(config).await.unwrap();
@@ -824,20 +825,27 @@ fn structured_card_matches_world_contract() {
         "Alex",
     );
     for name in [
-        "Celine Arnaud",
-        "Hector Valdez",
-        "Ines Morrow",
-        "Dalia Fontaine",
-        "Theo Marchetti",
-        "Sofia Brandt",
-        "Kara Lindqvist",
-        "Yuki Tanabe",
-        "Mira Solano",
-        "Lena Hartwell",
-        "Iris Calloway",
-        "Nora Kade",
-        "Tomas Ferreira",
-        "Pia Kade",
+        "Rose Ludwig",
+        "Frederic Molotov",
+        "Yulia Pavlova",
+        "Barbara Król",
+        "Joanna Pawlak",
+        "Łukasz Grabowski",
+        "Paweł Ostrowski",
+        "Michał Lewandowski",
+        "Humi Visconti",
+        "Nyo García",
+        "Vivian Voltaire",
+        "Amanda Linspector",
+        "Caio Ymir",
+        "Iuno Volkov",
+        "John Kennedy",
+        "Elizabeth Wójcik",
+        "Anna Nowak",
+        "Natsuki Souza",
+        "Vanessa Varga",
+        "Miguel Nascimento",
+        "Lili Varga",
     ] {
         assert!(out.iter().any(|c| c["name"] == name), "missing {name}");
     }
@@ -851,30 +859,33 @@ fn structured_card_matches_world_contract() {
         "Origem",
         "Rank S",
         "Raças",
+        "Corpo Docente",
+        "Personagens Externos",
         "Alex",
     ] {
         assert!(!out.iter().any(|c| c["name"] == bad), "false name {bad}");
     }
     let get = |name| out.iter().find(|c| c["name"] == name).unwrap();
-    assert_eq!(get("Mira Solano")["kind"], "main");
-    assert_eq!(get("Celine Arnaud")["kind"], "npc");
+    assert_eq!(get("Elizabeth Wójcik")["kind"], "main");
+    assert_eq!(get("Rose Ludwig")["kind"], "npc");
     assert!(
-        get("Hector Valdez")["aliases"]
+        get("Frederic Molotov")["aliases"]
             .as_array()
             .unwrap()
-            .contains(&json!("Prof. Valdez"))
+            .contains(&json!("Prof. Molotov"))
     );
+    // a surname shared by two people (Vanessa and Lili Varga) is never an alias
     assert!(
-        !get("Nora Kade")["aliases"]
+        !get("Vanessa Varga")["aliases"]
             .as_array()
             .unwrap()
-            .contains(&json!("Kade"))
+            .contains(&json!("Varga"))
     );
     assert!(
-        get("Lena Hartwell")["description"]
+        get("Lili Varga")["description"]
             .as_str()
             .unwrap()
-            .contains("Autômata escocesa")
+            .contains("Prima materna de Vanessa Varga")
     );
 }
 #[test]

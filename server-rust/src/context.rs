@@ -42,11 +42,14 @@ pub fn assemble(
         .filter(|s| !s.is_empty())
         .unwrap_or("Alex");
     let settings = &conv["settings"]["context"];
-    let (minimum, maximum, preferred) = pair_limits(conv);
+    let compact = plan.controls["mobileCompact"] == true;
+    let (minimum, maximum, preferred) = if compact { (0, 6, 6) } else { pair_limits(conv) };
+    let input_capacity = plan.capacity["contextWindow"].as_u64().unwrap_or(128000)
+        .saturating_sub(plan.body["max_tokens"].as_u64().unwrap_or(0) + 64).max(1);
     let hard = settings["hardLimit"]
         .as_u64()
         .unwrap_or(128000)
-        .clamp(1, 128000) as usize;
+        .clamp(1, if compact { input_capacity } else { 128000 }) as usize;
     let soft = settings["softLimit"]
         .as_u64()
         .unwrap_or(110000)

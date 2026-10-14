@@ -5,6 +5,7 @@ mod maintenance;
 mod manual;
 mod memory;
 mod repo;
+pub mod sync;
 pub mod transfer;
 mod turns;
 
@@ -168,6 +169,12 @@ pub enum Request {
     },
     Export(Option<String>),
     Import(Value),
+    SyncStatus(Value),
+    SyncDelta {
+        value: Value,
+        embedding_model: String,
+    },
+    SyncCharacterSource(String),
     Backup,
     Personas,
     SavePersona(Value),
@@ -307,6 +314,10 @@ pub enum Request {
         text: String,
     },
     ReadPrivateCharacter(String),
+    LoadMobileProviders,
+    SaveMobileProviders(crate::providers::MobileProviders),
+    LoadMobilePolicy,
+    SaveMobilePolicy(crate::memory_backend::MemoryPolicy),
     /// Vault write counters (diagnostics and tests).
     PersistStats,
     Close,
@@ -396,8 +407,8 @@ impl Store {
             &config.data_dir,
             64,
             Duration::from_secs(30),
-            config.production,
-            false,
+            config.production || config.is_android(),
+            config.is_android(),
         )
     }
     pub fn open_with_limits(dir: &Path, capacity: usize, timeout: Duration) -> Result<Self> {
@@ -599,10 +610,11 @@ impl Database {
         this.db.execute_batch(if encrypted {
             "PRAGMA journal_mode=MEMORY;PRAGMA temp_store=MEMORY;PRAGMA foreign_keys=OFF;"
         } else {
-            "PRAGMA journal_mode=WAL;PRAGMA foreign_keys=OFF;PRAGMA synchronous=NORMAL;PRAGMA temp_store=MEMORY;PRAGMA mmap_size=268435456;PRAGMA cache_size=-32000;"
+            "PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;PRAGMA temp_store=MEMORY;PRAGMA mmap_size=268435456;PRAGMA cache_size=-32000;PRAGMA foreign_keys=OFF;"
         })?;
         this.tx(|| {
             this.db.execute_batch(SCHEMA)?;
+            this.init_sync()?;
             if !this
                 .rows("PRAGMA table_info(memories)", &[])?
                 .iter()
@@ -666,6 +678,10 @@ impl Database {
         Ok(this)
     }
     fn execute(&mut self, r: Request) -> Result<Value> {
+        // Even a replay must retry a failed vault write before returning a durable sync ack.
+        if matches!(r, Request::SyncStatus(_) | Request::SyncDelta { .. }) {
+            self.flush_dirty()?;
+        }
         let durability = r.durability();
         if r.flushes_first() {
             self.flush_dirty()?;
@@ -678,17 +694,31 @@ impl Database {
             }
         }
         let before = self.db.total_changes();
-        let result = if r.transactional() {
+        let sync_replay = if let Request::SyncDelta { value, embedding_model } = &r {
+            value["batchId"].as_str().zip(value["peerId"].as_str()).map(|(batch,peer)|
+                (peer.to_owned(),batch.to_owned(),rules::hash(&value.to_string()),
+                    value["after"].as_u64().unwrap_or(0),embedding_model.clone()))
+        } else {None};
+        let mut result = if r.transactional() {
             self.tx(|| self.dispatch(r))
         } else {
             self.dispatch(r)
         };
+        // A constraint/ownership failure rolls back the whole data batch first. Its
+        // negative ack is then persisted independently, so retries replay the same 409.
+        if let (Some((peer,batch,hash,after,model)),Err(error))=(&sync_replay,&result)
+            && error.status==409 && error.extra["code"]=="CONFLICT"
+        {
+            let recorded=self.tx(||self.sync_failed_batch(peer,batch,hash,*after,model,error));
+            result=recorded;
+        }
         if self.db.total_changes() != before && self.vault.is_some() {
             self.changing += 1;
             match durability {
                 // A vault written now also carries the pending derived state (the file is the whole database).
                 Durability::Immediate => {
                     self.immediate += 1;
+                    self.mark_dirty(DERIVED_DELAY);
                     self.save_now()?;
                 }
                 Durability::Derived => self.mark_dirty(DERIVED_DELAY),
@@ -778,6 +808,9 @@ impl Database {
     fn dispatch(&self, r: Request) -> Result<Value> {
         match r {
             Request::Status => self.status(),
+            Request::SyncStatus(p) => self.sync_status(&p),
+            Request::SyncDelta { value, embedding_model } => self.sync_delta(&value, &embedding_model),
+            Request::SyncCharacterSource(c) => self.sync_character_source(&c),
             Request::CreateConversation(p) => self.create(&p),
             Request::ListConversations { archived, query } => self.list(archived, &query),
             Request::GetConversation(c) => self.conversation(&c, true),
@@ -966,6 +999,10 @@ impl Database {
                     "UPDATE jobs SET status='pending',updated_at=? WHERE status='running'",
                     &[json!(now())],
                 )?;
+                self.exec(
+                    "UPDATE jobs SET status='pending',attempts=0,error=NULL,updated_at=? WHERE status='failed' AND (error LIKE '%excedeu o orçamento%' OR error LIKE '%orçamento%')",
+                    &[json!(now())],
+                )?;
                 Ok(json!(n))
             }
             Request::ReleaseLegacyReview => {
@@ -1083,10 +1120,51 @@ impl Database {
                 self.private_vault()?.write_file(&file, &text)?;
                 Ok(json!(true))
             }
-            Request::ReadPrivateCharacter(conv_id) => Ok(json!(
-                self.private_vault()?
-                    .read_file(&self.private_character(&conv_id)?)?
-            )),
+            Request::ReadPrivateCharacter(conv_id) => {
+                let canonical = self.sync_character_source(&conv_id)?;
+                if !canonical.is_null() {
+                    Ok(canonical)
+                } else {
+                    Ok(json!(self.private_vault()?.read_file(&self.private_character(&conv_id)?)?))
+                }
+            }
+            Request::LoadMobileProviders | Request::LoadMobilePolicy => {
+                self.private_vault()?;
+                let key = if matches!(r, Request::LoadMobileProviders) {
+                    "mobile_providers_v1"
+                } else {
+                    "mobile_policy_v1"
+                };
+                let row = self.one("SELECT value FROM meta WHERE key=?", &[json!(key)])?;
+                if row.is_null() {
+                    Ok(Value::Null)
+                } else {
+                    serde_json::from_str(row["value"].as_str().unwrap_or_default())
+                        .map_err(|_| Error::new(500, "Configuração mobile protegida inválida."))
+                }
+            }
+            Request::SaveMobileProviders(config) => {
+                self.private_vault()?;
+                config.validate()?;
+                let text = serde_json::to_string(&config)
+                    .map_err(|_| Error::new(500, "Configuração mobile inválida."))?;
+                self.exec(
+                    "INSERT OR REPLACE INTO meta(key,value) VALUES('mobile_providers_v1',?)",
+                    &[json!(text)],
+                )?;
+                Ok(json!(true))
+            }
+            Request::SaveMobilePolicy(policy) => {
+                self.private_vault()?;
+                let value = serde_json::to_value(&policy)
+                    .map_err(|_| Error::new(500, "Política mobile inválida."))?;
+                crate::memory_backend::MemoryPolicy::parse(&value)?;
+                self.exec(
+                    "INSERT OR REPLACE INTO meta(key,value) VALUES('mobile_policy_v1',?)",
+                    &[json!(value.to_string())],
+                )?;
+                Ok(json!(true))
+            }
             Request::PersistStats => Ok(self.persist_stats()),
             Request::Close => Err(Error::new(503, "Armazenamento encerrado.")),
         }

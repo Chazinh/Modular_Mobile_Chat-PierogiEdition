@@ -1,5 +1,9 @@
-//! Owns only children started by this server. Local memory never uses the provider gateway.
+//! Owns only children started by this server, including the compact mobile conversation backend.
+mod mobile;
+mod model_files;
 use crate::{Error, Result, config::Config, rules};
+use mobile::Mobile;
+use model_files::{CHAT, Cancel, DigestCache, EMBED, ModelFile};
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -59,6 +63,9 @@ struct Process {
     enabled: bool,
     client: reqwest::Client,
     startup_timeout: Duration,
+    mobile_file: Option<Arc<ModelFile>>,
+    #[cfg(test)]
+    fixture_command: Option<Vec<String>>,
 }
 #[derive(Clone)]
 pub struct LocalModels {
@@ -68,6 +75,52 @@ pub struct LocalModels {
     client: reqwest::Client,
     /// Per-request deadline of the memory model (LOCAL_CHAT_TIMEOUT_S, default 600 s: the 9B partly runs on the CPU).
     chat_timeout: Duration,
+    mobile: Option<Arc<Mobile>>,
+    embed_digest: Arc<DigestCache>,
+}
+/// Keeps the mobile inference permit through the complete SSE stream and any style repair.
+pub(crate) struct ChatSession {
+    local: LocalModels,
+    _operation: mobile::Operation,
+}
+impl ChatSession {
+    pub(crate) async fn send(&self, body: &Value, timeout: Duration) -> Result<reqwest::Response> {
+        let mut body = body.clone();
+        let messages = body["messages"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| Error::new(400, "Mensagens locais inválidas."))?;
+        let requested = body["max_tokens"].as_u64().unwrap_or(1024).min(1024);
+        let budget = self
+            .local
+            .mobile_budget(&messages, requested, requested as usize)
+            .await?;
+        let object = body.as_object_mut().unwrap();
+        for key in ["reasoning_effort", "reasoning", "thinking", "output_config"] {
+            object.remove(key);
+        }
+        body["model"] = json!("mobile-local");
+        body["max_tokens"] = json!(budget);
+        body["chat_template_kwargs"] = json!({"enable_thinking":false});
+        let response = self
+            .local
+            .client
+            .post(format!(
+                "http://127.0.0.1:{}/v1/chat/completions",
+                self.local.chat.port
+            ))
+            .timeout(timeout)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| {
+                Error::new(503, "Conversa local indisponível.").extra("code", "LOCAL_UNAVAILABLE")
+            })?;
+        if !response.status().is_success() {
+            return Err(Error::new(502, "Modelo compacto recusou a requisição."));
+        }
+        Ok(response)
+    }
 }
 fn env_path(name: &str, default: PathBuf) -> PathBuf {
     std::env::var_os(name).map(PathBuf::from).unwrap_or(default)
@@ -77,7 +130,10 @@ fn strings(items: &[&str]) -> Vec<String> {
 }
 impl Process {
     fn available(&self) -> bool {
-        self.enabled && self.exe.is_file() && self.model.is_file()
+        self.enabled
+            && self.exe.is_file()
+            && self.model.is_file()
+            && self.mobile_file.as_ref().is_none_or(|file| file.ready())
     }
     async fn healthy(&self) -> bool {
         self.client
@@ -134,21 +190,34 @@ impl Process {
         }
         for args in &self.args {
             let mut command = Command::new(&self.exe);
+            #[cfg(test)]
+            if let Some(fixture) = &self.fixture_command {
+                command
+                    .args(fixture)
+                    .env("MC_LIFECYCLE_FIXTURE_PORT", self.port.to_string());
+            }
+            #[cfg(test)]
+            let native_args = self.fixture_command.is_none();
+            #[cfg(not(test))]
+            let native_args = true;
+            if native_args {
+                command
+                    .args([
+                        "-m",
+                        self.model
+                            .to_str()
+                            .ok_or_else(|| Error::new(400, "Caminho GGUF inválido."))?,
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        &self.port.to_string(),
+                        "--no-webui",
+                        "--sleep-idle-seconds",
+                        &self.idle.to_string(),
+                    ])
+                    .args(args);
+            }
             command
-                .args([
-                    "-m",
-                    self.model
-                        .to_str()
-                        .ok_or_else(|| Error::new(400, "Caminho GGUF inválido."))?,
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    &self.port.to_string(),
-                    "--no-webui",
-                    "--sleep-idle-seconds",
-                    &self.idle.to_string(),
-                ])
-                .args(args)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -195,7 +264,23 @@ impl Process {
         .extra("code", "LOCAL_UNAVAILABLE"))
     }
     async fn status(&self) -> Value {
-        let owner = self.child.lock().await;
+        // Provisioning progress remains readable while a native runtime starts or stops.
+        let mut owner = if self.mobile_file.is_some() {
+            match self.child.try_lock() {
+                Ok(owner) => owner,
+                Err(_) => {
+                    return json!({"name":self.name,"running":true,"pid":null,"ok":self.available(),"starting":true,"reason":null});
+                }
+            }
+        } else {
+            self.child.lock().await
+        };
+        if owner
+            .as_mut()
+            .is_some_and(|child| child.try_wait().is_ok_and(|exit| exit.is_some()))
+        {
+            *owner = None;
+        }
         json!({"name":self.name,"running":owner.is_some(),"pid":owner.as_ref().and_then(Child::id),"ok":self.available(),"reason":if self.available(){Value::Null}else{json!("runtime/GGUF indisponível ou modelo desabilitado")}})
     }
     async fn stop(&self) -> Result<()> {
@@ -211,7 +296,195 @@ impl Process {
     }
 }
 impl LocalModels {
+    pub fn is_mobile(&self) -> bool {
+        self.mobile.is_some()
+    }
+    pub fn mobile_activated(&self) -> bool {
+        self.mobile.as_ref().is_some_and(|m| m.activated())
+    }
+    pub fn chat_readiness(&self) -> Result<()> {
+        if self.chat_available() {
+            return Ok(());
+        }
+        let downloading = self.mobile.as_ref().is_some_and(|m| {
+            m.activated()
+                && matches!(
+                    m.chat_file.status().phase,
+                    "pending" | "downloading" | "verifying"
+                )
+        });
+        Err(Error::new(
+            503,
+            if downloading {
+                "Modelo compacto em download; mensagem preservada. Ative e aguarde o modelo."
+            } else {
+                "Modelo compacto em standby ou runtime/GGUF indisponível; mensagem preservada."
+            },
+        )
+        .extra(
+            "code",
+            if downloading {
+                "LOCAL_DOWNLOADING"
+            } else {
+                "LOCAL_UNAVAILABLE"
+            },
+        ))
+    }
+    pub(crate) async fn chat_session(&self) -> Result<ChatSession> {
+        self.chat_readiness()?;
+        let mobile = self
+            .mobile
+            .as_ref()
+            .ok_or_else(|| Error::new(409, "Conversa compacta exige perfil mobile."))?;
+        let operation = mobile.begin().await?;
+        self.embed.stop().await?;
+        self.chat.ensure().await?;
+        Ok(ChatSession {
+            local: self.clone(),
+            _operation: operation,
+        })
+    }
+    async fn mobile_budget(
+        &self,
+        messages: &[Value],
+        requested: u64,
+        minimum: usize,
+    ) -> Result<u64> {
+        let rendered = self.post(&self.chat, "/apply-template", json!({"messages":messages,"add_generation_prompt":true,"chat_template_kwargs":{"enable_thinking":false}}), self.chat_timeout).await?;
+        let prompt = rendered["prompt"]
+            .as_str()
+            .ok_or_else(|| Error::new(502, "Template local inválido."))?;
+        let tokens = self
+            .post(
+                &self.chat,
+                "/tokenize",
+                json!({"content":prompt,"add_special":true}),
+                self.chat_timeout,
+            )
+            .await?;
+        let used = tokens["tokens"]
+            .as_array()
+            .ok_or_else(|| Error::new(502, "Contagem local de tokens inválida."))?
+            .len();
+        let remaining = 4096usize.saturating_sub(used + 64);
+        if remaining < minimum {
+            return Err(Error::new(
+                502,
+                "Entrada local excedeu ctx4096; redução explícita necessária.",
+            )
+            .extra("code", "LOCAL_CONTEXT_TOO_LARGE")
+            .extra("promptTokens", used)
+            .extra("remainingTokens", remaining));
+        }
+        Ok(requested.min(remaining as u64))
+    }
     pub fn new(config: &Config, client: reqwest::Client) -> Result<Self> {
+        let embed_digest = Arc::new(DigestCache::default());
+        if let Some(native_dir) = &config.native_lib_dir {
+            // No desktop overrides and no I/O, downloads or processes until explicit activation.
+            let downloader = model_files::download_client()?;
+            let root = config.data_dir.join("models");
+            let chat_file = Arc::new(ModelFile::new(
+                root.clone(),
+                CHAT,
+                downloader.clone(),
+                Arc::new(DigestCache::default()),
+            ));
+            let embed_file = Arc::new(ModelFile::new(
+                root,
+                EMBED,
+                downloader,
+                embed_digest.clone(),
+            ));
+            let process = |name: &str, file: Arc<ModelFile>, port, args| {
+                Arc::new(Process {
+                    name: name.into(),
+                    exe: native_dir.join("libllama_server.so"),
+                    model: file.path.clone(),
+                    port,
+                    args: vec![args],
+                    idle: 0,
+                    child: Mutex::new(None),
+                    enabled: true,
+                    client: client.clone(),
+                    startup_timeout: Duration::from_secs(150),
+                    mobile_file: Some(file),
+                    #[cfg(test)]
+                    fixture_command: None,
+                })
+            };
+            let chat = process(
+                "chat-memory",
+                chat_file.clone(),
+                3012,
+                strings(&[
+                    "-ngl",
+                    "0",
+                    "--device",
+                    "none",
+                    "-t",
+                    "4",
+                    "-tb",
+                    "4",
+                    "-c",
+                    "4096",
+                    "-np",
+                    "1",
+                    "-b",
+                    "128",
+                    "-ub",
+                    "64",
+                    "--cache-ram",
+                    "0",
+                    "--jinja",
+                    "--reasoning",
+                    "off",
+                ]),
+            );
+            // Non-causal embedding requires a whole input in a physical batch. Keep the existing
+            // 1600-character chunks and mean pooling; only one mobile process is resident at a time.
+            let embed = process(
+                "embed-memory",
+                embed_file.clone(),
+                3013,
+                strings(&[
+                    "--embeddings",
+                    "--pooling",
+                    "mean",
+                    "-ngl",
+                    "0",
+                    "--device",
+                    "none",
+                    "-t",
+                    "4",
+                    "-tb",
+                    "4",
+                    "-c",
+                    "2048",
+                    "-np",
+                    "1",
+                    "-b",
+                    "2048",
+                    "-ub",
+                    "2048",
+                ]),
+            );
+            let mobile = Some(Mobile::new(
+                chat.clone(),
+                embed.clone(),
+                chat_file,
+                embed_file,
+            ));
+            return Ok(Self {
+                chat,
+                embed,
+                mock: None,
+                client,
+                chat_timeout: Duration::from_secs(600),
+                mobile,
+                embed_digest,
+            });
+        }
         let home = env_path(
             "MC_LOCAL_HOME",
             PathBuf::from(
@@ -273,8 +546,18 @@ impl LocalModels {
             let mut a = strings(&["-c", &ctx]);
             if gpu {
                 a.extend(strings(&[
-                    "-ngl", "auto", "--fit", "on", "--fit-target", &fit_margin, "-fa", "on", "-ctk",
-                    "q8_0", "-ctv", "q8_0",
+                    "-ngl",
+                    "auto",
+                    "--fit",
+                    "on",
+                    "--fit-target",
+                    &fit_margin,
+                    "-fa",
+                    "on",
+                    "-ctk",
+                    "q8_0",
+                    "-ctv",
+                    "q8_0",
                 ]));
             } else {
                 a.extend(strings(&["-ngl", "0", "--fit", "off"]));
@@ -348,6 +631,9 @@ impl LocalModels {
                 enabled,
                 client: client.clone(),
                 startup_timeout: Duration::from_secs(150),
+                mobile_file: None,
+                #[cfg(test)]
+                fixture_command: None,
             }),
             embed: Arc::new(Process {
                 name: "embed-memory".into(),
@@ -360,9 +646,14 @@ impl LocalModels {
                 enabled,
                 client: client.clone(),
                 startup_timeout: Duration::from_secs(150),
+                mobile_file: None,
+                #[cfg(test)]
+                fixture_command: None,
             }),
             mock,
             client,
+            mobile: None,
+            embed_digest,
             chat_timeout: Duration::from_secs(
                 std::env::var("LOCAL_CHAT_TIMEOUT_S")
                     .ok()
@@ -372,19 +663,73 @@ impl LocalModels {
         })
     }
     pub fn chat_available(&self) -> bool {
-        self.mock.is_some() || self.chat.available()
+        self.mock.is_some()
+            || self.mobile.as_ref().is_none_or(|m| m.activated()) && self.chat.available()
     }
     pub fn embed_available(&self) -> bool {
-        self.mock.is_some() || self.embed.available()
+        self.mock.is_some()
+            || self.mobile.as_ref().is_none_or(|m| m.activated()) && self.embed.available()
     }
     pub async fn status(&self) -> Value {
         if self.mock.is_some() {
             json!({"chat":{"ok":true,"fixture":true},"embed":{"ok":true,"fixture":true}})
         } else {
-            json!({"chat":self.chat.status().await,"embed":self.embed.status().await})
+            let mut status =
+                json!({"chat":self.chat.status().await,"embed":self.embed.status().await});
+            if let Some(mobile) = &self.mobile {
+                let lifecycle = mobile.status();
+                for (key, value) in lifecycle.as_object().unwrap() {
+                    status[key] = value.clone();
+                }
+                status["chat"]["ok"] = json!(self.chat_available());
+                status["embed"]["ok"] = json!(self.embed_available());
+                status["chat"]["download"] = json!(mobile.chat_file.status());
+                status["embed"]["download"] = json!(mobile.embed_file.status());
+            }
+            status
         }
     }
-    pub fn fingerprint(&self) -> String {
+    pub async fn activate(&self) -> Result<Value> {
+        let mobile = self
+            .mobile
+            .as_ref()
+            .ok_or_else(|| Error::new(409, "Ativação disponível apenas no perfil Android."))?;
+        mobile.activate().await?;
+        Ok(self.status().await)
+    }
+    pub async fn standby(&self) -> Result<Value> {
+        let mobile = self
+            .mobile
+            .as_ref()
+            .ok_or_else(|| Error::new(409, "Standby disponível apenas no perfil Android."))?;
+        mobile.standby().await;
+        Ok(self.status().await)
+    }
+    async fn pinned_embedding(&self) -> bool {
+        if self.mock.is_some() {
+            return false;
+        }
+        if self.mobile.is_some() {
+            return self.embed_digest.matches(&self.embed.model, EMBED.sha256);
+        }
+        // Keep custom desktop pooling semantics. A compatible renamed copy may use the pin,
+        // but no filename (including embeddinggemma) can prove content identity.
+        let mean = self.embed.args[0]
+            .windows(2)
+            .any(|pair| pair == ["--pooling", "mean"]);
+        mean && self
+            .embed_digest
+            .digest(&self.embed.model, EMBED.size, &Cancel::new())
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some(EMBED.sha256)
+    }
+    pub async fn fingerprint(&self) -> String {
+        if self.pinned_embedding().await {
+            return embedding_fingerprint(EMBED.sha256);
+        }
         let metadata = self.embed.model.metadata().ok();
         let size = metadata.as_ref().map(|m| m.len());
         let mtime = metadata
@@ -405,6 +750,15 @@ impl LocalModels {
         let base = if let Some(mock) = &self.mock {
             mock.clone()
         } else {
+            if self.mobile.is_some() {
+                // The operation gate covers the whole chat/embedding operation, including all chunks.
+                // Unload the other owned runtime before loading this one on a phone.
+                if std::ptr::eq(process, self.chat.as_ref()) {
+                    self.embed.stop().await?;
+                } else {
+                    self.chat.stop().await?;
+                }
+            }
             process.ensure().await?;
             format!("http://127.0.0.1:{}", process.port)
         };
@@ -453,6 +807,21 @@ impl LocalModels {
         max_tokens: u64,
         temperature: f64,
     ) -> Result<Value> {
+        let _operation = if let Some(mobile) = &self.mobile {
+            Some(mobile.begin().await?)
+        } else {
+            None
+        };
+        let max_tokens = if self.mobile.is_some() {
+            self.mobile_budget(
+                &messages,
+                max_tokens,
+                512usize.max(max_tokens.min(1200) as usize),
+            )
+            .await?
+        } else {
+            max_tokens
+        };
         let data=self.post(&self.chat,"/v1/chat/completions",json!({"model":"local","messages":messages,"temperature":temperature,"max_tokens":max_tokens,"stream":false,"chat_template_kwargs":{"enable_thinking":false},"response_format":{"type":"json_schema","json_schema":{"name":"saida","strict":true,"schema":schema}}}),self.chat_timeout).await?;
         if data["choices"][0]["finish_reason"] == "length" {
             return Err(Error::new(
@@ -463,15 +832,23 @@ impl LocalModels {
         let text = data["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or_default();
-        serde_json::from_str(text)
-            .map_err(|_| Error::new(502, "Modelo local não devolveu JSON completo."))
+        let raw = serde_json::from_str(text)
+            .map_err(|_| Error::new(502, "Modelo local não devolveu JSON completo."))?;
+        crate::memory_backend::validate_schema(&raw, &schema)?;
+        Ok(raw)
     }
     pub async fn embed_text(&self, text: &str, query: bool) -> Result<Vec<f32>> {
+        let _operation = if let Some(mobile) = &self.mobile {
+            Some(mobile.begin().await?)
+        } else {
+            None
+        };
         let name = self.embed.model.to_string_lossy().to_lowercase();
+        let gemma = name.contains("embeddinggemma") || self.pinned_embedding().await;
         let chunks = rules::chunks(if text.is_empty() { " " } else { text }, 1600, 80);
         let mut partial = Vec::<Vec<f32>>::new();
         for (_, _, text) in chunks {
-            let input = if name.contains("embeddinggemma") {
+            let input = if gemma {
                 if query {
                     format!("task: search result | query: {text}")
                 } else {
@@ -529,9 +906,18 @@ impl LocalModels {
         Ok(result)
     }
     pub async fn stop(&self) -> Result<()> {
-        self.chat.stop().await?;
-        self.embed.stop().await
+        if let Some(mobile) = &self.mobile {
+            mobile.stop().await;
+        }
+        // Attempt both even if one child fails to reap.
+        let chat = self.chat.stop().await;
+        let embed = self.embed.stop().await;
+        chat.and(embed)
     }
+}
+
+fn embedding_fingerprint(sha256: &str) -> String {
+    rules::hash(&json!({"sha256":sha256,"pooling":"mean","prefixes":"embeddinggemma-search-story-v1","chunks":[1600,80],"format":2}).to_string())
 }
 
 pub use crate::cast::from_card as cast_from_card;
@@ -551,6 +937,8 @@ mod lifecycle_tests {
             enabled: true,
             client: reqwest::Client::new(),
             startup_timeout: Duration::from_millis(180),
+            mobile_file: None,
+            fixture_command: None,
         }
     }
     #[tokio::test]
@@ -617,3 +1005,6 @@ mod lifecycle_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod mobile_tests;

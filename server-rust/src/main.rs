@@ -110,8 +110,8 @@ async fn run() -> Result<()> {
         // Memory queue diagnostics: jobs by type/state and only the category of the error of failed ones
         // (the stored message can quote model output, so it is never printed).
         let mut jobs = Vec::new();
-        if let Ok(mut st) = db.prepare("SELECT kind,status,attempts,coalesce(error,'') FROM jobs WHERE status IN ('failed','pending','running','blocked') ORDER BY created_at LIMIT 40")
-            && let Ok(rows) = st.query_map([], |r| Ok(serde_json::json!({"kind":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"attempts":r.get::<_,i64>(2)?,"error":error_category(&r.get::<_,String>(3)?)})))
+        if let Ok(mut st) = db.prepare("SELECT id,conv_id,kind,status,attempts,coalesce(error,'') FROM jobs WHERE status IN ('failed','pending','running','blocked') ORDER BY created_at LIMIT 40")
+            && let Ok(rows) = st.query_map([], |r| Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"conv_id":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"attempts":r.get::<_,i64>(4)?,"error":error_category(&r.get::<_,String>(5)?)})))
         {
             jobs.extend(rows.flatten());
         }

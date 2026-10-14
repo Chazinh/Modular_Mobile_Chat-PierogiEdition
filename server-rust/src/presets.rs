@@ -19,23 +19,27 @@ pub fn by_id(id: &str) -> Value {
 }
 /// Compiled `match`/`exclude` patterns of each preset (presets.json), in file order. A route belongs to the first
 /// preset with a matching pattern and no matching exclusion; anything else is the generic preset.
-static MATCHERS: LazyLock<Vec<(String, Vec<regex::Regex>, Vec<regex::Regex>)>> = LazyLock::new(|| {
-    let compile = |v: &Value| -> Vec<regex::Regex> {
-        v.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|p| p.as_str())
-            .map(|p| regex::Regex::new(p).expect("invalid pattern in presets.json"))
+static MATCHERS: LazyLock<Vec<(String, Vec<regex::Regex>, Vec<regex::Regex>)>> =
+    LazyLock::new(|| {
+        let compile = |v: &Value| -> Vec<regex::Regex> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str())
+                .map(|p| regex::Regex::new(p).expect("invalid pattern in presets.json"))
+                .collect()
+        };
+        PRESETS
+            .iter()
+            .filter(|p| p["match"].is_array())
+            .map(|p| (s(p, "id"), compile(&p["match"]), compile(&p["exclude"])))
             .collect()
-    };
-    PRESETS
-        .iter()
-        .filter(|p| p["match"].is_array())
-        .map(|p| (s(p, "id"), compile(&p["match"]), compile(&p["exclude"])))
-        .collect()
-});
+    });
 /// Preset of a route, matched on the lowercase route (the provider prefix, if any, is just part of the text).
 pub fn for_route(route: &str) -> Value {
+    if route.starts_with("mobile-api:") {
+        return by_id("mobile-api");
+    }
     let r = route.to_lowercase();
     let id = MATCHERS
         .iter()
@@ -106,11 +110,13 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                 .filter(|id| {
                     for_route(id)["id"] == p["id"]
                         && p["routeAliases"][id.as_str()].is_null()
-                        && !RETIRED_ROUTE_MARKS.iter().any(|m| id.to_lowercase().contains(m))
+                        && !RETIRED_ROUTE_MARKS
+                            .iter()
+                            .any(|m| id.to_lowercase().contains(m))
                 })
                 .cloned()
                 .collect();
-            if !ids.is_empty() {
+            if !ids.is_empty() && !s(p, "id").starts_with("mobile-") {
                 for u in p["unlistedRoutes"].as_array().into_iter().flatten() {
                     if let Some(u) = u.as_str().filter(|u| !route_ids.iter().any(|r| r == u)) {
                         route_ids.push(u.to_string());
@@ -180,6 +186,17 @@ pub struct Plan {
     pub controls: Value,
     pub capacity: Value,
     pub system_mode: String,
+}
+/// Inference-only plan; the stored route, preset and effort stay unchanged.
+pub fn mobile_local_plan(conv: &Value, settings: &Value) -> Plan {
+    let mut local = conv.clone();
+    local["routeId"] = json!("mobile-local");
+    local["presetId"] = json!("mobile-local");
+    local["effort"] = Value::Null;
+    let mut plan = request(&local, vec![], &json!({}));
+    plan.controls["mobileCompact"] = json!(true);
+    apply_length(&mut plan, settings);
+    plan
 }
 /// Without a choice stored in the conversation, the preset default applies (`thinkingDefault`; GLM 5.2 starts
 /// without thinking). Only a stored boolean changes the default.

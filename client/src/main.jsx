@@ -13,15 +13,20 @@ import { kv } from './kv.js';
 import { config } from './api.js';
 import { initAppIcon } from './app-icon.js';
 import { initAnimationCache } from './animation-cache.js';
+import { localHost } from './local-host.js';
 
 installElastic();
 initAppIcon();
 initAnimationCache();
 const root=ReactDOM.createRoot(document.getElementById('root'));
 async function boot() {
+let stage = 'privacy';
 try {
 await initAnimationCache();
 await initializePrivacy(config.server);
+stage = 'local-host';
+await localHost.ensureStarted();
+stage = 'cache';
 await kv.migratePrivacy();
 await syncNativeLanguage();
 root.render(
@@ -30,7 +35,10 @@ root.render(
   </React.StrictMode>,
 );
 } catch(error) {
-  root.render(<div className="flex h-full items-center justify-center bg-bgDark p-6 text-center"><p>{tr("Não foi possível abrir o armazenamento protegido. Preserve os dados e abra novamente o servidor. ")}{error.message}</p></div>);
+  const message = stage === 'local-host'
+    ? 'O host Android não iniciou. Os dados foram preservados. '
+    : 'Não foi possível abrir o armazenamento protegido. Preserve os dados e tente novamente. ';
+  root.render(<div className="flex h-full items-center justify-center bg-bgDark p-6 text-center"><p>{tr(message)}{error.code ? `${error.code}: ` : ''}{error.message}</p></div>);
 }
 }
 boot();

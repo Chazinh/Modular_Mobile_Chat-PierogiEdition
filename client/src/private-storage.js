@@ -4,7 +4,7 @@ const native = Capacitor.isNativePlatform();
 const NativeStorage = registerPlugin('PrivateStorage');
 const AAD = new TextEncoder().encode('ModularChat.PrivateCache.v1');
 let enabled = false, waitingForPair = false, browserKey = null, state = {}, saving = Promise.resolve();
-const privateKey = k => k === 'mc.token' || k.startsWith('mc.draft.') || k.startsWith('mc.pending.');
+const privateKey = k => k === 'mc.token' || k.startsWith('mc.draft.') || k.startsWith('mc.pending.') || k.startsWith('mc.sync.');
 const b64 = bytes => {
   let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(text);
 };
@@ -14,6 +14,7 @@ export const privacyEnabled = () => enabled;
 export const privacyNeedsPairing = () => waitingForPair;
 export function privateGet(key) { return enabled || waitingForPair ? state[key] ?? null : localStorage.getItem(key); }
 export function privateSet(key,value) {
+  if(key.startsWith('mc.sync.')&&!enabled) return Promise.reject(Error('A sincronização exige armazenamento protegido.'));
   if(!enabled&&!waitingForPair) { if(value==null)localStorage.removeItem(key);else localStorage.setItem(key,value);return Promise.resolve(); }
   if(value==null)delete state[key];else state[key]=value;
   if(waitingForPair)return Promise.resolve();

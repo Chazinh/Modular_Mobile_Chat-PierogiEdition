@@ -1,7 +1,7 @@
 import { tr, useLanguage } from './i18n.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, config, ApiError } from './api.js';
-import { invalidateConnection } from './server-connection.js';
+import { invalidateConnection, startConnection } from './server-connection.js';
 import { useLayer, installNativeBack, closeTopLayer } from './nav.js';
 import ChatList from './components/ChatList.jsx';
 import ChatView from './components/ChatView.jsx';
@@ -49,6 +49,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [offline, setOffline] = useState(false);
   const [error, setError] = useState('');
+  const [connectionError, setConnectionError] = useState('');
   // Home status dot: 'checking' until the first answer, then 'online'/'offline'; a manual check returns to 'checking'.
   const [status, setStatus] = useState('checking');
   const [openId, setOpenId] = useState(null);
@@ -66,6 +67,7 @@ export default function App() {
   useEffect(() => {
     installNativeBack();
   }, []);
+  useEffect(() => startConnection(), []);
 
   const refresh = useCallback(async () => {
     try {
@@ -97,10 +99,25 @@ export default function App() {
   useResume(resumeList);
 
   useEffect(() => {
-    const on = () => setUnpaired(true);
+    const on = e => {
+      if (e.detail?.kind === 'local') { setConnectionError('O host Android recusou sua credencial. Reabra o app para recuperar o acesso protegido.'); return; }
+      if (config.embeddedReady) {
+        invalidateConnection();
+        setConnectionError('O pareamento com o PC foi revogado. O host Android continua disponível.');
+        refresh();
+      } else setUnpaired(true);
+    };
+    const health = e => {
+      if (e.detail.message) setConnectionError(e.detail.message);
+      else if (e.detail.code === 'SYNCED') setConnectionError('');
+    };
     window.addEventListener('mc:unpaired', on);
-    return () => window.removeEventListener('mc:unpaired', on);
-  }, []);
+    window.addEventListener('mc:connection-health', health);
+    return () => {
+      window.removeEventListener('mc:unpaired', on);
+      window.removeEventListener('mc:connection-health', health);
+    };
+  }, [refresh]);
 
   // server events: sync the list and notify the open chat
   useEffect(() => {
@@ -117,16 +134,25 @@ export default function App() {
     }, ac.signal);
     };
     const visible = () => { if (document.visibilityState === 'visible') subscribe(); };
+    const connectionChanged = () => {
+      setNeedsServer(config.needsServer);
+      if (config.embeddedReady) setUnpaired(false);
+      refresh();
+      subscribe();
+      window.dispatchEvent(new CustomEvent('mc:event', { detail: { type: 'connection' } }));
+    };
     subscribe();
     document.addEventListener('visibilitychange', visible);
     window.addEventListener('mc:resume', subscribe);
     window.addEventListener('online', subscribe);
+    window.addEventListener('mc:connection-change', connectionChanged);
     return () => {
       ac?.abort();
       clearTimeout(refreshTimer.current);
       document.removeEventListener('visibilitychange', visible);
       window.removeEventListener('mc:resume', subscribe);
       window.removeEventListener('online', subscribe);
+      window.removeEventListener('mc:connection-change', connectionChanged);
     };
   }, [needsServer, unpaired, refresh]);
 
@@ -176,6 +202,7 @@ export default function App() {
         onDone={() => {
           setNeedsServer(false);
           setUnpaired(false);
+          setConnectionError('');
           refresh();
         }}
       />
@@ -190,7 +217,7 @@ export default function App() {
           offline={offline}
           status={status}
           onRefresh={checkNow}
-          error={error}
+           error={error || connectionError}
           archivedView={archivedView}
           switchingArchived={switchingArchived}
           query={query}
@@ -228,7 +255,7 @@ export default function App() {
             config.token = '';
             setGlobalOpen(false);
             setNeedsServer(config.needsServer);
-            setUnpaired(!config.needsServer);
+            setUnpaired(true);
           }}
         />
       )}

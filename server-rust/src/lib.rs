@@ -1,3 +1,4 @@
+pub mod android;
 pub mod api;
 pub mod auth;
 pub mod cast;
@@ -7,6 +8,7 @@ pub mod curation;
 pub mod generation;
 pub mod jobs;
 pub mod local;
+pub mod memory_backend;
 pub mod narrative;
 pub mod presets;
 pub mod privacy;

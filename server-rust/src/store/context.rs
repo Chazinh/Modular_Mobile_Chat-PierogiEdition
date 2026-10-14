@@ -547,6 +547,9 @@ pub(crate) struct Timeline {
     size: usize,
 }
 impl Timeline {
+    pub(super) fn is_for(&self, conv: &str) -> bool {
+        self.conv == conv
+    }
     /// What the context assembly reads: the same fields `narrative::view` gives, without the snapshot list.
     pub(super) fn summary(&self) -> Value {
         json!({"version":3,"basis":"narrative","anchors":self.anchors,"current":self.snapshots.last().map(|(_, v, _)| v.as_ref())})

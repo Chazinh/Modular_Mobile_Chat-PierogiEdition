@@ -147,7 +147,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
       <div ref={panelRef} className="mc-drawer-panel">
         {page === null && (
           <>
-            <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mc-drawer-main-scroller min-h-0 flex-1 overflow-y-auto">
               <StairList className="min-h-full">
                 <div className="mc-bubble mx-[10px] mb-[10px] mt-1 flex items-center gap-3 rounded-[30px] py-3 pl-3 pr-[18px]">
                   <button onClick={() => fileRef.current?.click()} className="relative shrink-0" aria-label={tr("Trocar avatar")}>
@@ -182,10 +182,10 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
                   <SamplingInfo preset={preset} chat={chat} temp={temp} thinkingOn={thinkingOn} onTemp={changeTemp} />
                 </AutoBubble>
                 {error && <p className="mx-4 mt-3 text-sm text-red-400">{tr(error)}</p>}
+                <button onClick={onCreate} className="mc-new-chat-button mc-bubble mc-glass-accent mx-[10px] mt-1 flex items-center justify-center gap-2 overflow-hidden rounded-full py-[18px] font-semibold">
+                  <MessageSquarePlus size={20} />{tr(" Novo Chat\n              ")}</button>
               </StairList>
             </div>
-            <button onClick={onCreate} className="mc-bubble mc-glass-accent mx-[10px] mt-1 flex shrink-0 items-center justify-center gap-2 overflow-hidden rounded-full py-[18px] font-semibold">
-              <MessageSquarePlus size={20} />{tr(" Novo Chat\n              ")}</button>
           </>
         )}
 
