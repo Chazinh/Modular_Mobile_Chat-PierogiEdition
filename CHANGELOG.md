@@ -5,6 +5,13 @@ implemented features.
 
 ## Released
 
+### Persistent animation cache and startup memory pre-warming — 2026-10-14
+
+- Added a specialized animation cache module (`client/src/animation-cache.js`) generating lookup tables (LUT) for rubber-banding and precalculated spring trajectories for drawer open/close, top bar toggles, and elastic returns.
+- Implemented single-save persistence to disk (`kv` / IndexedDB and `localStorage` under `mc.anim_cache.v1`), guaranteeing zero storage writes during animation frames or gestures.
+- Added JIT warmup and compositor layer pre-allocation on application boot (`client/src/main.jsx`), compiling glass blur shaders and allocating GPU textures off-screen to eliminate startup hitching and first-gesture stutter.
+- Configured Android WebView `LOAD_DEFAULT` caching and DOM/Database storage flags in `MainActivity.java` to enable persistent caching of V8 bytecode and pipeline shaders across application restarts.
+
 ### Backend performance optimizations, SQLite WAL pragmas and MSVC ICF/REF — 2026-10-14
 
 - Configured MSVC linker optimizations (`/OPT:REF` to eliminate unused functions and `/OPT:ICF` for identical COMDAT folding) under `[target.x86_64-pc-windows-msvc]` in `.cargo/config.toml`.

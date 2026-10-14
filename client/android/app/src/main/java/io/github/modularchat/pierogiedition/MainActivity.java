@@ -30,6 +30,15 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AppIconPlugin.class);
         registerPlugin(LanguagePlugin.class);
         super.onCreate(state);
+        try {
+            android.webkit.WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView != null) {
+                android.webkit.WebSettings settings = webView.getSettings();
+                settings.setCacheMode(android.webkit.WebSettings.LOAD_DEFAULT);
+                settings.setDomStorageEnabled(true);
+                settings.setDatabaseEnabled(true);
+            }
+        } catch (Exception ignored) {}
         perf = getResources().getBoolean(R.bool.mc_perf);
         if (perf) {
             unlocked = true;

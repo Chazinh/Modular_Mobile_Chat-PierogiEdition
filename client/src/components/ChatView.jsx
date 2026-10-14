@@ -537,11 +537,11 @@ export default function ChatView({ chatId, status, openSettingsInitially, onBack
   const connected = !offline && (modelOnline ?? recoveredOnline);
   const serverOnline = !offline && (status ? status === 'online' : true);
   const isChecking = status === 'checking';
-  const handleTitle = isChecking
-    ? tr("Verificando conexão · toque ou puxe para baixo")
-    : serverOnline
+  const handleTitle = serverOnline
     ? tr("Conectado ao PC · toque ou puxe para baixo")
-    : tr("Sem conexão com o PC · toque ou puxe para baixo");
+    : isChecking
+      ? tr("Verificando conexão · toque ou puxe para baixo")
+      : tr("Sem conexão com o PC · toque ou puxe para baixo");
 
   return (
     <div {...drawerGesture} className="mc-chat fixed inset-0 z-30 flex flex-col bg-bgDark">

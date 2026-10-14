@@ -12,12 +12,15 @@ import { initializePrivacy } from './private-storage.js';
 import { kv } from './kv.js';
 import { config } from './api.js';
 import { initAppIcon } from './app-icon.js';
+import { initAnimationCache } from './animation-cache.js';
 
 installElastic();
 initAppIcon();
+initAnimationCache();
 const root=ReactDOM.createRoot(document.getElementById('root'));
 async function boot() {
 try {
+await initAnimationCache();
 await initializePrivacy(config.server);
 await kv.migratePrivacy();
 await syncNativeLanguage();
