@@ -3,8 +3,8 @@ import React, { useState } from 'react';
 import { Link2, Loader2 } from 'lucide-react';
 import { api, config, isNative } from '../api.js';
 
-// PC address (APK) + pairing with a temporary code. Provider API keys never reach the device.
-export default function ServerSetup({ needsServer, onDone }) {
+// Optional PC connection. Editing/canceling never clears the current endpoints or credential.
+export default function ServerSetup({ needsServer, onDone, onCancel }) {
   useLanguage();
   const [server, setServer] = useState(config.connection.local || '');
   const [remote, setRemote] = useState(config.connection.remote || '');
@@ -94,7 +94,7 @@ export default function ServerSetup({ needsServer, onDone }) {
           className="flex w-full items-center justify-center gap-2 rounded-full bg-accentPurple py-3.5 font-semibold text-white disabled:opacity-40"
         >
           {busy && <Loader2 size={18} className="animate-spin" />}{tr(" Conectar\n        ")}</button>
-        {config.embeddedReady && <button type="button" disabled={busy} onClick={onDone} className="w-full py-2 text-sm text-textMuted">{tr('Continuar no aparelho')}</button>}
+        {(onCancel || config.embeddedReady) && <button type="button" disabled={busy} onClick={onCancel || onDone} className="w-full py-2 text-sm text-textMuted">{tr(config.embeddedReady ? 'Continuar no aparelho' : 'Cancelar')}</button>}
         <p className="text-xs leading-relaxed text-textMuted">{tr("\n          O código aparece na janela do servidor ao iniciar o ")}<b>start-server.bat</b>{tr(", ou no PC em ")}<b>{tr("⋯ → Configurações → Gerar código")}</b>{tr(". Ele vale por 5 minutos e só pode ser usado uma vez.\n        ")}</p>
       </form>
     </div>

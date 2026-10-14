@@ -158,7 +158,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
                   </button>
                   <div className="min-w-0">
                     <p className="truncate font-semibold">{chat.name}</p>
-                    <p className="text-xs text-textMuted">{tr("Avatar guardado só neste aparelho e no PC")}</p>
+                    <p className="text-xs text-textMuted">{tr("Avatar guardado neste aparelho e no servidor de origem")}</p>
                   </div>
                   <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && pickAvatar(e.target.files[0])} />
                 </div>
@@ -209,7 +209,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
         {page === 'context' && (
           <SubPage title={tr("Contexto enviado ao modelo")} onBack={() => setPage(null)}>
             <div className="mc-bubble mx-[10px] space-y-3 rounded-[26px] px-4 py-4 text-sm text-textMuted">
-              <p>{tr("\n                A conversa inteira fica guardada no PC. A cada resposta o modelo recebe: regras, personalização, persona, cena atual, quem sabe o quê, threads, até 8 memórias relevantes e os últimos ")}<b className="text-white">{ctxPairs}</b>{tr(" pares completos.\n              ")}</p>
+              <p>{tr("\n                A conversa inteira fica guardada no servidor de origem (PC ou aparelho). A cada resposta o modelo recebe: regras, personalização, persona, cena atual, quem sabe o quê, threads, até 8 memórias relevantes e os últimos ")}<b className="text-white">{ctxPairs}</b>{tr(" pares completos.\n              ")}</p>
               <label className="block">
                 <span className="mb-1 flex justify-between">
                   <span>{tr("Pares recentes preferidos")}</span>
@@ -242,7 +242,7 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
         {page === 'history' && (
           <SubPage title={tr("Histórico")} onBack={() => setPage(null)}>
             <div className="mc-bubble mx-[10px] space-y-2 rounded-[26px] px-4 py-3.5 text-sm text-textMuted">
-              <p>{chat.history?.length || 0}{tr(" mensagens no caminho ativo, salvas no PC e em cache neste aparelho.")}</p>
+              <p>{chat.history?.length || 0}{tr(" mensagens no caminho ativo, salvas no servidor de origem (PC ou aparelho) e em cache neste aparelho.")}</p>
               <p>{tr("Apagar e excluir vão para a lixeira por 30 dias (configurações do app → Lixeira).")}</p>
             </div>
             <div className="mt-[10px] space-y-[10px] px-[10px]">
@@ -310,7 +310,7 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
       action={<button onClick={() => onPick(selectedPatch())} className="px-3 py-1 font-semibold text-accentPurpleLight">{tr("Salvar")}</button>}
       footer={dirty ? <button onClick={() => onPick(selectedPatch())} className="mc-bubble mc-glass-accent w-full rounded-full px-4 py-3.5 font-semibold">{tr("Usar ")}{cur?.label}</button> : null}
     >
-      {list.length === 0 && <p className="px-5 text-sm text-textMuted">{tr("Carregando presets do PC…")}</p>}
+      {list.length === 0 && <p className="px-5 text-sm text-textMuted">{tr("Carregando presets do servidor ativo…")}</p>}
       <p className="mc-bubble mx-[10px] mb-[10px] rounded-[22px] px-4 py-2.5 text-xs text-textMuted">{tr("Em uso: ")}{list.find(p => p.id === chat.presetId)?.label || chat.routeId}{tr(". Selecione abaixo e salve para aplicar às próximas respostas.")}</p>
       {error && <p role="alert" className="mx-5 mb-3 text-sm text-red-400">{tr(error)}</p>}
       {list.map((p) => {
@@ -541,11 +541,11 @@ function PromptPage({ chat, onBack, onSaved, onClosePage }) {
     <SubPage title={tr("Personalização")} onBack={onBack} action={<button onClick={() => submit(false)} className="px-3 py-1 font-semibold text-accentPurpleLight">{tr("Salvar")}</button>}>
       {error && <p role="alert" className="mx-4 mb-3 text-sm text-red-300">{tr(error)}</p>}
       <div className="mc-bubble mx-[10px] mb-2 flex h-full flex-col rounded-[26px] px-3 pb-3 pt-3">
-        <p className="mb-2 text-xs text-textMuted">{tr("\n          Características, regras de mundo e personalidade. A ficha fica criptografada no PC. Para editá-la por fora, importe um arquivo .txt; cada alteração cria uma nova revisão.\n        ")}</p>
+        <p className="mb-2 text-xs text-textMuted">{tr("\n          Características, regras de mundo e personalidade. A ficha fica criptografada no servidor de origem (PC ou aparelho). Para editá-la por fora, importe um arquivo .txt; cada alteração cria uma nova revisão.\n        ")}</p>
         {conflict && (
           <div className="mb-2 rounded-xl bg-yellow-500/10 p-3 text-sm text-yellow-200">{tr("\n            O texto foi alterado em outro lugar (revisão ")}{conflict.characterRev}).
             <div className="mt-2 flex gap-2">
-              <button className="rounded-full bg-composer px-3 py-1.5" onClick={() => { setV(conflict.prompt); setConflict(null); }}>{tr("Carregar a versão do PC")}</button>
+              <button className="rounded-full bg-composer px-3 py-1.5" onClick={() => { setV(conflict.prompt); setConflict(null); }}>{tr("Carregar a versão do servidor ativo")}</button>
               <button className="rounded-full bg-composer px-3 py-1.5" onClick={() => submit(true)}>{tr("Sobrescrever")}</button>
             </div>
           </div>

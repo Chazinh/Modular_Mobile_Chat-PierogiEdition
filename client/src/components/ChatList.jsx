@@ -17,7 +17,7 @@ function preview(text) {
 
 const PULL_TRIGGER = 96; // finger travel (px) that triggers the refresh when released
 
-export default function ChatList({ chats, offline, status, onRefresh, error, archivedView, switchingArchived, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
+export default function ChatList({ hostStatus, chats, offline, status, onRefresh, error, archivedView, switchingArchived, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
   const confirm = useConfirm();
   useLanguage();
   const [sheet, setSheet] = useState(null);
@@ -84,7 +84,7 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
       el.removeEventListener('touchcancel', cancel);
     };
   }, []);
-  const statusLabel = status === 'online' ? tr('Conectado ao PC') : status === 'offline' ? tr('Sem conexão com o PC') : tr('Verificando conexão');
+  const statusLabel = status === 'online' ? tr('Conectado ao servidor ativo') : status === 'offline' ? tr('Sem conexão com o servidor ativo') : tr('Verificando conexão');
 
   const flash = (t) => {
     setToast(t);
@@ -161,6 +161,7 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
           </div>
         </div>
       </header>
+      {hostStatus && <div className="shrink-0" style={{ paddingTop: 'calc(var(--sat) + 64px)' }}>{hostStatus}</div>}
 
       <div
         ref={pullRef}
@@ -175,14 +176,14 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
         ref={scrollRef}
         className="flex-1 overflow-y-auto pb-6"
         style={{
-          paddingTop: 'calc(var(--sat) + 68px)',
+          paddingTop: hostStatus ? '8px' : 'calc(var(--sat) + 68px)',
         }}
       >
         <div className="mc-col">
           {offline && (
             <div className="px-4 pb-2">
               <div className="flex items-center gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
-                <WifiOff size={14} />{tr(" PC fora do alcance. Mostrando a cópia salva no aparelho (leitura e rascunhos).\n              ")}</div>
+                <WifiOff size={14} />{tr("Servidor ativo fora do alcance. Mostrando a cópia salva no aparelho (leitura e rascunhos).")}</div>
             </div>
           )}
           {error && !offline && <div className="px-4 pb-2 text-xs text-red-300">{tr(error)}</div>}

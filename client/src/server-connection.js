@@ -68,7 +68,8 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
   }
   async function available(server, key, signal) {
     const timeout = new AbortController();
-    const timer = timers.setTimeout(() => timeout.abort(), 400);
+    const deadline = local() ? 400 : 2500;
+    const timer = timers.setTimeout(() => timeout.abort(), deadline);
     try {
       const response = await probe(`${server}/api/health`, {
         cache: 'no-store', credentials: 'omit', redirect: 'error',
@@ -126,6 +127,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
         boundary = controller;
         try {
           if (!sync) throw error('SYNC_REQUIRED', 'A sincronização precisa ser concluída antes de usar o PC.');
+          onStatus({ code: 'SYNCING', kind: 'local' });
           await embedded.standby(controller.signal);
           syncResult = await sync({ pc: { ...selected, token: pcToken }, mobile: host, signal: controller.signal,
             isCurrent: () => startedAt === epoch });

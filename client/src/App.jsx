@@ -1,6 +1,6 @@
 import { tr, useLanguage } from './i18n.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { api, config, ApiError } from './api.js';
+import { api, config, ApiError, isNative } from './api.js';
 import { invalidateConnection, startConnection } from './server-connection.js';
 import { useLayer, installNativeBack, closeTopLayer } from './nav.js';
 import ChatList from './components/ChatList.jsx';
@@ -11,6 +11,8 @@ import { useResume, useNativeLifecycle } from './lifecycle.js';
 import { privacyNeedsPairing } from './private-storage.js';
 import { useEvent } from './ui.jsx';
 import { transitionTo } from './press-feedback.js';
+import AutoHostStatus from './components/AutoHostStatus.jsx';
+import { shouldShowServerSetup } from './mobile-settings.js';
 
 // Keeps the reference of items that did not change between two lists from the server (rows are memoized).
 function shareItems(prev, next) {
@@ -56,7 +58,8 @@ export default function App() {
   const [openSettings, setOpenSettings] = useState(false);
   const [globalOpen, setGlobalOpen] = useState(false);
   const [needsServer, setNeedsServer] = useState(config.needsServer);
-  const [unpaired, setUnpaired] = useState(privacyNeedsPairing);
+  const [unpaired, setUnpaired] = useState(() => !config.embeddedReady && privacyNeedsPairing());
+  const [manualServerSetup, setManualServerSetup] = useState(false);
   const [fontSize, setFontSize] = useFontSize();
   const refreshTimer = useRef(null);
   const listViewRef = useRef(null);
@@ -64,6 +67,11 @@ export default function App() {
 
   useLayer(!!openId, () => setOpenId(null));
   useLayer(globalOpen, () => setGlobalOpen(false));
+  useLayer(manualServerSetup, () => {
+    setManualServerSetup(false);
+    setNeedsServer(config.needsServer);
+    setUnpaired(!config.embeddedReady && privacyNeedsPairing());
+  });
   useEffect(() => {
     installNativeBack();
   }, []);
@@ -76,7 +84,7 @@ export default function App() {
       setChats((prev) => shareItems(prev, list));
       setOffline(false);
       setStatus('online');
-      setError('');
+      setError(''); setConnectionError('');
     } catch (e) {
       if (listViewRef.current.archivedView !== archivedView || listViewRef.current.query !== query) return;
       setOffline(true);
@@ -136,7 +144,7 @@ export default function App() {
     const visible = () => { if (document.visibilityState === 'visible') subscribe(); };
     const connectionChanged = () => {
       setNeedsServer(config.needsServer);
-      if (config.embeddedReady) setUnpaired(false);
+      if (config.embeddedReady) setUnpaired(false); setConnectionError('');
       refresh();
       subscribe();
       window.dispatchEvent(new CustomEvent('mc:event', { detail: { type: 'connection' } }));
@@ -159,7 +167,7 @@ export default function App() {
   // Pull to refresh: discard the cached endpoint choice, verify the connection again and reload the list.
   const checkNow = useEvent(async () => {
     invalidateConnection();
-    setStatus('checking');
+    setStatus('checking'); setError(''); setConnectionError('');
     await Promise.all([refresh(), new Promise((r) => setTimeout(r, 450))]);
   });
 
@@ -195,11 +203,13 @@ export default function App() {
     }
   }
 
-  if (needsServer || unpaired) {
+  if (shouldShowServerSetup({ manual: manualServerSetup, needsServer, unpaired, embeddedReady: config.embeddedReady })) {
     return (
       <ServerSetup
         needsServer={needsServer}
+        onCancel={manualServerSetup ? closeTopLayer : undefined}
         onDone={() => {
+          if (manualServerSetup) closeTopLayer();
           setNeedsServer(false);
           setUnpaired(false);
           setConnectionError('');
@@ -209,15 +219,17 @@ export default function App() {
     );
   }
 
+  const hostStatus = isNative() && config.embeddedReady ? <AutoHostStatus /> : null;
   return (
     <>
       <div className={openId ? 'hidden' : 'flex h-full flex-col'}>
         <ChatList
+          hostStatus={!openId && !globalOpen ? hostStatus : null}
           chats={chats}
           offline={offline}
           status={status}
           onRefresh={checkNow}
-           error={error || connectionError}
+           error={error || (status === 'online' ? '' : connectionError)}
           archivedView={archivedView}
           switchingArchived={switchingArchived}
           query={query}
@@ -231,6 +243,7 @@ export default function App() {
       </div>
       {openId && (
         <ChatView
+          hostStatus={!globalOpen ? hostStatus : null}
           key={openId}
           chatId={openId}
           openSettingsInitially={openSettings}
@@ -251,11 +264,8 @@ export default function App() {
           onClose={closeTopLayer}
           onChanged={refresh}
           onResetServer={() => {
-            config.server = '';
-            config.token = '';
             setGlobalOpen(false);
-            setNeedsServer(config.needsServer);
-            setUnpaired(true);
+            setManualServerSetup(true);
           }}
         />
       )}

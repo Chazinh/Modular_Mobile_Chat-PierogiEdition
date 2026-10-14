@@ -10,7 +10,7 @@ const TABS = [['scene', 'Cena e dias'], ['memories', 'Memórias'], ['story', 'Re
 const KIND = { CHARACTER_FACT: 'personagem', USER_FACT: 'usuário', RELATIONSHIP: 'relação', EVENT: 'evento', SECRET: 'segredo', PROMISE: 'promessa', PREFERENCE: 'preferência', WORLD_FACT: 'mundo', OBJECT: 'objeto', LOCATION: 'local', OPEN_THREAD: 'thread' };
 const VIA = { witnessed: 'presenciou', heard: 'ouviu', told: 'foi contado', discovered: 'descobriu', received: 'recebeu', inferred: 'deduziu' };
 
-// Review and fix what the PC remembers: scene, memories with sources, relationships and the processing queue.
+// Review the active host's scene, memories with sources, relationships and processing queue.
 export default function MemoryScreen({ chatId, onClose }) {
   useLanguage();
   const [tab, setTab] = useState('scene');
@@ -40,7 +40,7 @@ export default function MemoryScreen({ chatId, onClose }) {
 
   return (
     <Screen
-      title={tr("Memória do PC")}
+      title={tr("Memória do servidor ativo")}
       onClose={onClose}
       action={
         tab === 'memories' ? (

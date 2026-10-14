@@ -1,5 +1,5 @@
 import { tr, useLanguage, setLanguage } from '../i18n.js';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Download, Upload, Database, KeyRound, Trash2, RotateCcw, Smartphone, Link2Off, Type, Eye, Sparkles, Languages } from 'lucide-react';
 import { PRESETS, applyEyeCare, loadEyeCare, saveEyeCare, colorsFor } from '../eyecare.js';
 import { api, config, isNative } from '../api.js';
@@ -9,6 +9,8 @@ import { Screen } from './Sheet.jsx';
 import ChoiceField from './ChoiceField.jsx';
 import ColorField from './ColorField.jsx';
 import { useConfirm } from './ConfirmProvider.jsx';
+
+const LocalHostSettings = lazy(() => import('./LocalHostSettings.jsx'));
 
 // App settings: reading, pairing, backup/import, trash and global cleanup.
 export default function GlobalSettings({ fontSize, onFontSize, onClose, onChanged, onResetServer }) {
@@ -22,6 +24,7 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
   const [status, setStatus] = useState(null);
   const [msg, setMsg] = useState('');
   const [personas, setPersonas] = useState(false);
+  const [localHostOpen, setLocalHostOpen] = useState(false);
   const [appIcon, setAppIcon] = useState(getSelectedAppIcon);
   const [iconMsg, setIconMsg] = useState('');
   const fileRef = useRef(null);
@@ -188,14 +191,19 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
           <button onClick={() => setPersonas(true)} className="rounded-full bg-composer px-4 py-2.5 text-sm">{tr("Gerenciar perfis")}</button>
         </Section>
 
+        {isNative() && config.embeddedReady && <Section title={tr('Host Android')} icon={<Smartphone size={16} />}>
+          <p className="text-sm text-textMuted">{tr('Configure provedores e processamento de memória neste aparelho.')}</p>
+          <button type="button" onClick={() => setLocalHostOpen(true)} className="rounded-full bg-composer px-4 py-2.5 text-sm">{tr('Configurar host Android')}</button>
+        </Section>}
+
         <Section title={tr("Pareamento")} icon={<Smartphone size={16} />}>
           {isNative() ? (
             <>
-              <p className="text-sm text-textMuted">{tr("Servidor: ")}{config.server || '—'}</p>
+              <p className="text-sm text-textMuted">{tr("Servidor ativo: ")}{config.kind === 'local' ? tr('Aparelho Android') : config.server || '—'}</p>
               <p className="text-sm text-textMuted">{tr('Rede local:')} {config.connection.local || tr('não configurada')}</p>
               <p className="text-sm text-textMuted">{tr('Internet:')} {config.connection.remote || tr('não configurada')}</p>
               <p className="text-xs text-textMuted">{tr('O app prefere a rede local e reavalia a conexão ao voltar ou quando a rede muda.')}</p>
-              <button onClick={onResetServer} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><Link2Off size={16} />{tr(" Trocar PC / refazer pareamento")}</button>
+              <button onClick={onResetServer} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><Link2Off size={16} />{tr("Conectar PC / trocar pareamento")}</button>
             </>
           ) : (
             <>
@@ -209,12 +217,12 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
               <button onClick={() => run(() => api.revokeDevice(d.id), tr("Aparelho removido."))} aria-label={tr("Remover aparelho")}><Trash2 size={16} className="text-red-300" /></button>
             </div>
           ))}
-          <p className="text-xs text-textMuted">{tr('As chaves dos provedores ficam só no PC; o aparelho guarda apenas um token do ModularChat.')}</p>
+          <p className="text-xs text-textMuted">{tr('As credenciais dos provedores ficam no host em que foram configuradas (PC ou aparelho). O pareamento não replica essas chaves.')}</p>
         </Section>
 
         <Section title={tr("Backup")} icon={<Database size={16} />}>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => run(api.backup, (r) => tr("Cópia do banco salva no PC: {0}", [r.file]))} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><Database size={16} />{tr(" Backup no PC")}</button>
+            <button onClick={() => run(api.backup, (r) => tr("Cópia do banco salva no servidor ativo: {0}", [r.file]))} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><Database size={16} />{tr("Backup no servidor ativo")}</button>
             <button onClick={() => run(exportAll, tr("Exportação baixada."))} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><Download size={16} />{tr(" Exportar tudo")}</button>
             <button onClick={() => fileRef.current?.click()} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><Upload size={16} />{tr(" Importar")}</button>
             <input
@@ -231,7 +239,7 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
         <Section title={tr("Lixeira ({0} dias)", [trash?.days || 30])} icon={<RotateCcw size={16} />}>
           {trashError && (
             <div role="alert" className="flex items-center justify-between gap-3 rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">
-              <span className="min-w-0 flex-1">{tr("Não foi possível carregar a lixeira (")}{trashError}{tr("). Seus itens continuam guardados no PC.")}</span>
+              <span className="min-w-0 flex-1">{tr("Não foi possível carregar a lixeira (")}{trashError}{tr("). Seus itens continuam guardados no servidor de origem (PC ou aparelho).")}</span>
               <button onClick={loadTrash} className="shrink-0 rounded-full bg-cardDark px-3 py-1.5 text-xs text-white">{tr("Tentar de novo")}</button>
             </div>
           )}
@@ -261,7 +269,7 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
           )}
         </Section>
 
-        <Section title={tr("Servidor")} icon={<Database size={16} />}>
+        <Section title={tr("Servidor ativo (PC ou aparelho)")} icon={<Database size={16} />}>
           {status ? (
             <div className="space-y-1 text-sm text-textMuted">
               <p>{tr('Provedores:')} {status.router.ok ? tr("conectado ({0} modelos)", [status.router.models]) : tr("indisponível — {0}", [status.router.error || ''])}</p>
@@ -282,6 +290,7 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
 
         {msg && <p className="break-all rounded-xl bg-cardDark px-3 py-2 text-sm">{tr(msg)}</p>}
         {personas && <PersonaManager onClose={() => setPersonas(false)} />}
+        {localHostOpen && <Suspense fallback={null}><LocalHostSettings onClose={() => setLocalHostOpen(false)} /></Suspense>}
       </div>
     </Screen>
   );

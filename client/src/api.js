@@ -72,6 +72,7 @@ export function createApiTransport({ acquire = acquireTarget, fetch: send = (...
       let target, dispatched = false;
       try {
         target = await acquire({ ...options, signal, write: method !== 'GET' });
+        if (options.localOnly && selectedKind() !== 'local') throw new ApiError('A ativação exige o host Android selecionado.', 409, { code: 'HOST_CHANGED' });
         dispatched = true;
         const res = await send(`${target.server}${path}`, { method, headers: headers(target, body !== undefined),
           body: body === undefined ? undefined : JSON.stringify(body), signal, redirect: 'error',
@@ -122,6 +123,7 @@ export function createApiTransport({ acquire = acquireTarget, fetch: send = (...
 }
 const transport = createApiTransport();
 const request = transport.request;
+const embeddedOptions = (options = {}) => ({ signal: options.signal, embedded: true });
 const generationWrites = new Set();
 
 // Reads an SSE stream (through fetch, so the Authorization header can be sent).
@@ -236,9 +238,12 @@ export const api = {
   status: () => request('GET', '/api/status'),
   devices: () => request('GET', '/api/devices'),
   revokeDevice: (id) => request('DELETE', `/api/devices/${id}`),
-  localStatus: () => request('GET', '/api/local/status', undefined, { embedded: true }),
-  localProviders: () => request('GET', '/api/local/providers', undefined, { embedded: true }),
-  saveLocalProviders: (body) => request('PUT', '/api/local/providers', body, { embedded: true }),
+  localStatus: (options) => request('GET', '/api/local/status', undefined, embeddedOptions(options)),
+  localProviders: (options) => request('GET', '/api/local/providers', undefined, embeddedOptions(options)),
+  saveLocalProviders: (body, options) => request('PUT', '/api/local/providers', body, embeddedOptions(options)),
+  localPolicy: (options) => request('GET', '/api/local/policy', undefined, embeddedOptions(options)),
+  saveLocalPolicy: (body, options) => request('PUT', '/api/local/policy', body, embeddedOptions(options)),
+  localActivate: (options) => request('POST', '/api/local/activate', undefined, { ...embeddedOptions(options), localOnly: true }),
 
   // ----- conversas -----
   async listChats(archived = false, q = '') {

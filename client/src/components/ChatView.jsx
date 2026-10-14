@@ -56,7 +56,7 @@ function mergeChat(prev, next) {
   return { chat: { ...next, history: same ? prev.history : history }, historyChanged: !same };
 }
 
-export default function ChatView({ chatId, openSettingsInitially, status, onBack, onChanged, onCreate, onDeleted }) {
+export default function ChatView({ hostStatus, chatId, openSettingsInitially, status, onBack, onChanged, onCreate, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
   const [chat, setChat] = useState(null);
@@ -569,10 +569,11 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
   const serverOnline = !offline && (status ? status === 'online' : true);
   const isChecking = status === 'checking';
   const handleTitle = serverOnline
-    ? tr("Conectado ao PC · toque ou puxe para baixo")
+    ? tr("Conectado ao servidor ativo · toque ou puxe para baixo")
     : isChecking
       ? tr("Verificando conexão · toque ou puxe para baixo")
-      : tr("Sem conexão com o PC · toque ou puxe para baixo");
+      : tr("Sem conexão com o servidor ativo · toque ou puxe para baixo");
+  const showHostStatus = hostStatus && !drawer && !castOpen && !memoryOpen && !renameOpen && !viewerAvatar && !editMsg && !menuMsg && !versionsFor && !detailFor;
 
   return (
     <div {...drawerGesture} className="mc-chat fixed inset-0 z-30 flex flex-col bg-bgDark">
@@ -665,20 +666,21 @@ export default function ChatView({ chatId, openSettingsInitially, status, onBack
         </div>
       </header>
 
+      {showHostStatus && <div className="shrink-0" style={{ paddingTop: 'calc(var(--sat) + 62px)' }}>{hostStatus}</div>}
       <div
         ref={scrollRef}
         onScroll={onScroll}
         onPointerDown={topBar.open ? topBar.hide : undefined}
         className="mc-scroll relative min-h-0 flex-1 overflow-y-auto px-3"
         style={{
-          paddingTop: 'calc(var(--sat) + 34px)',
+          paddingTop: showHostStatus ? '8px' : 'calc(var(--sat) + 34px)',
           paddingBottom: 'calc(var(--sab) + 84px)',
         }}
       >
         <div ref={listRef} className="mc-col space-y-3 mc-read">
           {offline && (
             <div className="flex items-center gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300 mb-2">
-              <WifiOff size={14} />{tr(" Sem conexão com o PC. Você pode ler e escrever rascunhos; o envio precisa do servidor.\n              ")}<button className="ml-auto underline" onClick={resume}>{tr("Tentar de novo")}</button>
+              <WifiOff size={14} />{tr("Sem conexão com o servidor ativo (PC ou aparelho). Você pode ler e escrever rascunhos; o envio precisa de um host disponível.")}<button className="ml-auto underline" onClick={resume}>{tr("Tentar de novo")}</button>
             </div>
           )}
           {history.length === 0 && !busy && (

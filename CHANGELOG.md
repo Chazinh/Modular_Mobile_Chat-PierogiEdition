@@ -5,6 +5,12 @@ implemented features.
 
 ## Released
 
+### Home screen connection warning fix, TLS handshake deadline, and AutoHost settings — 2026-10-14
+
+- **Ghost Connection Banner Elimination**: In `client/src/App.jsx`, ensured `setConnectionError('')` is explicitly triggered upon successful chat list refreshes (`refresh()`), pull-to-refresh actions (`checkNow()`), and connection state changes (`connectionChanged()`). Protected `ChatList` from rendering stale error banners when the active connection state is confirmed `online` (`error || (status === 'online' ? '' : connectionError)`).
+- **TLS Handshake Probe Deadline Adjustment**: In `client/src/server-connection.js`, adjusted probe timeouts in `available()` to use a 2,500ms deadline when probing external PC endpoints (`const deadline = local() ? 400 : 2500;`), accommodating initial TLS 1.3 handshakes (ECC key exchange, certificate chain transmission, and Android TrustManager validation over physical Wi-Fi) without false-positive connection aborts, while preserving the 400ms budget for local embedded host fallback.
+- **AutoHost Status & Mobile Provider Settings**: Integrated standalone AutoHost monitoring and local provider setup interfaces (`client/src/components/AutoHostStatus.jsx`, `client/src/components/LocalHostSettings.jsx`, `client/src/autohost-status.js`, `client/src/mobile-settings.js`), allowing manual server setup and direct model management on standalone mobile installations.
+
 ### Memory extraction limits, interpersonal relationships, job queue deadlock fix, and connection resilience — 2026-10-14
 
 - **Memory Extraction Engine Optimization**: Capped fact extraction to 5–7 essential facts per turn (`server-rust/src/extraction-prompt.txt`, `server-rust/src/jobs.rs`). Restricted `knowledge` mapping strictly to characters directly involved in each fact rather than exhaustively citing all present entities in scenes with 8–9 characters, permanently resolving local LLM token budget overflow (`finish_reason: length` / HTTP 502).
