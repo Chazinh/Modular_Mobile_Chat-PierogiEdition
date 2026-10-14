@@ -36,14 +36,28 @@ without a published version; assessments do not represent implemented features.
   the code namespace instead of the package name, which differs in this build.
 - New tools: `scripts/build-perf-android.ps1` (builds and installs the measurement
   copy with the build output outside the project folder),
-  `scripts/measure-device-perf.mjs` (real swipes in a `drawer` or `scroll` mode,
+  `scripts/measure-device-perf.mjs` (real swipes in a `drawer`, `bar` or `scroll` mode,
   then `gfxinfo` frames, janky-frame percentage, percentiles and battery/AP/skin
   temperatures) and `scripts/trace-device-ui.mjs` (WebView trace over CDP). Set
   `MC_PERF_PACKAGE` if the app is installed under another package.
-- Known: the top bar (bubble and glass pills) writes style per frame onto the
-  glass elements, the same pattern, and is a candidate for the same fix; it was not
-  measured. About 250 raster tasks per cycle and about 1 ms/frame of painting
-  remain, which is the next target if the phone still heats up.
+- Applied the same fix to the chat's top bar (green dot). `top-bar-motion.js`
+  wrote `transform`/`opacity` on every frame straight onto the glass bubble, its
+  ring and the four glass buttons (back, name, memory, options), restyling their
+  gradients, shadows and pseudo-elements. The bubble, the ring and each button now
+  sit inside plain boxes (`.mc-bar-bubble`/`.mc-bar-ring` and their `-face`
+  elements in `glass.css`; each `[data-bar-item]` is now a `div` around its button
+  in `ChatView.jsx`). The animation moves the box while the glass stays still
+  inside it, and the layout is unchanged. Measured on the phone when pulling and
+  releasing the dot: elements restyled per frame 18 → 8, style recalculation over
+  8 cycles 2.8 s → 1.2 s, frames drawn over 40 cycles 2,849 → 5,827 (the animation
+  used to lose about half of its frames) and frames missing their deadline
+  9.1% → 5.8%.
+- Known: a spike of about 10–14 ms remains at the start and end of the top bar
+  animation, when the `mc-bar-animating` class on the `<header>` flips
+  `pointer-events` (inherited, so the style of about 65 elements is recalculated at
+  once). It does not affect the middle of the animation. About 250 raster tasks per
+  cycle and about 1 ms/frame of painting also remain in the side menu, which is the
+  next target if the phone still heats up.
 
 ### Server logs, memory and CPU diet — 2026-10-13
 

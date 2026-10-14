@@ -2,8 +2,9 @@
 // Two scenarios, both with real touch input, then reads gfxinfo (frames, janky frames, percentiles) and the
 // battery/AP/skin temperatures before and after. Open a chat in the app first and keep the screen on.
 //   drawer (default): pulls the side menu from the right edge and closes it, over and over (the heating test)
+//   bar: pulls the chat's top bar down from the status dot and closes it by tapping the chat
 //   scroll: swipes the chat list up and down
-// Usage: node scripts/measure-device-perf.mjs [label] [out.json]   (MC_PERF_MODE=drawer|scroll)
+// Usage: node scripts/measure-device-perf.mjs [label] [out.json]   (MC_PERF_MODE=drawer|bar|scroll)
 //   env: ADB (adb path), MC_PERF_PACKAGE (default io.github.modularchat.pierogiedition.perf), MC_PERF_SWIPES (default 80),
 //        MC_PERF_SWIPE_MS (swipe duration, default 280), MC_PERF_PAUSE_MS (pause between swipes, default 350)
 //        MC_PERF_CYCLES (drawer open/close cycles, default 60), MC_PERF_OPEN_HOLD_MS (menu stays open, default 600)
@@ -17,7 +18,7 @@ import os from 'node:os';
 const env = process.env;
 const adb = env.ADB || path.join(os.homedir(), 'RoleplayChat-local', 'android-sdk', 'platform-tools', 'adb.exe');
 const pkg = env.MC_PERF_PACKAGE || 'io.github.modularchat.pierogiedition.perf';
-const mode = env.MC_PERF_MODE === 'scroll' ? 'scroll' : 'drawer';
+const mode = ['scroll', 'bar'].includes(env.MC_PERF_MODE) ? env.MC_PERF_MODE : 'drawer';
 const swipes = Number(env.MC_PERF_SWIPES || 80);
 const cycles = Number(env.MC_PERF_CYCLES || 60);
 const holdMs = Number(env.MC_PERF_OPEN_HOLD_MS || 600);
@@ -79,6 +80,17 @@ if (mode === 'scroll') {
     const [from, to] = i % 2 === 0 ? [bottom, top] : [top, bottom];
     sh(`input swipe ${x} ${from} ${x} ${to} ${swipeMs}`);
     await sleep(pauseMs);
+  }
+} else if (mode === 'bar') {
+  // The status dot sits at the top center (just under the camera cut-out); pulling it down 130 css px opens the bar.
+  // Tapping the chat closes it again with its own animation.
+  const density = Number((sh('wm density').match(/(\d+)\s*$/m) || [0, 450])[1]) / 160;
+  const dotY = Math.round(h * 0.06);
+  for (let i = 0; i < cycles; i++) {
+    sh(`input swipe ${x} ${dotY} ${x} ${dotY + Math.round(150 * density)} ${swipeMs}`);
+    await sleep(holdMs);
+    sh(`input tap ${x} ${Math.round(h * 0.6)}`);
+    await sleep(pauseMs + 250);
   }
 } else {
   // The drawer opens by dragging inwards from the strip along the right edge (20 css px); BACK closes it with its

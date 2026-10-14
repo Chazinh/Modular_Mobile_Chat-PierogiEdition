@@ -551,22 +551,25 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
         <span className={`mc-bar-dot ${connected ? 'mc-on' : ''}`} />
       </button>
       {/* the bubble that swells from the dot and the pop ring (moved by top-bar-motion.js) */}
-      <span ref={topBar.bubbleRef} aria-hidden="true" className="mc-glass-pill mc-bar-bubble fixed" style={{ top: 'calc(var(--sat) + 15px)' }} />
-      <span ref={topBar.ringRef} aria-hidden="true" className="mc-bar-ring" style={{ top: 'calc(var(--sat) + 15px)' }} />
+      {/* Each one is a plain box (moved every frame by top-bar-motion.js) around the face that holds the heavy glass style:
+          writing transform/opacity on the glass itself re-resolved its gradients, shadows and pseudo-elements on every frame. */}
+      <span ref={topBar.bubbleRef} aria-hidden="true" className="mc-bar-bubble" style={{ top: 'calc(var(--sat) + 15px)' }}><span className="mc-glass-pill mc-bar-bubble-face absolute inset-0" /></span>
+      <span ref={topBar.ringRef} aria-hidden="true" className="mc-bar-ring" style={{ top: 'calc(var(--sat) + 15px)' }}><span className="mc-bar-ring-face" /></span>
       {/* Detached floating header with individual liquid-glass islands */}
       <header ref={topBar.barRef} className={`${topBar.settled ? 'pointer-events-auto' : 'pointer-events-none mc-bar-animating'} fixed inset-x-0 top-0 z-30 px-3`} style={{ paddingTop: 'calc(var(--sat) + 8px)' }}>
         <div className="mc-col flex items-center justify-between gap-2">
           {/* Left side: round back button + capsule with avatar and name */}
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <button
-              data-bar-item
-              onClick={onBack}
-              className="mc-glass-pill pointer-events-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label={tr("Voltar")}
-            >
-              <ChevronLeft size={24} />
-            </button>
-            <div data-bar-item className="mc-glass-pill mc-identity-pill pointer-events-auto flex min-w-0 items-center gap-2 rounded-full py-1 pl-1 pr-3.5 shadow-lg">
+            <div data-bar-item className="shrink-0">
+              <button
+                onClick={onBack}
+                className="mc-glass-pill pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+                aria-label={tr("Voltar")}
+              >
+                <ChevronLeft size={24} />
+              </button>
+            </div>
+            <div data-bar-item className="flex min-w-0"><div className="mc-glass-pill mc-identity-pill pointer-events-auto flex min-w-0 items-center gap-2 rounded-full py-1 pl-1 pr-3.5 shadow-lg">
               <button
                 onClick={() => setViewerAvatar({ name: chat?.name, avatar: chat?.avatar })}
                 className="shrink-0 active:scale-95 transition-transform"
@@ -596,28 +599,30 @@ export default function ChatView({ chatId, openSettingsInitially, onBack, onChan
                   />
                 </button>
               </div>
-            </div>
+            </div></div>
           </div>
 
           {/* Right side: independent round memory and options buttons */}
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              data-bar-item
-              onClick={() => setMemoryOpen(true)}
-              className="mc-glass-pill pointer-events-auto relative flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label={tr("Memória")}
-            >
-              <Brain size={22} />
-              {chat?.memorySummary?.pending > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accentPurpleLight ring-2 ring-black/40" />}
-            </button>
-            <button
-              data-bar-item
-              onClick={openDrawer}
-              className="mc-glass-pill pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label={tr("Opções")}
-            >
-              <MoreHorizontal size={24} />
-            </button>
+            <div data-bar-item>
+              <button
+                onClick={() => setMemoryOpen(true)}
+                className="mc-glass-pill pointer-events-auto relative flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+                aria-label={tr("Memória")}
+              >
+                <Brain size={22} />
+                {chat?.memorySummary?.pending > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accentPurpleLight ring-2 ring-black/40" />}
+              </button>
+            </div>
+            <div data-bar-item>
+              <button
+                onClick={openDrawer}
+                className="mc-glass-pill pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+                aria-label={tr("Opções")}
+              >
+                <MoreHorizontal size={24} />
+              </button>
+            </div>
           </div>
         </div>
       </header>

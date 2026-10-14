@@ -1,7 +1,7 @@
 // CDP trace of the WebView on the phone while the side menu is pulled open and closed (needs the debuggable "perf" copy,
 // see scripts/build-perf-android.ps1) and a chat open in the foreground.
 // Prints where the time goes: total duration and count per event name, split by thread.
-// Usage: node scripts/trace-device-ui.mjs [cycles=8] [out.json]
+// Usage: node scripts/trace-device-ui.mjs [cycles=8] [out.json]   (MC_PERF_MODE=drawer|bar, as in measure-device-perf.mjs)
 //   env: ADB, MC_PERF_PACKAGE, MC_TRACE_PORT (default 9333), MC_TRACE_TOP (rows per thread, default 14)
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -49,10 +49,19 @@ await send('Tracing.start', { categories, transferMode: 'ReportEvents', options:
 const size = run('shell', 'wm size').match(/(\d+)x(\d+)/);
 const [w, h] = [Number(size[1]), Number(size[2])];
 const mid = Math.round(h * 0.5);
+const bar = env.MC_PERF_MODE === 'bar';
+const density = Number((run('shell', 'wm density').match(/(\d+)\s*$/m) || [0, 450])[1]) / 160;
 for (let i = 0; i < cycles; i++) {
-  run('shell', `input swipe ${w - 8} ${mid} ${Math.round(w * 0.2)} ${mid} 280`);
-  await sleep(600);
-  run('shell', 'input keyevent KEYCODE_BACK');
+  if (bar) {
+    const dotY = Math.round(h * 0.06);
+    run('shell', `input swipe ${Math.round(w / 2)} ${dotY} ${Math.round(w / 2)} ${dotY + Math.round(150 * density)} 280`);
+    await sleep(600);
+    run('shell', `input tap ${Math.round(w / 2)} ${Math.round(h * 0.6)}`);
+  } else {
+    run('shell', `input swipe ${w - 8} ${mid} ${Math.round(w * 0.2)} ${mid} 280`);
+    await sleep(600);
+    run('shell', 'input keyevent KEYCODE_BACK');
+  }
   await sleep(850);
 }
 await send('Tracing.end');
@@ -80,6 +89,17 @@ if (recalcs.length) {
   const ms = recalcs.reduce((a, e) => a + e.dur / 1000, 0);
   console.log(`
 UpdateLayoutTree: ${recalcs.length} runs, ${Math.round(ms)} ms (${(ms / recalcs.length).toFixed(2)} ms each), elements per run: avg ${Math.round(sum / counts.length)}, median ${counts[counts.length >> 1]}, p90 ${counts[Math.floor(counts.length * 0.9)]}, max ${counts.at(-1)}; ${(ms * 1000 / Math.max(1, sum)).toFixed(1)} us per element`);
+}
+// The slowest main-thread frames and what they were made of (children of BeginMainFrame on the same thread).
+if (env.MC_TRACE_SLOW) {
+  const main = events.filter((e) => e.ph === 'X' && e.name === 'ProxyMain::BeginMainFrame').sort((a, b) => b.dur - a.dur).slice(0, Number(env.MC_TRACE_SLOW));
+  for (const f of main) {
+    const kids = events.filter((e) => e.ph === 'X' && e.pid === f.pid && e.tid === f.tid && e.ts >= f.ts && e.ts + e.dur <= f.ts + f.dur && e !== f && e.dur > 400);
+    const agg = new Map();
+    for (const k of kids) agg.set(k.name, (agg.get(k.name) || 0) + k.dur / 1000);
+    const top = [...agg].sort((a, b) => b[1] - a[1]).slice(0, 7).map(([n, ms]) => `${n} ${ms.toFixed(1)}`).join(' | ');
+    console.log(`slow frame ${(f.dur / 1000).toFixed(1)} ms: ${top}`);
+  }
 }
 const summary = {};
 for (const [t, rows] of byThread) {

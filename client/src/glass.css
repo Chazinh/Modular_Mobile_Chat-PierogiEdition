@@ -281,7 +281,9 @@ button.mc-glass-pill:active::after { opacity: .55; }
   .mc-bar-dot.mc-dot-checking { animation: none; opacity: .6; }
   .mc-pull { transition: none; }
 }
-.mc-glass-pill.mc-bar-bubble,
+/* The bubble and the ring are plain boxes: top-bar-motion.js writes transform/opacity on them every frame, and the heavy
+   glass style lives on the face inside (writing it on the glass itself re-resolved every gradient/shadow per frame). */
+.mc-bar-bubble,
 .mc-bar-ring {
   position: fixed;
   left: 50%;
@@ -296,7 +298,8 @@ button.mc-glass-pill:active::after { opacity: .55; }
 }
 /* the bubble is real soap: nearly transparent, an iridescent film running around the rim, a round highlight
    at the top left and a smaller glint at the bottom right */
-.mc-glass-pill.mc-bar-bubble {
+.mc-glass-pill.mc-bar-bubble-face {
+  border-radius: inherit;
   --gl-rim-opacity: .95;
   background:
     radial-gradient(circle at 30% 26%, rgba(var(--mc-white-rgb, 255, 255, 255), .55), rgba(var(--mc-white-rgb, 255, 255, 255), 0) 22%),
@@ -305,7 +308,10 @@ button.mc-glass-pill:active::after { opacity: .55; }
     conic-gradient(from 30deg, rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .22), rgb(calc(255 * var(--mc-tr, 1)) calc(226 * var(--mc-tg, 1)) calc(178 * var(--mc-tb, 1)) / .16), rgb(calc(176 * var(--mc-tr, 1)) calc(244 * var(--mc-tg, 1)) calc(226 * var(--mc-tb, 1)) / .18), rgb(calc(170 * var(--mc-tr, 1)) calc(207 * var(--mc-tg, 1)) calc(227 * var(--mc-tb, 1)) / .22), rgb(calc(141 * var(--mc-tr, 1)) calc(151 * var(--mc-tg, 1)) calc(217 * var(--mc-tb, 1)) / .2), rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .22));
   box-shadow: 0 8px 22px -8px var(--gl-shadow);
 }
-.mc-bar-ring {
+.mc-bar-ring-face {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
   border: 2px solid rgb(calc(219 * var(--mc-tr, 1)) calc(206 * var(--mc-tg, 1)) calc(251 * var(--mc-tb, 1)) / .8);
   box-shadow: 0 0 12px rgb(calc(170 * var(--mc-tr, 1)) calc(207 * var(--mc-tg, 1)) calc(227 * var(--mc-tb, 1)) / .5), inset 0 0 8px rgb(calc(246 * var(--mc-tr, 1)) calc(190 * var(--mc-tg, 1)) calc(232 * var(--mc-tb, 1)) / .45);
 }
@@ -314,7 +320,7 @@ button.mc-glass-pill:active::after { opacity: .55; }
 /* Frame rate: a backdrop blur under an element that is scaled/faded every frame is recomputed every frame
    (on a phone GPU that dropped the bubble animation to a few frames). While the bar animates, its islands are
    plain glass gradients; the blur comes back once they are at rest. The soap bubble never needed blur. */
-.mc-glass-pill.mc-bar-bubble,
+.mc-glass-pill.mc-bar-bubble-face,
 .mc-bar-animating .mc-glass-pill {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
