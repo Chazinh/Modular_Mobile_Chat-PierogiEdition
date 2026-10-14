@@ -1,7 +1,7 @@
 import { useConfirm } from './ConfirmProvider.jsx';
 import { tr, useLanguage } from '../i18n.js';
 import React, { memo, useEffect, useRef, useState } from 'react';
-import { Plus, Search, Settings, RefreshCw, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, X, Brain, Pencil } from 'lucide-react';
+import { Plus, Settings, RefreshCw, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, Brain, Pencil } from 'lucide-react';
 import { api } from '../api.js';
 import { Avatar, timeAgo, useLongPress } from '../ui.jsx';
 import { plainText } from '../format.js';
@@ -19,16 +19,10 @@ const PULL_TRIGGER = 96; // finger travel (px) that triggers the refresh when re
 export default function ChatList({ chats, offline, status, onRefresh, error, archivedView, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
   const confirm = useConfirm();
   useLanguage();
-  const [searching, setSearching] = useState(false);
   const [sheet, setSheet] = useState(null);
-  const [hits, setHits] = useState(null);
   const [toast, setToast] = useState('');
   const [viewerAvatar, setViewerAvatar] = useState(null);
   const [renameChat, setRenameChat] = useState(null);
-  const [text, setText] = useState(query); // the field responds immediately; server search/filtering waits for a pause in typing
-  const searchTimer = useRef(0);
-  const searchSeq = useRef(0);
-  useEffect(() => () => clearTimeout(searchTimer.current), []);
   const scrollRef = useRef(null);
   const pullRef = useRef(null);
   const [spinning, setSpinning] = useState(false);
@@ -96,23 +90,6 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
     setTimeout(() => setToast(''), 2200);
   };
 
-  async function textSearch(q) {
-    onQuery(q);
-    const seq = ++searchSeq.current;
-    if (q.trim().length < 3) return setHits(null);
-    try {
-      const results = (await api.search(q)).results;
-      if (seq === searchSeq.current) setHits(results);
-    } catch {
-      if (seq === searchSeq.current) setHits(null);
-    }
-  }
-  function typeQuery(q) {
-    setText(q);
-    clearTimeout(searchTimer.current);
-    if (!q) textSearch('');
-    else searchTimer.current = setTimeout(() => textSearch(q), 280);
-  }
 
   async function act(fn, ok) {
     setSheet(null);
@@ -159,13 +136,6 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
           {/* Action icons in individual round bubbles */}
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setSearching((v) => !v)}
-              className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
-              aria-label={tr("Buscar")}
-            >
-              <Search size={19} />
-            </button>
-            <button
               onClick={onToggleArchived}
               className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
               aria-label={tr("Arquivadas")}
@@ -188,37 +158,13 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
             </button>
           </div>
         </div>
-
-        {searching && (
-          <div className="mc-col mt-2">
-            <div className="mc-glass-pill pointer-events-auto flex items-center gap-2 rounded-full px-4 py-2 shadow-lg">
-              <Search size={16} className="text-textMuted" />
-              <input
-                autoFocus
-                value={text}
-                onChange={(e) => typeQuery(e.target.value)}
-                placeholder={tr("Buscar conversas e mensagens")}
-                spellCheck={true}
-
-                autoCorrect="on"
-                autoCapitalize="sentences"
-                className="flex-1 bg-transparent text-[16px] outline-none placeholder:text-textMuted"
-              />
-              {text && (
-                <button onClick={() => typeQuery('')} aria-label={tr("Limpar")}>
-                  <X size={16} />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </header>
 
       <div
         ref={pullRef}
         aria-hidden="true"
         className={`mc-pull mc-glass-pill pointer-events-none fixed left-1/2 z-20 flex h-9 w-9 items-center justify-center rounded-full shadow-lg ${spinning ? 'mc-pull-spinning' : ''}`}
-        style={{ top: searching ? 'calc(var(--sat) + 112px)' : 'calc(var(--sat) + 64px)' }}
+        style={{ top: 'calc(var(--sat) + 64px)' }}
       >
         <RefreshCw size={18} className={spinning ? 'animate-spin' : ''} />
       </div>
@@ -227,7 +173,7 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
         ref={scrollRef}
         className="flex-1 overflow-y-auto pb-6"
         style={{
-          paddingTop: searching ? 'calc(var(--sat) + 116px)' : 'calc(var(--sat) + 68px)',
+          paddingTop: 'calc(var(--sat) + 68px)',
         }}
       >
         <div className="mc-col">
@@ -238,17 +184,6 @@ export default function ChatList({ chats, offline, status, onRefresh, error, arc
             </div>
           )}
           {error && !offline && <div className="px-4 pb-2 text-xs text-red-300">{tr(error)}</div>}
-          {hits && hits.length > 0 && (
-            <div className="px-4 pb-2 pt-3">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-textMuted">{tr("Mensagens encontradas")}</p>
-              {hits.map((h, i) => (
-                <button key={i} onClick={() => onOpen(h.convId)} className="mb-1 block w-full rounded-xl bg-cardDark px-3 py-2 text-left active:bg-cardDarkHover">
-                  <span className="text-xs text-textMuted">{h.convName}</span>
-                  <span className="block text-sm">{h.snippet.replace(/[«»]/g, '')}</span>
-                </button>
-              ))}
-            </div>
-          )}
           {chats.length === 0 && (
             <div className="px-8 pt-24 text-center text-textMuted">
               <p className="mb-4">{archivedView ? tr("Nada arquivado.") : tr("Nenhuma conversa ainda.")}</p>
