@@ -141,7 +141,7 @@ pub fn estimate(t: &str) -> usize {
             let p = m.as_str();
             if p == "\n" {
                 0.5
-            } else if p.chars().all(|c| c.is_alphanumeric()) {
+            } else if p.chars().next().is_some_and(char::is_alphanumeric) {
                 let l = utf16_len(p);
                 if l <= 3 { 1.0 } else { (l as f64 / 3.6).ceil() }
             } else {

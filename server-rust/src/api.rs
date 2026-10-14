@@ -407,11 +407,15 @@ async fn dispatch(
     if !b.is_object() {
         return Err(Error::new(400, "Objeto JSON esperado."));
     }
-    let query = reqwest::Url::parse(&format!("http://fixture{uri}"))
-        .unwrap()
-        .query_pairs()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect::<std::collections::HashMap<_, _>>();
+    let query = if uri.query().is_some() {
+        reqwest::Url::parse(&format!("http://fixture{uri}"))
+            .unwrap()
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<std::collections::HashMap<_, _>>()
+    } else {
+        std::collections::HashMap::new()
+    };
     let get = method == Method::GET;
     let post = method == Method::POST;
     let put = method == Method::PUT;

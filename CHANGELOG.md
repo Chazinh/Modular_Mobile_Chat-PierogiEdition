@@ -5,6 +5,13 @@ implemented features.
 
 ## Released
 
+### Backend performance optimizations, SQLite WAL pragmas and MSVC ICF/REF — 2026-10-14
+
+- Configured MSVC linker optimizations (`/OPT:REF` to eliminate unused functions and `/OPT:ICF` for identical COMDAT folding) under `[target.x86_64-pc-windows-msvc]` in `.cargo/config.toml`.
+- Configured high-performance SQLite PRAGMAs for WAL mode in `server-rust/src/store/mod.rs` (`synchronous=NORMAL; temp_store=MEMORY; mmap_size=268435456; cache_size=-32000;`), enabling memory-backed temporary operations, 256 MB memory-mapped I/O, and 32 MB page cache while retaining crash-safe WAL checkpoints.
+- Optimized token count estimation hot-path in `server-rust/src/rules.rs` by replacing full character re-scanning (`p.chars().all(...)`) with an $O(1)$ initial character classification (`p.chars().next().is_some_and(char::is_alphanumeric)`), preserving exact token counting parity.
+- Eliminated redundant URL parsing, query string reconstruction, and `HashMap` heap allocations in `server-rust/src/api.rs` for requests without query strings (`uri.query().is_none()`).
+
 ### Server build optimizations (mimalloc and x86-64-v3) — 2026-10-14
 
 - Configured `mimalloc` as the global memory allocator for the Windows server binary (`main.rs`, scoped under `[target.'cfg(windows)'.dependencies]` in `server-rust/Cargo.toml`), improving allocation performance while keeping the Android JNI library safely on the default bionic allocator.

@@ -599,7 +599,7 @@ impl Database {
         this.db.execute_batch(if encrypted {
             "PRAGMA journal_mode=MEMORY;PRAGMA temp_store=MEMORY;PRAGMA foreign_keys=OFF;"
         } else {
-            "PRAGMA journal_mode=WAL;PRAGMA foreign_keys=OFF;"
+            "PRAGMA journal_mode=WAL;PRAGMA foreign_keys=OFF;PRAGMA synchronous=NORMAL;PRAGMA temp_store=MEMORY;PRAGMA mmap_size=268435456;PRAGMA cache_size=-32000;"
         })?;
         this.tx(|| {
             this.db.execute_batch(SCHEMA)?;
