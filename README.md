@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img width="1018" alt="ModularChat presentation" src="https://github.com/user-attachments/assets/643d8d69-cc95-4d62-a7ce-e21896ccfbe0" />
+  <img width="100%" alt="ModularChat presentation" src="assets/showcase.png" />
 </p>
 
 # modularchat-pierogiedition

@@ -5,6 +5,16 @@ implemented features.
 
 ## Released
 
+### Android host isolation in PC mode, connection timeouts, English i18n overhaul, and showcase sheet — 2026-10-15
+
+- **Mobile-to-PC Pairing & Network Connection Resiliency**: Parameterized probe deadlines in `client/src/server-connection.js` (`available(server, key, signal, timeoutMs)`), enforcing a 3,000ms minimum timeout on explicit PC targets to accommodate TLS 1.3 key exchange and handshake overhead over local Wi-Fi without false-positive `ORIGIN_UNAVAILABLE` aborts.
+- **Android Host Card Suppression in PC Mode**: Automatically suppress the Android AutoHost status card (`AutoHostStatus.jsx`) and pause background status polling whenever connected to a PC server (`config.kind === 'pc'`), eliminating unnecessary polling overhead and UI clutter.
+- **Local Mobile Model Route Isolation & Execution Safeguards**: Filtered out local mobile models (`mobile-local` and `mobile-api`) from preset listings in `client/src/api.js` and `client/src/components/SettingsDrawer.jsx` when connected to a PC. Added protective client-side interception in `client/src/components/ChatView.jsx` and `api.js` to prevent executing local mobile routes on PC backends.
+- **Model Selector Grey/Black Screen Fix**: Resolved an unhandled `ReferenceError: config is not defined` in `SettingsDrawer.jsx` by explicitly importing `config` from `api.js`. Added confirmation prompts (`confirm(tr("Deseja criar uma nova conversa?"))`) before creating chats from the drawer.
+- **Home Drawer & Cascading Navigation**: Introduced `client/src/components/HomeDrawer.jsx` providing a unified liquid-glass drawer experience for the main home screen (`ChatList.jsx`), with smooth spring animations, global style controls, reading settings, and server resets.
+- **Comprehensive English Localization Overhaul**: Modernized English translations in `client/src/locales/en.json`, adopting cleaner naming conventions (e.g., "Chats" instead of "Conversations") and industry-standard roleplay/AI terminology ("Character card", "Reasoning", "Model & effort", "Continue scene", "Regenerate response").
+- **Application Showcase Banner**: Added 2560x1440 high-resolution presentation showcase graphic (`assets/showcase.png`, `showcase.png`) and updated `README.md` to display edge-to-edge mockup visuals without system bars or camera punch-holes.
+
 ### Home screen connection warning fix, TLS handshake deadline, and AutoHost settings — 2026-10-14
 
 - **Ghost Connection Banner Elimination**: In `client/src/App.jsx`, ensured `setConnectionError('')` is explicitly triggered upon successful chat list refreshes (`refresh()`), pull-to-refresh actions (`checkNow()`), and connection state changes (`connectionChanged()`). Protected `ChatList` from rendering stale error banners when the active connection state is confirmed `online` (`error || (status === 'online' ? '' : connectionError)`).

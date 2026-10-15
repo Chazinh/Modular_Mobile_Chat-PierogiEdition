@@ -81,7 +81,11 @@ impl AppState {
             crate::providers::MobileProviders::default()
         };
         let providers = crate::providers::RuntimeProviders::new(if config.is_android() {
-            mobile_providers.runtime()?
+            if let Some(p) = mobile_providers.runtime()? {
+                Some(p)
+            } else {
+                config.providers.clone()
+            }
         } else {
             config.providers.clone()
         });

@@ -56,10 +56,13 @@ export default function App() {
   const [status, setStatus] = useState('checking');
   const [openId, setOpenId] = useState(null);
   const [openSettings, setOpenSettings] = useState(false);
+  const [createdChat, setCreatedChat] = useState(null);
+  const creatingRef = useRef(false);
   const [globalOpen, setGlobalOpen] = useState(false);
   const [needsServer, setNeedsServer] = useState(config.needsServer);
   const [unpaired, setUnpaired] = useState(() => !config.embeddedReady && privacyNeedsPairing());
   const [manualServerSetup, setManualServerSetup] = useState(false);
+  const [kind, setKind] = useState(() => config.kind);
   const [fontSize, setFontSize] = useFontSize();
   const refreshTimer = useRef(null);
   const listViewRef = useRef(null);
@@ -127,40 +130,45 @@ export default function App() {
     };
   }, [refresh]);
 
+  // TOP-LEVEL CONNECTION LISTENER: always listen to mc:connection-change regardless of needsServer/unpaired
+  useEffect(() => {
+    const connectionChanged = () => {
+      setKind(config.kind);
+      setNeedsServer(config.needsServer);
+      if (config.embeddedReady) setUnpaired(false);
+      setConnectionError('');
+      refresh();
+      window.dispatchEvent(new CustomEvent('mc:event', { detail: { type: 'connection' } }));
+    };
+    window.addEventListener('mc:connection-change', connectionChanged);
+    return () => window.removeEventListener('mc:connection-change', connectionChanged);
+  }, [refresh]);
+
   // server events: sync the list and notify the open chat
   useEffect(() => {
     if (needsServer || unpaired) return undefined;
     let ac;
     const subscribe = () => {
-    ac?.abort();
-    ac = new AbortController();
-    api.subscribeEvents((ev) => {
-      if (ev.type === 'hello') return;
-      window.dispatchEvent(new CustomEvent('mc:event', { detail: ev }));
-      clearTimeout(refreshTimer.current);
-      refreshTimer.current = setTimeout(refresh, 400);
-    }, ac.signal);
+      ac?.abort();
+      ac = new AbortController();
+      api.subscribeEvents((ev) => {
+        if (ev.type === 'hello') return;
+        window.dispatchEvent(new CustomEvent('mc:event', { detail: ev }));
+        clearTimeout(refreshTimer.current);
+        refreshTimer.current = setTimeout(refresh, 400);
+      }, ac.signal);
     };
     const visible = () => { if (document.visibilityState === 'visible') subscribe(); };
-    const connectionChanged = () => {
-      setNeedsServer(config.needsServer);
-      if (config.embeddedReady) setUnpaired(false); setConnectionError('');
-      refresh();
-      subscribe();
-      window.dispatchEvent(new CustomEvent('mc:event', { detail: { type: 'connection' } }));
-    };
     subscribe();
     document.addEventListener('visibilitychange', visible);
     window.addEventListener('mc:resume', subscribe);
     window.addEventListener('online', subscribe);
-    window.addEventListener('mc:connection-change', connectionChanged);
     return () => {
       ac?.abort();
       clearTimeout(refreshTimer.current);
       document.removeEventListener('visibilitychange', visible);
       window.removeEventListener('mc:resume', subscribe);
       window.removeEventListener('online', subscribe);
-      window.removeEventListener('mc:connection-change', connectionChanged);
     };
   }, [needsServer, unpaired, refresh]);
 
@@ -192,14 +200,19 @@ export default function App() {
   });
   const openGlobal = useEvent((event) => transitionTo(() => setGlobalOpen(true), '.mc-screen', event?.currentTarget));
 
-  async function create(event) {
-    const origin = event?.currentTarget;
+  async function create() {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
     try {
       const chat = await api.createChat({});
-      await refresh();
-      transitionTo(() => { setOpenSettings(true); setOpenId(chat.id); }, '.mc-chat', origin);
+      setCreatedChat(chat);
+      setOpenSettings(true);
+      setOpenId(chat.id);
+      refresh();
     } catch (e) {
       setError(tr("Não foi possível criar o chat: {0}", [e.message]));
+    } finally {
+      creatingRef.current = false;
     }
   }
 
@@ -219,7 +232,7 @@ export default function App() {
     );
   }
 
-  const hostStatus = isNative() && config.embeddedReady ? <AutoHostStatus /> : null;
+  const hostStatus = isNative() && config.embeddedReady && kind !== 'pc' && config.kind !== 'pc' ? <AutoHostStatus /> : null;
   return (
     <>
       <div className={openId ? 'hidden' : 'flex h-full flex-col'}>
@@ -229,7 +242,7 @@ export default function App() {
           offline={offline}
           status={status}
           onRefresh={checkNow}
-           error={error || (status === 'online' ? '' : connectionError)}
+          error={error || (status === 'online' ? '' : connectionError)}
           archivedView={archivedView}
           switchingArchived={switchingArchived}
           query={query}
@@ -238,7 +251,9 @@ export default function App() {
           onOpen={openChat}
           onCreate={create}
           onChanged={refresh}
-          onGlobal={openGlobal}
+          fontSize={fontSize}
+          onFontSize={setFontSize}
+          onResetServer={() => setManualServerSetup(true)}
         />
       </div>
       {openId && (
@@ -246,6 +261,7 @@ export default function App() {
           hostStatus={!globalOpen ? hostStatus : null}
           key={openId}
           chatId={openId}
+          initialChat={createdChat?.id === openId ? createdChat : null}
           openSettingsInitially={openSettings}
           status={status}
           onBack={closeTopLayer}

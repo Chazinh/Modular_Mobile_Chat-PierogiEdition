@@ -197,6 +197,7 @@ export const publicPresets = data => data ? {
   ...data,
   presets: (data.presets || [])
     .filter(p => PUBLIC_PRESETS.has(p.id))
+    .filter(p => config.kind !== 'pc' || (p.id !== 'mobile-local' && p.id !== 'mobile-api'))
     .map(p => p.id === 'glm-52' ? { ...p, label: 'GLM' } : p),
 } : null;
 
@@ -209,7 +210,7 @@ export const api = {
   cachedPresets: async () => {
     const raw = await kv.get('presets', null);
     const cached = publicPresets(raw);
-    if (cached?.presets?.some(p => p.id === 'mobile-local' || p.id === 'mobile-api')) return cached;
+    if (config.kind !== 'pc' && cached?.presets?.some(p => p.id === 'mobile-local' || p.id === 'mobile-api')) return cached;
     const gemini = cached?.presets?.find((p) => p.id === 'gemini-38-flash');
     if (!cached || !gemini || !gemini.efforts || gemini.efforts.length < 3 || !gemini.routes || gemini.routes.length < 3) {
       await kv.set('presets', DEFAULT_PRESETS);
@@ -360,6 +361,9 @@ export const api = {
   // ----- streaming send -----
   // onEvent receives: { ack } | { delta } | { done, status, message, error, usage } | { error }
   async sendMessage(id, payload, onEvent, signal) {
+    if (config.kind === 'pc' && (payload?.routeId === 'mobile-local' || payload?.routeId?.startsWith('mobile-api:'))) {
+      throw new ApiError('Modelos locais do Android não podem ser executados enquanto conectado ao servidor do PC.', 400);
+    }
     const existing = api.getPending(id);
     if (existing || generationWrites.has(id)) throw new ApiError('Este chat aguarda confirmação de um envio no servidor de origem.', 409, { code: 'AMBIGUOUS_WRITE' });
     generationWrites.add(id);

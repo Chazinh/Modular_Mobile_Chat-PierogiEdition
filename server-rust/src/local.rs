@@ -201,6 +201,12 @@ impl Process {
             #[cfg(not(test))]
             let native_args = true;
             if native_args {
+                // Mobile owns unloading; pinned llama.cpp disables its internal sleep with -1.
+                let sleep_idle_seconds = if self.mobile_file.is_some() {
+                    "-1".to_owned()
+                } else {
+                    self.idle.to_string()
+                };
                 command
                     .args([
                         "-m",
@@ -213,7 +219,7 @@ impl Process {
                         &self.port.to_string(),
                         "--no-webui",
                         "--sleep-idle-seconds",
-                        &self.idle.to_string(),
+                        &sleep_idle_seconds,
                     ])
                     .args(args);
             }

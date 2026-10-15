@@ -46,12 +46,13 @@ impl Config {
         }
         crate::privacy::private_dir(data_dir)?;
         let data_dir = data_dir.canonicalize()?;
+        let providers = crate::providers::Providers::load(&data_dir, None).ok().flatten().map(std::sync::Arc::new);
         Ok(Self {
             dist: data_dir.join("client-dist"),
             data_dir,
             address: "127.0.0.1:3011".parse().expect("fixed loopback address"),
             require_pairing: true,
-            providers: None,
+            providers,
             max_generations: 1,
             production: true,
             native_lib_dir: Some(native_lib_dir.canonicalize()?),

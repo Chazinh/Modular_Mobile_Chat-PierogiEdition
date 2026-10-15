@@ -60,6 +60,8 @@ impl From<rusqlite::Error> for Error {
 }
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
+        #[cfg(target_os = "android")]
+        crate::android::log_android(6, &format!("std::io::Error: {e:?} (os_error={:?}, kind={:?})", e.raw_os_error(), e.kind()));
         Self::new(500, format!("Arquivo: {e}"))
     }
 }

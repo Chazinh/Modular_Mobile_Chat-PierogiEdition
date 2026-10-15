@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2,
   ArrowDown, Keyboard, Layers, Info, WifiOff, Check, AlertTriangle,
 } from 'lucide-react';
-import { api, uuid } from '../api.js';
+import { api, config, uuid } from '../api.js';
 import { useLayer } from '../nav.js';
 import { Avatar, SceneText, UserText, useLongPress, copyText, useEvent } from '../ui.jsx';
 import { plainText } from '../format.js';
@@ -56,10 +56,10 @@ function mergeChat(prev, next) {
   return { chat: { ...next, history: same ? prev.history : history }, historyChanged: !same };
 }
 
-export default function ChatView({ hostStatus, chatId, openSettingsInitially, status, onBack, onChanged, onCreate, onDeleted }) {
+export default function ChatView({ hostStatus, chatId, initialChat = null, openSettingsInitially, status, onBack, onChanged, onCreate, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
-  const [chat, setChat] = useState(null);
+  const [chat, setChat] = useState(() => initialChat || null);
   const [offline, setOffline] = useState(false);
   const [stream, setStream] = useState(null); // Presentation: phase/ack only. The SSE buffer lives in ctxRef.
   const [error, setError] = useState('');
@@ -404,6 +404,14 @@ export default function ChatView({ hostStatus, chatId, openSettingsInitially, st
 
   async function run(payload, { fromComposer = false, recovery = false } = {}) {
     if (busyRef.current || (offline && !recovery)) return false;
+    if (config.kind === 'pc') {
+      const targetPreset = chatRef.current?.presetId;
+      const targetRoute = chatRef.current?.routeId;
+      if (targetPreset === 'mobile-local' || targetPreset === 'mobile-api' || targetRoute === 'mobile-local' || targetRoute?.startsWith('mobile-api:')) {
+        setError(tr('Modelos locais do Android não podem ser executados no servidor do PC. Escolha outro modelo nas opções do chat.'));
+        return false;
+      }
+    }
     if (api.getPending(chatId)) {
       setError(tr('Há um envio pendente de confirmação no servidor de origem. Recupere-o antes de enviar novamente.'));
       return false;
@@ -573,7 +581,7 @@ export default function ChatView({ hostStatus, chatId, openSettingsInitially, st
     : isChecking
       ? tr("Verificando conexão · toque ou puxe para baixo")
       : tr("Sem conexão com o servidor ativo · toque ou puxe para baixo");
-  const showHostStatus = hostStatus && !drawer && !castOpen && !memoryOpen && !renameOpen && !viewerAvatar && !editMsg && !menuMsg && !versionsFor && !detailFor;
+  const showHostStatus = hostStatus && !drawer;
 
   return (
     <div {...drawerGesture} className="mc-chat fixed inset-0 z-30 flex flex-col bg-bgDark">
@@ -666,18 +674,18 @@ export default function ChatView({ hostStatus, chatId, openSettingsInitially, st
         </div>
       </header>
 
-      {showHostStatus && <div className="shrink-0" style={{ paddingTop: 'calc(var(--sat) + 62px)' }}>{hostStatus}</div>}
       <div
         ref={scrollRef}
         onScroll={onScroll}
         onPointerDown={topBar.open ? topBar.hide : undefined}
         className="mc-scroll relative min-h-0 flex-1 overflow-y-auto px-3"
         style={{
-          paddingTop: showHostStatus ? '8px' : 'calc(var(--sat) + 34px)',
+          paddingTop: 'calc(var(--sat) + 34px)',
           paddingBottom: 'calc(var(--sab) + 84px)',
         }}
       >
         <div ref={listRef} className="mc-col space-y-3 mc-read">
+          {showHostStatus && <div className="mb-2">{showHostStatus}</div>}
           {offline && (
             <div className="flex items-center gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300 mb-2">
               <WifiOff size={14} />{tr("Sem conexão com o servidor ativo (PC ou aparelho). Você pode ler e escrever rascunhos; o envio precisa de um host disponível.")}<button className="ml-auto underline" onClick={resume}>{tr("Tentar de novo")}</button>
@@ -741,6 +749,7 @@ export default function ChatView({ hostStatus, chatId, openSettingsInitially, st
       <Composer ref={composerRef} chatId={chatId} busy={busy} offline={offline} onSend={send} />
       {drawer && chat && (
         <SettingsDrawer
+          hostStatus={hostStatus}
           chat={chat}
           presets={presets}
           busy={busy}

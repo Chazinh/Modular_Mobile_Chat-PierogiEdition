@@ -74,7 +74,7 @@ export function useReadingGesture(ref, enabled) {
 }
 // Opening the side menu: ONLY by dragging from the dot along the right edge (EDGE_PX strip, like the Samsung
 // Edge panel handle), inwards and more horizontally than vertically. The panel follows the finger.
-export function useDrawerGesture(onOpen, enabled = true) {
+export function useDrawerGesture(onOpen, enabled = true, { edgePx = EDGE_PX, edgeOnly = true } = {}) {
   const ref = useRef(null), callback = useRef(onOpen), allowed = useRef(enabled);
   callback.current = onOpen;
   allowed.current = enabled; // the listeners stay attached: opening the drawer must not cut the drag in progress
@@ -82,17 +82,24 @@ export function useDrawerGesture(onOpen, enabled = true) {
     const el = ref.current;
     if (!el) return;
     let g = null;
+    const threshold = edgePx || EDGE_PX;
     const down = e => {
-      g = allowed.current && e.pointerType === 'touch' && e.isPrimary && !isControl(e.target) && e.clientX >= window.innerWidth - EDGE_PX
-        ? { id: e.pointerId, x: e.clientX, y: e.clientY, live: false } : null;
+      const nearRight = e.clientX >= window.innerWidth - threshold;
+      const nearLeft = e.clientX <= threshold;
+      const ok = allowed.current && e.pointerType === 'touch' && e.isPrimary && !isControl(e.target) && (edgeOnly ? nearRight : true);
+      g = ok ? { id: e.pointerId, x: e.clientX, y: e.clientY, live: false, fromLeft: nearLeft } : null;
     };
     const move = e => {
       if (!g || e.pointerId !== g.id) return;
       if (!g.live) {
         const dx = e.clientX - g.x, dy = e.clientY - g.y;
         if (Math.hypot(dx, dy) < 8) return;
-        if (!(dx < 0 && -dx > Math.abs(dy) * 1.2)) { g = null; return; } // vertical or outwards: not a drawer gesture
-        if (-dx < 12) return;
+        const isLeftSwipe = dx < 0 && -dx > Math.abs(dy) * 1.2 && -dx >= 12;
+        const isRightSwipe = !edgeOnly && g.fromLeft && dx > 0 && dx > Math.abs(dy) * 1.2 && dx >= 12;
+        if (!isLeftSwipe && !isRightSwipe) {
+          if (Math.abs(dy) >= Math.abs(dx)) { g = null; return; }
+          return;
+        }
         g.live = true;
         try { el.setPointerCapture(g.id); } catch { /* no capture: carry on without it */ }
         resetPull();
@@ -117,7 +124,7 @@ export function useDrawerGesture(onOpen, enabled = true) {
       el.removeEventListener('pointerdown', down); el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
     };
-  }, []);
+  }, [edgePx, edgeOnly]);
   return { ref };
 }
 

@@ -9,6 +9,10 @@ import { plainText } from '../format.js';
 import { Sheet, SheetButton } from './Sheet.jsx';
 import AvatarViewerModal from './AvatarViewerModal.jsx';
 import RenameModal from './RenameModal.jsx';
+import HomeDrawer from './HomeDrawer.jsx';
+import { useDrawerGesture } from '../gestures.js';
+import { resetPull } from '../drawer-motion.js';
+import { useLayer } from '../nav.js';
 
 function preview(text) {
   const t = plainText(text || '').replace(/\s+/g, ' ');
@@ -17,19 +21,29 @@ function preview(text) {
 
 const PULL_TRIGGER = 96; // finger travel (px) that triggers the refresh when released
 
-export default function ChatList({ hostStatus, chats, offline, status, onRefresh, error, archivedView, switchingArchived, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, onGlobal }) {
+export default function ChatList({ hostStatus, chats, offline, status, onRefresh, error, archivedView, switchingArchived, query, onQuery, onToggleArchived, onOpen, onCreate, onChanged, fontSize, onFontSize, onResetServer }) {
   const confirm = useConfirm();
   useLanguage();
   const [sheet, setSheet] = useState(null);
   const [toast, setToast] = useState('');
   const [viewerAvatar, setViewerAvatar] = useState(null);
   const [renameChat, setRenameChat] = useState(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const scrollRef = useRef(null);
   const pullRef = useRef(null);
   const [spinning, setSpinning] = useState(false);
   const spinningRef = useRef(false);
   const refreshNow = useRef(onRefresh);
   refreshNow.current = onRefresh;
+
+  const openDrawer = () => { resetPull(); setDrawerOpen(true); };
+  useLayer(drawerOpen, () => setDrawerOpen(false));
+  const drawerGesture = useDrawerGesture(openDrawer, !drawerOpen && !sheet && !viewerAvatar && !renameChat, { edgePx: 48, edgeOnly: false });
+
+  async function handleCreate() {
+    if (!await confirm(tr("Deseja criar uma nova conversa?"))) return;
+    onCreate();
+  }
 
   // Pull to refresh. Touch listeners are passive (native scrolling and the elastic stretch stay intact); the
   // indicator is styled directly so the gesture never re-renders the list.
@@ -118,7 +132,7 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
   }
 
   return (
-    <div className="mc-list fixed inset-0 z-30 flex flex-col bg-bgDark">
+    <div {...drawerGesture} className="mc-list fixed inset-0 z-30 flex flex-col bg-bgDark">
       {/* Detached floating header with individual liquid-glass bubbles */}
       <header className="pointer-events-none fixed inset-x-0 top-0 z-30 px-3" style={{ paddingTop: 'calc(var(--sat) + 8px)' }}>
         <div className="mc-col flex items-center justify-between gap-2">
@@ -139,21 +153,21 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
               onClick={onToggleArchived}
               disabled={switchingArchived}
               aria-busy={switchingArchived}
-              className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+              className="mc-glass-pill mc-bubble pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg"
               aria-label={tr("Arquivadas")}
             >
               {archivedView ? <ArchiveRestore size={19} /> : <Archive size={19} />}
             </button>
             <button
-              onClick={onGlobal}
-              className="mc-glass-pill pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+              onClick={openDrawer}
+              className="mc-glass-pill mc-bubble pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg"
               aria-label={tr("Configurações")}
             >
               <Settings size={19} />
             </button>
             <button
-              onClick={onCreate}
-              className="mc-glass-pill mc-glass-accent pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg active:scale-90 transition-transform"
+              onClick={handleCreate}
+              className="mc-bubble mc-glass-accent pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg"
               aria-label={tr("Novo chat")}
             >
               <Plus size={20} />
@@ -161,7 +175,6 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
           </div>
         </div>
       </header>
-      {hostStatus && <div className="shrink-0" style={{ paddingTop: 'calc(var(--sat) + 64px)' }}>{hostStatus}</div>}
 
       <div
         ref={pullRef}
@@ -176,10 +189,11 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
         ref={scrollRef}
         className="flex-1 overflow-y-auto pb-6"
         style={{
-          paddingTop: hostStatus ? '8px' : 'calc(var(--sat) + 68px)',
+          paddingTop: 'calc(var(--sat) + 68px)',
         }}
       >
         <div className="mc-col">
+          {hostStatus && <div className="shrink-0 mb-3">{hostStatus}</div>}
           {offline && (
             <div className="px-4 pb-2">
               <div className="flex items-center gap-2 rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
@@ -191,7 +205,7 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
             <div className="px-8 pt-24 text-center text-textMuted">
               <p className="mb-4">{archivedView ? tr("Nada arquivado.") : tr("Nenhuma conversa ainda.")}</p>
               {!archivedView && (
-                <button onClick={onCreate} className="rounded-full bg-accentPurple px-6 py-3 font-semibold text-white">{tr("\n                  Criar primeiro chat\n                ")}</button>
+                <button onClick={handleCreate} className="mc-bubble mc-glass-accent pointer-events-auto rounded-full px-6 py-3 font-semibold text-white shadow-lg">{tr("\n                  Criar primeiro chat\n                ")}</button>
               )}
             </div>
           )}
@@ -250,6 +264,18 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
         <div className="pointer-events-none fixed inset-x-0 bottom-8 z-[60] flex justify-center">
           <span className="rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-black">{tr(toast)}</span>
         </div>
+      )}
+
+      {drawerOpen && (
+        <HomeDrawer
+          hostStatus={hostStatus}
+          fontSize={fontSize}
+          onFontSize={onFontSize}
+          onClose={() => setDrawerOpen(false)}
+          onCreate={onCreate}
+          onChanged={onChanged}
+          onResetServer={onResetServer}
+        />
       )}
     </div>
   );

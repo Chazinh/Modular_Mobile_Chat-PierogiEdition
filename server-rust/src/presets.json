@@ -87,7 +87,8 @@
       "ag/gemini-3.8-flash-high"
     ],
     "routeAliases": {
-      "ag/gemini-3.8-flash": "ag/gemini-3.8-flash-low"
+      "ag/gemini-3.8-flash": "ag/gemini-3.8-flash-low",
+      "gemini/gemini-3.8-flash": "ag/gemini-3.8-flash-low"
     },
     "efforts": [
       "low",

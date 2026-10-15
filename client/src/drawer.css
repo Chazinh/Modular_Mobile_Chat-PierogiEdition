@@ -4,11 +4,15 @@
   --mc-gap: 12px;
 }
 
-/* NATIVE scrolling in the chat: the horizontal gesture is left to the drawer (see gestures.js). */
+/* NATIVE scrolling in the chat and list: the horizontal gesture is left to the drawer (see gestures.js). */
 .mc-chat,
-.mc-chat .mc-scroll { touch-action: pan-y; }
+.mc-chat .mc-scroll,
+.mc-list,
+.mc-list .overflow-y-auto { touch-action: pan-y; }
 .mc-chat .mc-scroll button,
-.mc-chat .mc-scroll a { touch-action: manipulation; }
+.mc-chat .mc-scroll a,
+.mc-list button,
+.mc-list a { touch-action: manipulation; }
 
 /* ---- gaveta lateral ---- */
 .mc-drawer { position: fixed; inset: 0; z-index: 40; touch-action: pan-y; }

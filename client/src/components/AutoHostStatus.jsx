@@ -4,11 +4,12 @@ import { tr, useLanguage } from '../i18n.js';
 import { downloadProgress, startStatusPolling } from '../autohost-status.js';
 
 const phases = { pending: 'Aguardando download', downloading: 'Baixando', verifying: 'Verificando arquivo', ready: 'Arquivo disponível', error: 'Erro no download', cancelled: 'Download pausado' };
+const toMB = bytes => ((Number(bytes) || 0) / (1024 * 1024)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 function DownloadStatus({ model, title }) {
   const progress = downloadProgress(model);
   return <div>
     <div className="flex flex-wrap justify-between gap-x-2"><span>{title} · {tr(phases[progress.phase] || 'Status desconhecido')}</span>
-      <span className="tabular-nums">{progress.downloaded.toLocaleString()} / {progress.total.toLocaleString()} {tr('bytes')}{progress.percent != null && ` · ${progress.percent}%`}</span></div>
+      <span className="tabular-nums">{toMB(progress.downloaded)} / {toMB(progress.total)} MB{progress.percent != null && ` · ${progress.percent}%`}</span></div>
     <progress aria-label={title} value={progress.downloaded} max={progress.total || 1} className="mt-1 h-1 w-full accent-[#7c3aed]" />
     {progress.error && <p className="break-words text-red-300">{tr(progress.error)}</p>}
   </div>;
@@ -26,7 +27,7 @@ export default function AutoHostStatus() {
   useEffect(() => {
     if (!isNative() || !config.embeddedReady) return undefined;
     const watcher = startStatusPolling({ getStatus: options => api.localStatus(options),
-      enabled: () => isNative() && config.embeddedReady, document, window,
+      enabled: () => isNative() && config.embeddedReady && config.kind !== 'pc', document, window,
       onStatus: next => { setStatus(next); setKind(config.kind); setError(''); },
       onError: () => setError(tr('Não foi possível consultar o host Android.')),
       onConnection: (type, detail) => {
@@ -47,7 +48,7 @@ export default function AutoHostStatus() {
       if (!ac.signal.aborted) setError(tr('Não foi possível ativar os modelos. Os dados foram preservados.'));
     } finally { if (!ac.signal.aborted) setRetrying(false); }
   }
-  if (!isNative() || !config.embeddedReady) return null;
+  if (!isNative() || !config.embeddedReady || kind === 'pc' || config.kind === 'pc') return null;
   const busy = health?.code === 'BUSY', conflict = health?.code === 'CONFLICT';
   const syncLabel = health?.code === 'SYNCING' ? 'Sincronizando com o PC…' : busy ? 'BUSY · aguardando operação terminar' : conflict ? 'Conflito de sincronização · dados preservados' : null;
   const downloadError = ['chat', 'embed'].some(k => downloadProgress(status?.[k]).phase === 'error');

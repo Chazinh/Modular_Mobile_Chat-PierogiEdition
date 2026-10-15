@@ -24,21 +24,31 @@ let stage = 'privacy';
 try {
 await initAnimationCache();
 await initializePrivacy(config.server);
-stage = 'local-host';
-await localHost.ensureStarted();
-stage = 'cache';
-await kv.migratePrivacy();
-await syncNativeLanguage();
-root.render(
-  <React.StrictMode>
-    <ConfirmProvider><App /></ConfirmProvider>
-  </React.StrictMode>,
-);
-} catch(error) {
-  const message = stage === 'local-host'
-    ? 'O host Android não iniciou. Os dados foram preservados. '
-    : 'Não foi possível abrir o armazenamento protegido. Preserve os dados e tente novamente. ';
-  root.render(<div className="flex h-full items-center justify-center bg-bgDark p-6 text-center"><p>{tr(message)}{error.code ? `${error.code}: ` : ''}{error.message}</p></div>);
-}
+    stage = 'cache';
+    await kv.migratePrivacy();
+    await syncNativeLanguage();
+    if (localHost.supported()) {
+      try {
+        await Promise.race([
+          localHost.ensureStarted(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
+        ]);
+      } catch (error) {
+        console.warn('[boot] Host local não iniciado na inicialização:', error);
+      }
+    }
+    root.render(
+      <React.StrictMode>
+        <ConfirmProvider><App /></ConfirmProvider>
+      </React.StrictMode>,
+    );
+  } catch (error) {
+    const message = 'Não foi possível abrir o armazenamento protegido. Preserve os dados e tente novamente. ';
+    root.render(
+      <div className="flex h-full items-center justify-center bg-bgDark p-6 text-center">
+        <p>{tr(message)}{error.code ? `${error.code}: ` : ''}{error.message}</p>
+      </div>
+    );
+  }
 }
 boot();

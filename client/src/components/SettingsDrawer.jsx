@@ -2,7 +2,7 @@ import { useConfirm } from './ConfirmProvider.jsx';
 import { tr, useLanguage, currentLanguage } from '../i18n.js';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronRight, ChevronLeft, Trash2, MessageSquarePlus, Upload, Check, Users, Camera, Copy, Cpu, UserRound, Pencil, FileText, Layers, SlidersHorizontal, History } from 'lucide-react';
-import { api } from '../api.js';
+import { api, config } from '../api.js';
 import { useLayer } from '../nav.js';
 import { Avatar, fileToAvatar } from '../ui.jsx';
 import { VerdictDot } from './ChatView.jsx';
@@ -36,12 +36,12 @@ function stairItems(children, prefix = '') {
   });
   return out;
 }
-function StairList({ className = '', children }) {
+export function StairList({ className = '', children }) {
   return <div className={`mc-elastic-wrapper ${className}`}>{stairItems(children)}</div>;
 }
 
 // Side drawer with the conversation settings.
-export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, onHistoryCleared, onOpenCast, onCreate, onDeleted }) {
+export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClose, onSaved, onHistoryCleared, onOpenCast, onCreate, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
   const [page, setPage] = useState(null); // null | model | name | persona | prompt | history | context | style
@@ -115,6 +115,12 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
     }
   }
 
+  async function handleCreate() {
+    if (!await confirm(tr("Deseja criar uma nova conversa?"))) return;
+    onClose();
+    onCreate();
+  }
+
   async function deleteChat() {
     if (!await confirm(tr("Excluir \"{0}\"? Ela fica na lixeira por 30 dias.", [chat.name]))) return;
     try {
@@ -182,8 +188,9 @@ export default function SettingsDrawer({ chat, presets, busy, onClose, onSaved, 
                   <SamplingInfo preset={preset} chat={chat} temp={temp} thinkingOn={thinkingOn} onTemp={changeTemp} />
                 </AutoBubble>
                 {error && <p className="mx-4 mt-3 text-sm text-red-400">{tr(error)}</p>}
-                <button onClick={onCreate} className="mc-new-chat-button mc-bubble mc-glass-accent mx-[10px] mt-1 flex items-center justify-center gap-2 overflow-hidden rounded-full py-[18px] font-semibold">
-                  <MessageSquarePlus size={20} />{tr(" Novo Chat\n              ")}</button>
+                <button onClick={handleCreate} className="mc-new-chat-button mc-bubble mc-glass-accent mx-[10px] mt-1 flex items-center justify-center gap-2 overflow-hidden rounded-full py-[18px] font-semibold">
+                  <MessageSquarePlus size={20} />{tr(" Novo Chat")}</button>
+                {hostStatus && <div className="my-2">{hostStatus}</div>}
               </StairList>
             </div>
           </>
@@ -284,7 +291,10 @@ const thinkingText = (p) => p.thinkingCanDisable ? 'pensamento: você pode ligar
 
 function ModelPage({ chat, presets, error, onBack, onPick }) {
   useLanguage();
-  const list = (presets?.presets || []).filter(p => p.selectable !== false && p.id !== 'generic');
+  const isPc = config.kind === 'pc';
+  const list = (presets?.presets || [])
+    .filter(p => p.selectable !== false && p.id !== 'generic')
+    .filter(p => !isPc || (p.id !== 'mobile-local' && p.id !== 'mobile-api'));
   const savedThinking = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
   const [sel, setSel] = useState({ presetId: chat.presetId, routeId: chat.routeId, effort: chat.effort, thinkingEnabled: savedThinking });
   const cur = list.find((p) => p.id === sel.presetId);
@@ -379,7 +389,7 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
 }
 
 // Glass bubble with the icon in a glass drop; label on top and the current value below (no line wrap).
-function Row({ lead, label, value, onClick }) {
+export function Row({ lead, label, value, onClick }) {
   useLanguage();
   return (
     <button onClick={onClick} className="mc-row">
@@ -393,7 +403,7 @@ function Row({ lead, label, value, onClick }) {
   );
 }
 
-function Switch({ on }) {
+export function Switch({ on }) {
   useLanguage();
   return (
     <span className={`mc-switch ${on ? 'mc-switch-on' : ''}`} aria-hidden="true">
@@ -475,7 +485,7 @@ function GlassAvatar({ name, avatar }) {
   return <span className="mc-tile mc-tile-lg text-[22px] font-semibold">{initial}</span>;
 }
 
-function SubPage({ title, onBack, children, action, footer }) {
+export function SubPage({ title, onBack, children, action, footer }) {
   useLanguage();
   return (
     <div className="flex h-full min-h-0 flex-col">

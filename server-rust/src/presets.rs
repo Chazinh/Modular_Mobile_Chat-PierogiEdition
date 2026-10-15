@@ -99,6 +99,7 @@ pub fn effort_for(preset: &Value, route: &str, requested: &Value) -> Value {
     }
 }
 pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
+    let only_mobile_local = ids.len() == 1 && ids[0] == "mobile-local";
     PRESETS
         .iter()
         .filter(|p| p["id"] != "generic")
@@ -120,6 +121,13 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                 for u in p["unlistedRoutes"].as_array().into_iter().flatten() {
                     if let Some(u) = u.as_str().filter(|u| !route_ids.iter().any(|r| r == u)) {
                         route_ids.push(u.to_string());
+                    }
+                }
+                if only_mobile_local && route_ids.is_empty() {
+                    for pr in p["preferredRoutes"].as_array().into_iter().flatten() {
+                        if let Some(pr) = pr.as_str().filter(|r| !route_ids.iter().any(|x| x == r)) {
+                            route_ids.push(pr.to_string());
+                        }
                     }
                 }
             }

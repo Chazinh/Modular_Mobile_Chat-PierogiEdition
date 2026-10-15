@@ -62,13 +62,14 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
   const kind = () => active?.kind || (local() ? 'local' : native() ? 'pc' : 'browser');
   const hasLocal = () => !!local();
   function hasServer() {
+    if (mode === 'auto' && native() && (embedded?.supported?.() || local())) return true;
     if (local()) return true;
     const saved = configured();
     try { return !!(normalizeServer(saved.local, native()) || normalizeServer(saved.remote)); } catch { return false; }
   }
-  async function available(server, key, signal) {
+  async function available(server, key, signal, timeoutMs) {
     const timeout = new AbortController();
-    const deadline = local() ? 400 : 2500;
+    const deadline = timeoutMs || (local() ? 400 : 2500);
     const timer = timers.setTimeout(() => timeout.abort(), deadline);
     try {
       const response = await probe(`${server}/api/health`, {
@@ -99,6 +100,16 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     if (!native()) return captured({ server: current() ? normalizeServer(current(), mode === 'auto') : '', kind: 'browser' });
     if (pending?.epoch === epoch) return waitFor(pending.promise, signal);
     if (!fresh && active && now() < validUntil) return captured(active);
+    if (mode === 'auto' && embedded?.ensureStarted && !embedded?.target()) {
+      try {
+        await Promise.race([
+          embedded.ensureStarted(),
+          new Promise((_, reject) => timers.setTimeout(() => reject(new Error('timeout')), 5000)),
+        ]);
+      } catch (e) {
+        // Fall back to configured PC or status event if localHost could not start in 5s
+      }
+    }
     const saved = configured();
     const host = local();
     let lan = '', remote = '';
@@ -187,7 +198,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     if (write && (origin || pc !== undefined) && target.kind === 'pc') {
       try {
         const control = new AbortController();
-        if (!await available(target.server, target.token, signal || control.signal)) throw error('ORIGIN_UNAVAILABLE', 'Sem conexão com o PC de origem. O envio não foi repetido.');
+        if (!await available(target.server, target.token, signal || control.signal, 3000)) throw error('ORIGIN_UNAVAILABLE', 'Sem conexão com o PC de origem. O envio não foi repetido.');
         if (capturedEpochs.get(target) !== epoch) throw error('STALE_CONNECTION', 'A conexão mudou. Tente novamente.');
       } catch (failure) { leases.delete(id); throw failure; }
     }

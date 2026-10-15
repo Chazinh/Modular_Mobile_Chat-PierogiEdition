@@ -28,7 +28,7 @@ function soapElements(origin) {
 function expandChatBox(update, rect, source, token) {
   const width = window.innerWidth, height = window.innerHeight;
   const r = rect || { left: width / 2 - 34, top: 48, width: 68, height: 44 };
-  const radius = source ? parseFloat(getComputedStyle(source).borderTopLeftRadius) || 26 : 26;
+  const radius = source?.radius ?? (source ? parseFloat(getComputedStyle(source).borderTopLeftRadius) || 26 : 26);
   flushSync(update);
   const page = document.querySelector('.mc-chat');
   if (!page) return;

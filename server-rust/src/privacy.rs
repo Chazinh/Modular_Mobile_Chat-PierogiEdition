@@ -368,13 +368,31 @@ fn atomic_write(file: &Path, bytes: &[u8], replace: bool) -> Result<()> {
         if replace {
             rename_with_retry(&tmp, file)?;
         } else {
-            // A same-directory hard link publishes the completely flushed key without replacing
-            // an existing key, including a dangling symlink. Never truncate/regenerate key material.
-            fs::hard_link(&tmp, file)?;
-            fs::remove_file(&tmp)?;
+            #[cfg(target_os = "android")]
+            {
+                // Android untrusted_app SELinux blocks linkat (hard link) with EACCES (os error 13).
+                // Within the UID-isolated sandbox protected by the vault lock, atomic rename safely publishes.
+                if file.exists() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Arquivo de destino já existe.").into());
+                }
+                rename_with_retry(&tmp, file)?;
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                // A same-directory hard link publishes the completely flushed key without replacing
+                // an existing key, including a dangling symlink. Never truncate/regenerate key material.
+                fs::hard_link(&tmp, file)?;
+                fs::remove_file(&tmp)?;
+            }
         }
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "android")))]
         fs::File::open(parent)?.sync_all()?;
+        #[cfg(target_os = "android")]
+        {
+            if let Ok(dir_file) = fs::File::open(parent) {
+                let _ = dir_file.sync_all();
+            }
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -474,11 +492,33 @@ fn active(pid: u32) -> bool {
         success == 0 || code == 259
     }
 }
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(target_os = "linux", not(target_os = "android")))]
 fn active(pid: u32) -> bool {
-    // /proc is present on Linux/Android; inaccessible metadata is conservatively treated as live.
+    // /proc is present on Linux; inaccessible metadata is conservatively treated as live.
     fs::metadata(format!("/proc/{pid}"))
         .map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true)
+}
+#[cfg(target_os = "android")]
+fn active(pid: u32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    let Ok(pid) = std::ffi::c_int::try_from(pid) else {
+        return true;
+    };
+    // On Android, untrusted_app SELinux blocks /proc/<pid> inspection with EACCES.
+    // Within the app sandbox, all processes share the app's Linux UID.
+    // POSIX kill(pid, 0) == 0 means a process with our UID exists.
+    // ESRCH (3) means no such process exists (it was killed/crashed).
+    // EPERM (1) means the PID was recycled by the OS for another UID (not this app).
+    unsafe {
+        if kill(pid, 0) == 0 {
+            true
+        } else {
+            let err = std::io::Error::last_os_error().raw_os_error();
+            err != Some(3) && err != Some(1)
+        }
+    }
 }
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 fn active(pid: u32) -> bool {

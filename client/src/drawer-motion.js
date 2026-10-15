@@ -3,7 +3,7 @@
 // Only transform and opacity, written straight to the DOM (no React state per frame), so the
 // compositor keeps the device refresh rate (90/120 Hz).
 
-export const EDGE_PX = 20; // activation strip along the right edge (width of the Samsung Edge panel handle)
+export const EDGE_PX = 36; // activation strip along the right edge (width of the Samsung Edge panel handle)
 
 export const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 

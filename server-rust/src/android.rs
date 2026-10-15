@@ -120,6 +120,24 @@ struct Run {
     stop: Option<oneshot::Sender<()>>,
     thread: JoinHandle<()>,
 }
+#[cfg(target_os = "android")]
+pub(crate) fn log_android(prio: i32, msg: &str) {
+    unsafe extern "C" {
+        fn __android_log_write(
+            prio: std::ffi::c_int,
+            tag: *const std::ffi::c_char,
+            text: *const std::ffi::c_char,
+        ) -> std::ffi::c_int;
+    }
+    if let Ok(c_msg) = std::ffi::CString::new(msg) {
+        unsafe {
+            __android_log_write(prio, b"modularchat\0".as_ptr().cast(), c_msg.as_ptr());
+        }
+    }
+}
+#[cfg(not(target_os = "android"))]
+pub(crate) fn log_android(_prio: i32, _msg: &str) {}
+
 struct Host {
     state: AtomicI32,
     error: AtomicI32,
@@ -178,11 +196,24 @@ impl Host {
             .name("mc-android-host".into())
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| host.run_thread(options, stop_rx)));
-                let error = match result {
-                    Ok(Ok(())) => 0,
-                    Ok(Err(e)) => i32::from(e.status),
-                    Err(_) => 500,
+                let (error, msg) = match result {
+                    Ok(Ok(())) => (0, "run_thread finished successfully".to_string()),
+                    Ok(Err(e)) => {
+                        let text = format!("run_thread failed: status={}, message={}", e.status, e.message);
+                        (i32::from(e.status), text)
+                    }
+                    Err(p) => {
+                        let text = if let Some(s) = p.downcast_ref::<&str>() {
+                            format!("run_thread panicked: {s}")
+                        } else if let Some(s) = p.downcast_ref::<String>() {
+                            format!("run_thread panicked: {s}")
+                        } else {
+                            "run_thread panicked with unknown payload".to_string()
+                        };
+                        (500, text)
+                    }
                 };
+                log_android(if error == 0 { 4 } else { 6 }, &msg);
                 host.error.store(error, Ordering::Release);
                 host.state
                     .store(if error == 0 { STOPPED } else { FAILED }, Ordering::Release);
@@ -196,6 +227,7 @@ impl Host {
                 0
             }
             Err(_) => {
+                log_android(6, "Failed to spawn mc-android-host thread");
                 self.error.store(500, Ordering::Release);
                 self.state.store(FAILED, Ordering::Release);
                 SPAWN_FAILED
@@ -216,7 +248,9 @@ impl Host {
         }
     }
     fn run_thread(&self, options: StartOptions, stop: oneshot::Receiver<()>) -> Result<()> {
+        log_android(4, "run_thread: entering");
         let config = Config::for_android(&options.data_dir, &options.native_lib_dir)?;
+        log_android(4, "run_thread: Config::for_android ok");
         #[cfg(test)]
         let config = Config {
             address: options.address,
@@ -226,7 +260,9 @@ impl Host {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
+        log_android(4, "run_thread: tokio runtime built, entering block_on serve");
         let result = runtime.block_on(self.serve(config, options.local_token, stop));
+        log_android(4, "run_thread: serve returned");
         runtime.shutdown_timeout(Duration::from_secs(5));
         result
     }
@@ -236,12 +272,16 @@ impl Host {
         local_token: Zeroizing<String>,
         mut stop: oneshot::Receiver<()>,
     ) -> Result<()> {
+        log_android(4, &format!("serve: binding to {}", config.address));
         // Bind first: a port conflict must not initialize or modify a vault.
         let listener = tokio::net::TcpListener::bind(config.address).await?;
+        log_android(4, "serve: listener bound successfully");
         #[cfg(test)]
         self.port
             .store(listener.local_addr()?.port(), Ordering::Release);
+        log_android(4, "serve: creating AppState");
         let app = AppState::new(config).await?;
+        log_android(4, "serve: AppState created successfully");
         let served = AssertUnwindSafe(async {
             app.auth.register_android_host(&local_token).await?;
             drop(local_token);
