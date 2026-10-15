@@ -5,7 +5,16 @@ implemented features.
 
 ## Released
 
-### Android host isolation in PC mode, connection timeouts, English i18n overhaul, and showcase sheet — 2026-10-15
+### ModularChat 2.0: Android Keystore vault, adaptive context reduction, direct JNI, and FLAG_SECURE — 2026-10-15
+
+- **Android Keystore Hardware Vault (`NativeVaultKey.java`)**: Integrated Android Keystore-backed AES-256-GCM envelope encryption (`MCKEYKS1`). The SQLite database key is protected directly inside hardware/TEE-backed Keystore storage with authenticated associated data. Implemented automatic transparent migration from legacy software envelopes (`MCKEY001`) with cryptographic round-trip verification, atomic replacement, and strict tampering rejection.
+- **Adaptive Context History & Prompt Optimization**: Dynamically compresses conversation context from 10 down to 8 or 6 turn pairs under token budget pressure when preceding turns are covered by non-empty episodic summaries (~59.6% token reduction in benchmarks). Streamlined prompt assembly with unified textual provenance, clean narrative scene/time presentation, and isolated style repair prompts that avoid re-transmitting full conversation histories.
+- **Direct Rust JNI Export & CMake Bridge Elimination**: Replaced the legacy intermediate C bridge (`native_host_bridge.c`, `mc_android_host.h`, and CMake build files) with direct JNI bindings via the `jni` crate (`server-rust/src/android_jni.rs`). `NativeHost.java` directly binds and executes `libmodularchat_server.so` with 16 KiB page alignment verification.
+- **Android Security Hardening & Safe UUID Generation**: Restored mandatory `FLAG_SECURE` window protection prior to view construction on release builds. Restricted WebView debugging strictly to `FLAG_DEBUGGABLE` packages. Replaced UUID fallback generation in `client/src/api.js` with cryptographically secure `crypto.getRandomValues` (RFC 4122 v4 compliant), failing safely if secure random generation is unavailable.
+- **Prompt Caching Support**: Added explicit cache breakpoint markers for `openrouter.ai` endpoints on the primary system prompt without disrupting compatible 9Router or third-party provider contracts.
+- **PC Connection Loss Recovery & Local Fallback Modal**: Introduced `ConnectionLossModal.jsx` along with `mc:pc-connection-lost` event handling in `server-connection.js` and `App.jsx`, enabling graceful background retry or instant one-tap switching to local AutoHost when a paired PC server disconnects.
+
+
 
 - **Mobile-to-PC Pairing & Network Connection Resiliency**: Parameterized probe deadlines in `client/src/server-connection.js` (`available(server, key, signal, timeoutMs)`), enforcing a 3,000ms minimum timeout on explicit PC targets to accommodate TLS 1.3 key exchange and handshake overhead over local Wi-Fi without false-positive `ORIGIN_UNAVAILABLE` aborts.
 - **Android Host Card Suppression in PC Mode**: Automatically suppress the Android AutoHost status card (`AutoHostStatus.jsx`) and pause background status polling whenever connected to a PC server (`config.kind === 'pc'`), eliminating unnecessary polling overhead and UI clutter.

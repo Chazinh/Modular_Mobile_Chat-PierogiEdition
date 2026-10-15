@@ -156,7 +156,6 @@ try {
         JAVA_HOME = $jdk.FullName; Path = "$($jdk.FullName)\bin;$env:Path"
         GRADLE_USER_HOME = (Join-Path $Local 'gradle-home'); TEMP = $tmp; TMP = $tmp
         ANDROID_HOME = $sdk; ANDROID_SDK_ROOT = $sdk
-        MC_ANDROID_NATIVE_BUILD_DIR = (Join-Path $Local 'build-isolated\android-autohost\cmake-release')
         MC_KEYSTORE_PROPS = $SigningProperties; MC_ANDROID_PRIVATE_PROPS = $PrivateBuildProperties
     }
     foreach ($key in $overrides.Keys) {
@@ -174,11 +173,10 @@ try {
     }
     $installedCertificate = Get-InstalledCertificate 'installed-before'
     $sourcePaths = @('client/android/app/build.gradle', 'client/android/app/src/main/AndroidManifest.xml',
-        'client/android/app/src/main/cpp/CMakeLists.txt', 'client/android/app/src/main/cpp/native_host_bridge.c',
-        'client/android/app/src/main/cpp/mc_android_host.h', 'server-rust/src/local.rs',
+        'server-rust/src/android_jni.rs', 'server-rust/src/privacy.rs', 'server-rust/src/local.rs',
         'scripts/build-android-autohost.ps1', 'scripts/build-android-llama.ps1',
         'client/android/app/src/main/res/values/mc_perf.xml')
-    foreach ($name in @('MainActivity', 'LocalHostPlugin', 'LocalHostService', 'NativeHost', 'NativeHostToken')) {
+    foreach ($name in @('MainActivity', 'LocalHostPlugin', 'LocalHostService', 'NativeHost', 'NativeHostToken', 'NativeVaultKey')) {
         $sourcePaths += "client/android/app/src/main/java/io/github/modularchat/pierogiedition/$name.java"
     }
     $sourceHashes = @($sourcePaths | ForEach-Object {
@@ -187,8 +185,13 @@ try {
         [ordered]@{ path = $path; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
     })
     $activity = Get-Content -LiteralPath (Join-Path $android 'app/src/main/java/io/github/modularchat/pierogiedition/MainActivity.java') -Raw
-    if ($activity -notmatch 'FLAG_SECURE' -or $activity -notmatch 'new BiometricPrompt' -or
-        $activity -notmatch 'registerPlugin\(LocalHostPlugin.class\)') { throw 'Release security/plugin integration missing.' }
+    if ($activity -notmatch '(?m)^\s*if \(!perf\) getWindow\(\)\.addFlags\(WindowManager.LayoutParams.FLAG_SECURE\);' -or
+        $activity -notmatch 'getBoolean\(R.bool.mc_perf\) && getPackageName\(\).endsWith\("\.perf"\)' -or
+        $activity -match '(?m)^\s*perf\s*=\s*true\s*;' -or
+        $activity -match 'setWebContentsDebuggingEnabled\(true\)' -or
+        $activity -notmatch 'ApplicationInfo.FLAG_DEBUGGABLE' -or
+        $activity -notmatch 'new BiometricPrompt' -or
+        $activity -notmatch 'registerPlugin\(LocalHostPlugin.class\)') { throw 'Release security/plugin integration missing or bypassed.' }
     $shell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     [void](Invoke-ReleaseTool $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         (Join-Path $PSScriptRoot 'build-android-autohost.ps1'), '-Local', $Local) 'rust-arm64' -TimeoutSeconds 900)
@@ -228,9 +231,9 @@ try {
     $defined = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $webFiles = 0
     try {
-        $nativeNames = @('libmodularchat_server.so', 'libmc_android_bridge.so', 'libllama_server.so')
+        $nativeNames = @('libmodularchat_server.so', 'libllama_server.so')
         $nativeEntries = @($zip.Entries | Where-Object { $_.FullName -match '^lib/.+/.+\.so$' })
-        if ($nativeEntries.Count -ne 3) { throw 'Expected exactly the three real ARM64 native artifacts.' }
+        if ($nativeEntries.Count -ne 2) { throw 'Expected exactly the Rust/JNI runtime and the real llama ARM64 executable.' }
         foreach ($name in $nativeNames) {
             $entries = @($nativeEntries | Where-Object { $_.FullName -eq "lib/arm64-v8a/$name" })
             if ($entries.Count -ne 1) { throw "ARM64 artifact missing or duplicated: $name" }
@@ -260,8 +263,6 @@ try {
                 foreach ($symbol in @('mc_android_start', 'mc_android_stop', 'mc_android_status', 'mc_android_last_error')) {
                     if ($elf -notmatch "\b$symbol\b") { throw "Rust C export missing: $symbol" }
                 }
-            } elseif ($name -eq 'libmc_android_bridge.so') {
-                if ($needed -notcontains 'libmodularchat_server.so') { throw 'JNI does not link the Rust host.' }
                 foreach ($symbol in @('nativeStart', 'nativeStop', 'nativeStatus', 'nativeLastError')) {
                     if ($elf -notmatch "\bJava_io_github_modularchat_pierogiedition_NativeHost_$symbol\b") { throw "JNI export missing: $symbol" }
                 }
@@ -285,7 +286,7 @@ try {
             try { $stream.CopyTo($memory); foreach ($definition in (Get-DexDefinitions $memory.ToArray())) { [void]$defined.Add($definition) } }
             finally { $stream.Dispose(); $memory.Dispose() }
         }
-        $classes = @('MainActivity', 'LocalHostPlugin', 'LocalHostService', 'NativeHost', 'NativeHostToken')
+        $classes = @('MainActivity', 'LocalHostPlugin', 'LocalHostService', 'NativeHost', 'NativeHostToken', 'NativeVaultKey')
         foreach ($name in $classes) {
             if (-not $defined.Contains("Lio/github/modularchat/pierogiedition/$name;")) { throw "Actual DEX class definition missing: $name" }
         }

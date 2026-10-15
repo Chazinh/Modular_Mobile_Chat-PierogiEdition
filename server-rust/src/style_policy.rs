@@ -153,7 +153,8 @@ pub fn assess_settings(text: &str, limit: usize, pct: f64, settings: &Value) -> 
         let stretch = (limit * rules::TARGET_STRETCH_PCT).div_ceil(100);
         let chars = rules::utf16_len(text);
         a["maxCharacters"] = json!(stretch);
-        a["sizeOk"] = json!(chars >= a["minCharacters"].as_u64().unwrap_or(0) as usize && chars <= stretch);
+        a["sizeOk"] =
+            json!(chars >= a["minCharacters"].as_u64().unwrap_or(0) as usize && chars <= stretch);
     }
     let monologue_limit = settings["monologueChars"].as_u64().unwrap_or(300) as usize;
     let longest = longest_monologue(text);
@@ -228,6 +229,26 @@ pub fn instruction_settings(before: &Value, pct: f64, settings: &Value) -> Strin
         turn_instruction(settings),
         before["longestMonologueCharacters"]
     )
+}
+
+/// Editing uses the stable rules, current scene and immediate exchange. The
+/// supplied draft is the source of truth; this call must not advance the story.
+pub fn repair_body(body: &Value, visible: &str, instruction: &str) -> Value {
+    let mut repair = body.clone();
+    repair["stream"] = json!(false);
+    repair.as_object_mut().unwrap().remove("stream_options");
+    let original = body["messages"].as_array().unwrap();
+    let prefix = if original.first().is_some_and(|m| m["role"] == "system") {
+        1
+    } else {
+        2.min(original.len())
+    };
+    let mut messages = original[..prefix].to_vec();
+    messages.extend_from_slice(&original[prefix.max(original.len().saturating_sub(3))..]);
+    messages.push(json!({"role":"assistant","content":visible}));
+    messages.push(json!({"role":"user","content":format!("{instruction}\nEsta é uma edição do rascunho acima, não uma continuação: conserve os fatos e os interlocutores escritos nele; não acrescente acontecimentos, decisões, falas ou conhecimento.")}));
+    repair["messages"] = json!(messages);
+    repair
 }
 
 pub fn score(a: &Value, limit: usize, pct: f64) -> f64 {

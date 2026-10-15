@@ -96,7 +96,7 @@ fn native_context_first_turn_rules_and_no_future_note() {
 }
 
 #[test]
-fn native_context_order_reading_and_anchor_match_the_node_assembly() {
+fn native_context_attribution_appears_once_before_the_current_message() {
     let fx: Value =
         serde_json::from_str(include_str!("../../tests/fixtures/quote-attribution.json")).unwrap();
     let (previous, current) = (
@@ -115,14 +115,12 @@ fn native_context_order_reading_and_anchor_match_the_node_assembly() {
     );
     let c = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
     let last = c.messages.last().unwrap()["content"].as_str().unwrap();
-    // context/provenance BEFORE the current message; quote reading and reminder AFTER it
+    // Plain-language provenance precedes the current message; only a short anchor follows it.
     let at = |k: &str| last.find(k).unwrap_or_else(|| panic!("faltou: {k}"));
     let pos = [
         at("[CONTEXTO ATUAL DA HISTÓRIA"),
         at("[PROVENIÊNCIA DE CITAÇÕES RECENTES"),
-        at("[PLANO DA RESPOSTA"),
         at(&current[..30]),
-        at("[LEITURA DA MENSAGEM ACIMA"),
         at("[Lembrete"),
     ];
     assert!(pos.windows(2).all(|w| w[0] < w[1]), "{pos:?}");
@@ -132,6 +130,12 @@ fn native_context_order_reading_and_anchor_match_the_node_assembly() {
     )));
     assert!(last.contains("comece DEPOIS dela, sem reescrevê-la"));
     assert!(!last.contains("Alex chamou"));
+    assert!(!last.contains("[PLANO DA RESPOSTA") && !last.contains("[LEITURA DA MENSAGEM ACIMA"));
+    assert!(
+        !last.contains("v-original")
+            && !last.contains("sourceRole")
+            && !last.contains("originalEvidence")
+    );
     // no matching quotes: no reading is asserted
     d["current"]["userText"] = json!("Sento na cadeira e espero.");
     let c = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
@@ -199,6 +203,117 @@ fn knowledge_lines_group_memories_by_state_once_per_character() {
     assert!(last.contains("\nAlex: sabe [M2]; NÃO sabe e não pode agir sobre [M1], [M3]\n"));
     // the scene stays in the prompt, without the interaction ID or the normalized key (which repeats the name)
     assert!(last.contains("[CENA ANTERIOR"));
-    assert!(last.contains("\"location\":\"sala\""));
+    assert!(last.contains("Local: sala"));
     assert!(!last.contains("scene-uuid-1") && !last.contains("\"key\""));
+}
+
+#[test]
+fn episode_coverage_reduces_history_without_dropping_pending_or_summaries() {
+    let mut d = data();
+    for pair in d["pairs"].as_array_mut().unwrap() {
+        pair["assistant"] = json!("Lia: Uma lembrança detalhada. ".repeat(180));
+    }
+    d["episodes"] = json!([{"id":"episode-local-id","fromSeq":51,"toSeq":90,"summary":"Resumo completo que deve permanecer. ".repeat(80),"interactionIds":(51..=90).map(|seq|format!("i{seq}")).collect::<Vec<_>>()}]);
+    let p = presets::request(
+        &json!({"presetId":"claude-sonnet-5-5","routeId":"cc/claude-sonnet-5-5"}),
+        vec![],
+        &json!({}),
+    );
+    d["conv"]["settings"]["context"]["adaptiveHistory"] = json!(false);
+    let full = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
+    d["conv"]["settings"]["context"]["adaptiveHistory"] = json!(true);
+    let compact = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
+    assert_eq!(compact.report["pairsIncluded"], 10);
+    assert_eq!(context::retrieval_window_start(&d), 91);
+    assert_eq!(
+        compact.messages[0], full.messages[0],
+        "stable rules do not change"
+    );
+    assert!(
+        compact
+            .messages
+            .iter()
+            .any(|m| m["content"] == d["unprocessed"][0]["assistant"])
+    );
+    assert!(
+        compact.messages.last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains(d["episodes"][0]["summary"].as_str().unwrap())
+    );
+    assert!(compact.raw_estimate < full.raw_estimate / 2);
+    println!(
+        "history fixture: full={} tokens, summarized={} tokens (estimates)",
+        full.raw_estimate, compact.raw_estimate
+    );
+    // A single coverage hole, stale endpoint or empty summary disables the lower floor.
+    for invalid in ["hole", "future", "empty", "pending"] {
+        let mut bad = d.clone();
+        match invalid {
+            "hole" => {
+                bad["episodes"][0]["interactionIds"]
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(20);
+            }
+            "future" => bad["episodes"][0]["toSeq"] = json!(101),
+            "empty" => bad["episodes"][0]["summary"] = json!(" "),
+            _ => bad["unprocessed"] = json!([bad["pairs"][0]]),
+        }
+        let built = context::assemble(&bad, &json!({}), "send", &p, None).unwrap();
+        assert!(
+            built.report["pairsIncluded"].as_u64().unwrap() >= 20,
+            "{invalid}"
+        );
+        assert_eq!(context::retrieval_window_start(&bad), 71);
+    }
+    // If summaries no longer fit, fail closed instead of cutting the sole historical record.
+    d["conv"]["settings"]["context"]["hardLimit"] = json!(3000);
+    assert_eq!(
+        context::assemble(&d, &json!({}), "send", &p, None)
+            .err()
+            .unwrap()
+            .status,
+        422
+    );
+}
+
+#[test]
+fn prompt_views_keep_narrative_facts_but_exclude_diagnostics_and_ids() {
+    let mut d = data();
+    d["scene"] = json!({"interactionId":"secret-scene-id","seq":100,"location":"torre","time":"noite","mood":"tensão","present":["Lia"],"objects":["carta"],"characters":[{"key":"lia","name":"Lia","location":"janela","position":"sentada","holding":["chave"]}]});
+    d["timeline"]["current"] = json!({"days":8,"months":2,"date":"2026-10-15","anchors":[{"sourceId":"secret-source-id","start":1234,"evidence":"há dois meses","elapsedDays":8,"elapsedMonths":4}]});
+    d["usage"] = json!({"error":"SECRET_DIAGNOSTIC","provider":"SECRET_PROVIDER"});
+    let p = presets::request(
+        &json!({"presetId":"claude-sonnet-5-5","routeId":"cc/claude-sonnet-5-5"}),
+        vec![],
+        &json!({}),
+    );
+    let built = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
+    let prompt = serde_json::to_string(&built.messages).unwrap();
+    for kept in [
+        "torre",
+        "noite",
+        "tensão",
+        "carta",
+        "janela",
+        "sentada",
+        "chave",
+        "há dois meses",
+        "2026-10-15",
+        "8 dias e 4 meses",
+    ] {
+        assert!(prompt.contains(kept), "{kept}");
+    }
+    for removed in [
+        "secret-scene-id",
+        "secret-source-id",
+        "1234",
+        "SECRET_DIAGNOSTIC",
+        "SECRET_PROVIDER",
+        "PLANO DA RESPOSTA",
+        "sourceId",
+    ] {
+        assert!(!prompt.contains(removed), "{removed}");
+    }
 }

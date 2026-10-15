@@ -1,4 +1,4 @@
-//! Embedded loopback host, C ABI v1 (thin JNI/Java bridge lives in client/android).
+//! Embedded loopback host, C ABI v1 and direct Rust JNI exports.
 //!
 //! C declarations (all results are fixed-width signed 32-bit integers):
 //! ```c
@@ -52,6 +52,10 @@ use std::{
 };
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
+
+#[cfg(target_os = "android")]
+#[path = "android_jni.rs"]
+pub(crate) mod jni;
 
 pub const STOPPED: i32 = 0;
 pub const INITIALIZING: i32 = 1;
@@ -553,12 +557,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(devices["devices"].as_array().unwrap().len(), 1);
-        assert_eq!(devices["devices"][0]["name"], "Android local");
+        host.stop();
+        wait(&host, STOPPED).await;
+        let db = crate::privacy::read_snapshot(&dir.path().join("modularchat.db.vault")).unwrap();
+        db.execute("UPDATE devices SET revoked_at='2026-01-01T00:00:00Z'", []).unwrap();
+        drop(db);
+        assert_eq!(host.start(options(dir.path())), 0);
+        wait(&host, READY).await;
         host.stop();
         wait(&host, STOPPED).await;
         let db = crate::privacy::read_snapshot(&dir.path().join("modularchat.db.vault")).unwrap();
         let stored_hash: String = db
-            .query_row("SELECT token_hash FROM devices", [], |r| r.get(0))
+            .query_row("SELECT token_hash FROM devices WHERE revoked_at IS NULL", [], |r| r.get(0))
             .unwrap();
         assert_eq!(stored_hash, rules::hash(TOKEN));
         assert_ne!(stored_hash, TOKEN);

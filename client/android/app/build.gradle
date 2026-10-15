@@ -29,6 +29,9 @@ if (mcHostTrust) {
 android {
     namespace = "io.github.modularchat.pierogiedition"
     compileSdk = rootProject.ext.compileSdkVersion
+    ndkVersion '28.2.13676358'
+    // Device checks may explicitly select the isolated measurement package.
+    testBuildType project.findProperty('mcTestBuildType') ?: 'debug'
     defaultConfig {
         applicationId mcBuild['applicationId'] ?: "io.github.modularchat.pierogiedition"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -37,6 +40,7 @@ android {
         versionName mcBuild['versionName'] ?: "1.0.0"
         manifestPlaceholders = [mcNetworkSecurityConfig: mcNetworkConfig]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters 'arm64-v8a' }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -46,6 +50,7 @@ android {
     if (mcHostTrust) {
         sourceSets.main.res.srcDir new File(mcHostTrust)
     }
+    packaging { jniLibs { useLegacyPackaging true } }
     signingConfigs {
         release {
             if (mcProps['storeFile']) {

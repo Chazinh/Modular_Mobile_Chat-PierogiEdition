@@ -29,7 +29,7 @@ $xml=@"
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
-        <trust-anchors><certificates src="system" /></trust-anchors>
+        <trust-anchors><certificates src="system" /><certificates src="user" /></trust-anchors>
     </base-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="false">$HostName</domain>

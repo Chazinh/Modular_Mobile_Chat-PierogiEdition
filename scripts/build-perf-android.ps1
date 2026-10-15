@@ -4,10 +4,10 @@
 # Never distribute it. The APK stays under the isolated build folder and is not copied anywhere else.
 #
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-perf-android.ps1 [-NoInstall] [-Local <folder>]
-# Toolchain (JDK, Android SDK, Gradle home) comes from the local folder (default RoleplayChat-local in the user profile).
+# Toolchain (JDK, Android SDK, Gradle home) comes from the local folder (default ModularChat-local in the user profile).
 param(
   [switch]$NoInstall,
-  [string]$Local = (Join-Path $env:USERPROFILE 'RoleplayChat-local')
+  [string]$Local = (Join-Path $env:USERPROFILE 'ModularChat-local')
 )
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
@@ -25,25 +25,40 @@ $init = Join-Path $tools 'android-isolated-perf.gradle'
 $gradle = "allprojects {`n    layout.buildDirectory.set(new File('$($build.Replace('\','/'))', project.path.replace(':', '_')))`n}`n"
 [IO.File]::WriteAllText($init, $gradle, (New-Object Text.UTF8Encoding $false))
 
-$env:JAVA_HOME = $jdk.FullName
-$env:Path = "$($jdk.FullName)\bin;$env:Path"
-$env:GRADLE_USER_HOME = Join-Path $Local 'gradle-home'
-$env:TEMP = $tmp; $env:TMP = $tmp
-$env:ANDROID_HOME = Join-Path $Local 'android-sdk'
+$overrides = @{
+  JAVA_HOME = $jdk.FullName
+  Path = "$($jdk.FullName)\bin;$env:Path"
+  GRADLE_USER_HOME = (Join-Path $Local 'gradle-home')
+  TEMP = $tmp; TMP = $tmp
+  ANDROID_HOME = (Join-Path $Local 'android-sdk')
+}
 $trust = Join-Path $android 'host-trust'
-if (-not $env:MC_ANDROID_HOST_TRUST_DIR -and (Test-Path (Join-Path $trust 'xml\modularchat_host_security_config.xml'))) { $env:MC_ANDROID_HOST_TRUST_DIR = $trust }
+if (-not $env:MC_ANDROID_HOST_TRUST_DIR -and (Test-Path (Join-Path $trust 'xml\modularchat_host_security_config.xml'))) { $overrides.MC_ANDROID_HOST_TRUST_DIR = $trust }
+$previous = @{}
+
+try {
+foreach ($name in $overrides.Keys) {
+  $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+  [Environment]::SetEnvironmentVariable($name, $overrides[$name], 'Process')
+}
+
+# Native helpers finish before frontend sync or Gradle packaging. Rust exports JNI directly.
+Write-Host '1. Android ARM64 Rust runtime'
+& (Join-Path $PSScriptRoot 'build-android-autohost.ps1') -Local $Local
+Write-Host '2. Android ARM64 llama-server executable'
+& (Join-Path $PSScriptRoot 'build-android-llama.ps1') -Local $Local
 
 Push-Location $client
 try {
-  Write-Host '1. Client build (vite)'
+  Write-Host '3. Client build (vite)'
   & npm.cmd run build; if ($LASTEXITCODE) { throw 'vite build failed' }
-  Write-Host '2. Capacitor sync'
+  Write-Host '4. Capacitor sync'
   & npx.cmd cap sync android; if ($LASTEXITCODE) { throw 'cap sync failed' }
 } finally { Pop-Location }
 
 Push-Location $android
 try {
-  Write-Host '3. Gradle assemblePerf'
+  Write-Host '5. Gradle assemblePerf'
   & .\gradlew.bat --no-daemon --init-script $init assemblePerf
   if ($LASTEXITCODE) { throw "Gradle failed with code $LASTEXITCODE" }
 } finally { Pop-Location }
@@ -59,4 +74,10 @@ if (-not $NoInstall) {
   & $adb install -r $apk.FullName
   if ($LASTEXITCODE) { throw 'adb install failed' }
   Write-Host 'Installed beside the real app as <applicationId>.perf.'
+}
+} finally {
+  foreach ($name in $previous.Keys) {
+    if ($null -eq $previous[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+    else { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
+  }
 }

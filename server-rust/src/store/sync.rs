@@ -450,7 +450,8 @@ impl Database {
             self.db.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS sync_retain_{table} BEFORE DELETE ON {table} {when} BEGIN
                 INSERT OR REPLACE INTO sync_retained VALUES('{table}',json_array({pk}),OLD.conv_id,json_object({object})); END;"))?;
         }
-        self.exec("INSERT OR IGNORE INTO sync_dirty SELECT id FROM conversations WHERE id NOT IN(SELECT conv_id FROM sync_manifests)", &[])?;
+        self.exec("INSERT OR IGNORE INTO sync_dirty SELECT id FROM conversations UNION SELECT conv_id FROM sync_tombstones", &[])?;
+        self.sync_refresh()?;
         Ok(())
     }
 
@@ -490,20 +491,22 @@ impl Database {
             row["usage_json"] = if usage.is_null() {
                 Value::Null
             } else {
-                json!(
-                    pick(
-                        &usage,
-                        &[
-                            "input",
-                            "output",
-                            "reasoning",
-                            "visibleEstimate",
-                            "reasoningHidden",
-                            "length"
-                        ]
-                    )
-                    .to_string()
-                )
+                let mut picked = serde_json::Map::new();
+                if let Some(obj) = usage.as_object() {
+                    for &k in &["input", "output", "reasoning", "visibleEstimate", "reasoningHidden"] {
+                        if let Some(v) = obj.get(k) {
+                            if v.is_number() || v.is_boolean() || v.is_null() {
+                                picked.insert(k.to_string(), v.clone());
+                            }
+                        }
+                    }
+                    if let Some(v) = obj.get("length") {
+                        if v.is_number() || v.is_boolean() || v.is_null() {
+                            picked.insert("length".to_string(), v.clone());
+                        }
+                    }
+                }
+                json!(Value::Object(picked).to_string())
             };
         }
         if table == "jobs" {
@@ -1200,6 +1203,8 @@ impl Database {
                         .is_null()
                 {
                     Ok(merge["publicSettings"].clone())
+                } else if ours.is_none() && base_settings.is_none() {
+                    Ok(current.clone())
                 } else {
                     merge_object(
                         base_settings,
@@ -1592,6 +1597,37 @@ fn filter_removed_dependents(data: &mut Value) {
         .iter()
         .map(|r| (s(r, "table"), s(r, "id")))
         .collect::<HashSet<_>>();
+    let interactions = data["interactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| s(r, "id"))
+        .collect::<HashSet<_>>();
+    let versions = data["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| s(r, "id"))
+        .collect::<HashSet<_>>();
+    let memories = data["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| s(r, "id"))
+        .collect::<HashSet<_>>();
+
+    let parts = data["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| s(r, "id"))
+        .collect::<HashSet<_>>();
+
+    let has_interaction = |id: &str| id.is_empty() || interactions.contains(id) || removed.contains(&("interactions".into(), id.to_string()));
+    let has_part = |id: &str| id.is_empty() || parts.contains(id) || removed.contains(&("parts".into(), id.to_string()));
+    let has_version = |id: &str| id.is_empty() || versions.contains(id) || removed.contains(&("versions".into(), id.to_string()));
+    let has_memory = |id: &str| id.is_empty() || memories.contains(id) || removed.contains(&("memories".into(), id.to_string()));
+
     for table in [
         "memory_knowledge",
         "knowledge_events",
@@ -1600,14 +1636,66 @@ fn filter_removed_dependents(data: &mut Value) {
     ] {
         data[table].as_array_mut().unwrap().retain(|r| match table {
             "memory_knowledge" | "knowledge_events" => {
-                !removed.contains(&("memories".into(), s(r, "memory_id")))
+                has_memory(&s(r, "memory_id"))
             }
-            "memory_replacements" => !["old_id", "new_id"]
+            "memory_replacements" => ["old_id", "new_id"]
                 .iter()
-                .any(|k| removed.contains(&("memories".into(), s(r, k)))),
-            _ => !removed.contains(&("versions".into(), s(r, "version_id"))),
+                .all(|k| has_memory(&s(r, k))),
+            _ => has_version(&s(r, "version_id")) && has_interaction(&s(r, "interaction_id")),
         });
     }
+
+    data["jobs"].as_array_mut().unwrap().retain(|r| {
+        if !has_interaction(&s(r, "interaction_id")) || !has_version(&s(r, "version_id")) {
+            return false;
+        }
+        let payload = parsed(r, "payload_json", json!({}));
+        if payload["interactionIds"].as_array().into_iter().flatten().any(|id| !has_interaction(id.as_str().unwrap_or_default())) {
+            return false;
+        }
+        if payload["notes"].as_array().into_iter().flatten().any(|note| {
+            !has_interaction(&s(note, "interaction_id")) || parsed(note, "version_ids_json", json!([])).as_array().into_iter().flatten().any(|v| !has_version(v.as_str().unwrap_or_default()))
+        }) {
+            return false;
+        }
+        true
+    });
+
+    data["generations"].as_array_mut().unwrap().retain(|r| {
+        has_interaction(&s(r, "interaction_id")) && has_part(&s(r, "part_id")) && has_version(&s(r, "version_id"))
+    });
+
+    for table in ["scene_states", "character_states", "interaction_notes"] {
+        data[table].as_array_mut().unwrap().retain(|r| {
+            has_interaction(&s(r, "interaction_id"))
+        });
+    }
+
+    data["threads"].as_array_mut().unwrap().retain(|r| {
+        has_interaction(&s(r, "opened_interaction_id")) && has_interaction(&s(r, "resolved_interaction_id"))
+    });
+
+    data["operations"].as_array_mut().unwrap().retain(|r| {
+        if !has_interaction(&s(r, "interaction_id")) || !has_interaction(&s(r, "edit_of")) {
+            return false;
+        }
+        let result = parsed(r, "result_json", json!({}));
+        let m = &result["message"];
+        has_part(&s(m, "id")) && has_version(&s(m, "versionId")) && has_interaction(&s(m, "interactionId"))
+    });
+
+    data["episodes"].as_array_mut().unwrap().retain(|r| {
+        has_interaction(&s(r, "first_interaction_id")) && has_interaction(&s(r, "interaction_id"))
+    });
+
+    data["memories"].as_array_mut().unwrap().retain(|r| {
+        has_interaction(&s(r, "source_interaction_id")) && has_version(&s(r, "source_version_id"))
+    });
+
+    data["relationships"].as_array_mut().unwrap().retain(|r| {
+        has_interaction(&s(r, "source_interaction_id")) && has_version(&s(r, "source_version_id"))
+    });
+
     let sources = embedding_sources(data);
     data["embeddings"]
         .as_array_mut()

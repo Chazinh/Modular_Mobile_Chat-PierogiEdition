@@ -24,7 +24,7 @@ async function fixture(t,{local=false,maxGenerations=4,review=true}={}){
     if(schema?.properties?.facts&&gate){const held=gate;gate=null;await held;}
     if(currentMode==='invalid')return res.end(JSON.stringify({choices:[{message:{content:'{invalid json'},finish_reason:'stop'}]}));
     const result=schema?.properties?.agency?mode==='clean'?{agency:[],knowledge:[],continuity:[]}:{agency:[{quote:'Alex: Texto proibido.',reason:'agência'}],knowledge:[],continuity:[]}:
-      {summary:'Lia guarda uma chave no porão.',cast:[],scene:{location:'Quarto',present:['Lia'],characters:[{name:'Lia',position:'sentada',location:'Quarto',holding:[]}]},facts:[{kind:'OBJECT',subject:'Lia',content:currentMode==='newfact'?'A chave de Lia está no jardim.':'A chave de Lia está guardada no porão.',importance:.8,confidence:1,visibility:'public',knowledge:[],replaces:''}],relationships:[],open_threads:[],resolved_threads:[]};
+      {summary:'Lia guarda uma chave no porão.',cast:[],scene:{location:'Quarto',time:'',mood:'',objects:[],present:['Lia'],characters:[{name:'Lia',position:'sentada',location:'Quarto',holding:[]}]},facts:[{kind:'OBJECT',subject:'Lia',content:currentMode==='newfact'?'A chave de Lia está no jardim.':'A chave de Lia está guardada no porão.',importance:.8,confidence:1,visibility:'public',knowledge:[],replaces:'',existing_id:''}],relationships:[],open_threads:[],resolved_threads:[]};
     res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(result)},finish_reason:'stop'}]}));
   });await new Promise(r=>model.listen(0,'127.0.0.1',r));
   const localUrl=`http://127.0.0.1:${model.address().port}`;

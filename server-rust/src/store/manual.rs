@@ -268,7 +268,8 @@ impl Database {
     pub(super) fn add_device(&self, name: &str, token_hash: &str) -> Result<Value> {
         let did = id();
         self.exec(
-            "INSERT INTO devices(id,name,token_hash,created_at) VALUES(?,?,?,?)",
+            "INSERT INTO devices(id,name,token_hash,created_at) VALUES(?,?,?,?) \
+             ON CONFLICT(token_hash) DO UPDATE SET name=excluded.name, revoked_at=NULL",
             &[
                 json!(did),
                 json!(rules::clip(name, 60)),
@@ -276,7 +277,12 @@ impl Database {
                 json!(now()),
             ],
         )?;
-        Ok(json!({"id":did}))
+        let row = self.one(
+            "SELECT id FROM devices WHERE token_hash=?",
+            &[json!(token_hash)],
+        )?;
+        let device_id = row["id"].as_str().unwrap_or(&did);
+        Ok(json!({"id":device_id}))
     }
     pub(super) fn find_device(&self, hash: &str) -> Result<Value> {
         let device = self.one(

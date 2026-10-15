@@ -121,8 +121,22 @@ pub fn block(text: &str, sources: &[Value]) -> String {
         String::new()
     } else {
         format!(
-            "[PROVENIÊNCIA DE CITAÇÕES RECENTES — correspondência exata; sem inferir pronomes]\n{}\nA origem é originalSpeaker; citar/imitar não cria outra declaração. Comentários fora das aspas são separados; referentes não explicitados permanecem desconhecidos.",
-            json!(quotes)
+            "[PROVENIÊNCIA DE CITAÇÕES RECENTES — correspondência exata]\n{}\nCitar/imitar não cria declaração nova. Comentários fora das aspas são separados; referentes não explicitados permanecem desconhecidos.",
+            quotes
+                .iter()
+                .map(|q| {
+                    let citing = q["citingSpeaker"]
+                        .as_str()
+                        .map(|name| format!("; citada por {name}"))
+                        .unwrap_or_default();
+                    format!(
+                        "- “{}” foi dita originalmente por {}{citing}.",
+                        s(q, "quote"),
+                        s(q, "originalSpeaker")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
         )
     }
 }

@@ -1,4 +1,4 @@
-//! Context assembly with a mandatory raw-history floor and explicit token estimates.
+//! Context assembly with coverage-checked history compression and explicit token estimates.
 use crate::{Error, Result, n, presets::Plan, rules, s, style_policy};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -24,10 +24,28 @@ pub fn pair_limits(conv: &Value) -> (usize, usize, usize) {
     (minimum, maximum, preferred)
 }
 /// How many recent pairs the store must load: the `assemble` ladder never goes past the preferred value, and
-/// retrieval still measures the window over 30 pairs. Loading the maximum of 50 only multiplied the exchanged JSON.
+/// retrieval expands to the smallest coverage-checked window. Loading 50 by default only multiplied the exchanged JSON.
 pub fn pairs_to_load(conv: &Value) -> usize {
     let (_, maximum, preferred) = pair_limits(conv);
     preferred.max(30).min(maximum)
+}
+
+/// Retrieval must cover every pair that an eligible smaller window can omit.
+pub fn retrieval_window_start(data: &Value) -> i64 {
+    let pairs = array(&data["pairs"]);
+    let minimum = pair_limits(&data["conv"]).0;
+    let take = if data["conv"]["settings"]["context"]["adaptiveHistory"] != false {
+        [6, 8, 10]
+            .into_iter()
+            .find(|take| *take < minimum && summarized_before(data, pairs, *take))
+            .unwrap_or(30)
+    } else {
+        30
+    };
+    pairs
+        .get(pairs.len().saturating_sub(take))
+        .map(|p| n(p, "seq"))
+        .unwrap_or(n(&data["current"], "seq"))
 }
 pub fn assemble(
     data: &Value,
@@ -43,9 +61,16 @@ pub fn assemble(
         .unwrap_or("Alex");
     let settings = &conv["settings"]["context"];
     let compact = plan.controls["mobileCompact"] == true;
-    let (minimum, maximum, preferred) = if compact { (0, 6, 6) } else { pair_limits(conv) };
-    let input_capacity = plan.capacity["contextWindow"].as_u64().unwrap_or(128000)
-        .saturating_sub(plan.body["max_tokens"].as_u64().unwrap_or(0) + 64).max(1);
+    let (minimum, maximum, preferred) = if compact {
+        (0, 6, 6)
+    } else {
+        pair_limits(conv)
+    };
+    let input_capacity = plan.capacity["contextWindow"]
+        .as_u64()
+        .unwrap_or(128000)
+        .saturating_sub(plan.body["max_tokens"].as_u64().unwrap_or(0) + 64)
+        .max(1);
     let hard = settings["hardLimit"]
         .as_u64()
         .unwrap_or(128000)
@@ -68,6 +93,15 @@ pub fn assemble(
         minimum,
     ];
     ladder.dedup();
+    if !compact && settings["adaptiveHistory"] != false {
+        let summarized = [10, 8, 6]
+            .into_iter()
+            .filter(|take| *take < minimum && summarized_before(data, available, *take))
+            .collect::<Vec<_>>();
+        if !summarized.is_empty() {
+            ladder = summarized;
+        }
+    }
     // global settings (character limit, dialogue × narration ratio, content text): same text as the former Node server
     let gs = &data["globalSettings"];
     let dialogue = gs["dialoguePct"].as_i64().unwrap_or(65).clamp(0, 100);
@@ -177,43 +211,33 @@ pub fn assemble(
                 .as_array()
                 .is_some_and(|a| !a.is_empty());
     let present = array(&data["scene"]["present"]);
-    // Same assembly as the former Node server: live state BEFORE the current message; AFTER it, the deterministic reading of
-    // quotes (exact matches only) and the reminder. The provenance JSON goes in the live state.
+    // Attribution appears once, before the current message. IDs and full evidence
+    // remain available to the local attribution/review pipeline.
     let recent_sources = crate::provenance::sources(pairs);
     let provenance = crate::provenance::block(&current_user, &recent_sources);
-    let reading = if continuation || current_user.is_empty() {
-        String::new()
-    } else {
-        crate::provenance::reading(&current_user, &recent_sources)
-    };
     let where_to = if continuation {
         "continue exatamente de onde a resposta parou"
     } else {
         "tudo na mensagem acima já aconteceu como escrito: comece DEPOIS dela, sem reescrevê-la"
     };
-    // The size/turn budget goes BEFORE the current message: the model reads the limits first and composes the reply
-    // inside them, instead of discovering the ceiling only after reading (and mentally drafting) the turn.
-    let plan_block = format!(
-        "[PLANO DA RESPOSTA — leia antes da mensagem abaixo e monte a resposta dentro destes limites desde a primeira linha]\n{size_target}\nComposição: {dialogue}% falas / {}% narração. {style_detail}\n{turn_control}\nDecida primeiro quantas reações e falas cabem neste orçamento; depois escreva, terminando numa frase completa antes do teto.\n[FIM DO PLANO]",
-        100 - dialogue
-    );
-    let anchor = format!(
-        "[Lembrete: responda integralmente em português do Brasil (pt-BR), sem alternar idiomas; {format_short}; {where_to}; preserve autor original de citações/imitações e separe comentários; não escreva nada por {persona}; siga o PLANO DA RESPOSTA acima (tamanho, composição {dialogue}/{} e turnos).]",
-        100 - dialogue
-    );
-    let tail = if reading.is_empty() {
-        anchor
-    } else {
-        format!("{reading}\n{anchor}")
-    };
+    // Size, ratio, examples and turn pacing are already in the stable system prefix.
+    let tail =
+        format!("[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}.]");
     let pinned = array(&data["pinned"]);
     let pinned = &pinned[..pinned.len().min(12)];
     let pinned_ids: HashSet<&str> = pinned.iter().map(id_of).collect();
     let (mut quota, mut secondary, mut timeline_mode, mut level) = (8usize, true, 0usize, 0usize);
     let mut compression = Vec::<String>::new();
+    if ladder[0] < minimum {
+        compression.push(format!(
+            "histórico resumido por episódios verificados; {} pares recentes",
+            ladder[0]
+        ));
+    }
     loop {
         let take = ladder[level].min(available.len());
         let selected = &available[available.len() - take..];
+        let summarized_history = !compact && take < minimum;
         let window = selected
             .first()
             .map(|p| n(p, "seq"))
@@ -263,7 +287,7 @@ pub fn assemble(
         );
         timeline.sort_by_key(|t| t.0.as_i64().unwrap_or_default());
         let timeline_total = timeline.len();
-        if timeline_mode == 2 && timeline.len() > 8 {
+        if !summarized_history && timeline_mode == 2 && timeline.len() > 8 {
             timeline = std::iter::once(timeline[0])
                 .chain(timeline[timeline.len() - 6..].iter().copied())
                 .collect();
@@ -273,11 +297,11 @@ pub fn assemble(
                 "[LINHA DO TEMPO ANTERIOR]\n{}",
                 timeline
                     .iter()
-                    .map(|(from, to, text)| {
+                    .map(|(_, _, text)| {
                         let text = text.as_str().unwrap_or_default();
                         format!(
-                            "- turnos {from}–{to}: {}",
-                            if timeline_mode == 0 {
+                            "- {}",
+                            if timeline_mode == 0 || summarized_history {
                                 text
                             } else {
                                 rules::clip(text, 240)
@@ -296,7 +320,7 @@ pub fn assemble(
             // only what is needed (days, months, date and anchors); no boundaries/UUIDs
             live.push(format!(
                 "[TEMPO NARRATIVO ANTERIOR — unidades independentes, sem converter meses em dias]\n{}",
-                json!({"days":t["days"],"months":t["months"],"date":t["date"],"anchors":t["anchors"]})
+                narrative_time(t)
             ));
         }
         if !provenance.is_empty() {
@@ -454,9 +478,9 @@ pub fn assemble(
             messages.push(json!({"role":"user","content":CONTINUE}));
         }
         let head = if live.is_empty() {
-            format!("{plan_block}\n\n")
+            String::new()
         } else {
-            format!("{live}\n\n{plan_block}\n\n")
+            format!("{live}\n\n")
         };
         if let Some(last) = messages.last_mut().filter(|m| m["role"] == "user") {
             last["content"] = json!(format!("{head}{}\n\n{tail}", s(last, "content")));
@@ -544,24 +568,98 @@ fn id_of(m: &Value) -> &str {
     m["id"].as_str().unwrap_or_default()
 }
 
-/// Scene without what only the server needs: the interaction ID and each character's normalized key
-/// (which repeats the name) spent tokens on every turn without telling the narrator anything.
-fn scene_view(scene: &Value) -> Value {
-    let mut view = scene.clone();
-    if let Some(map) = view.as_object_mut() {
-        map.remove("interactionId");
-        for c in map
-            .get_mut("characters")
-            .and_then(Value::as_array_mut)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(c) = c.as_object_mut() {
-                c.remove("key");
-            }
+/// A smaller window is eligible only if every omitted pair has a nonempty,
+/// already consolidated episode on this branch, with no still-pending turn.
+fn summarized_before(data: &Value, pairs: &[Value], take: usize) -> bool {
+    if pairs.len() <= take {
+        return false;
+    }
+    let split = pairs.len() - take;
+    let window = n(&pairs[split], "seq");
+    let covered = array(&data["episodes"])
+        .iter()
+        .filter(|e| {
+            n(e, "toSeq") < window && e["summary"].as_str().is_some_and(|s| !s.trim().is_empty())
+        })
+        .flat_map(|e| array(&e["interactionIds"]).iter().filter_map(Value::as_str))
+        .collect::<HashSet<_>>();
+    let pending = array(&data["unprocessed"])
+        .iter()
+        .map(id_of)
+        .collect::<HashSet<_>>();
+    pairs[..split]
+        .iter()
+        .all(|p| !id_of(p).is_empty() && covered.contains(id_of(p)) && !pending.contains(id_of(p)))
+}
+
+fn text_list(v: &Value) -> String {
+    array(v)
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Prompt-only view; serialized state and all internal references stay unchanged.
+fn scene_view(scene: &Value) -> String {
+    let mut lines = Vec::new();
+    for (key, label) in [
+        ("location", "Local"),
+        ("time", "Momento"),
+        ("mood", "Clima"),
+    ] {
+        if let Some(text) = scene[key].as_str().filter(|s| !s.is_empty()) {
+            lines.push(format!("{label}: {text}"));
         }
     }
-    view
+    for (key, label) in [("present", "Presentes"), ("objects", "Objetos")] {
+        let text = text_list(&scene[key]);
+        if !text.is_empty() {
+            lines.push(format!("{label}: {text}"));
+        }
+    }
+    for c in array(&scene["characters"]) {
+        let mut facts = Vec::new();
+        for (key, label) in [("location", "local"), ("position", "posição")] {
+            if let Some(text) = c[key].as_str().filter(|s| !s.is_empty()) {
+                facts.push(format!("{label}: {text}"));
+            }
+        }
+        let holding = text_list(&c["holding"]);
+        if !holding.is_empty() {
+            facts.push(format!("segura: {holding}"));
+        }
+        if !facts.is_empty() {
+            lines.push(format!("{} — {}", s(c, "name"), facts.join("; ")));
+        }
+    }
+    lines.join("\n")
+}
+
+fn narrative_time(time: &Value) -> String {
+    let mut lines = vec![format!(
+        "Decorridos: {} dias e {} meses (contagens independentes).",
+        n(time, "days"),
+        n(time, "months")
+    )];
+    if let Some(date) = time["date"].as_str() {
+        lines.push(format!("Data: {date}"));
+    }
+    for anchor in array(&time["anchors"]) {
+        let evidence = s(anchor, "evidence");
+        let days = anchor["elapsedDays"]
+            .as_i64()
+            .or(anchor["days"].as_i64())
+            .unwrap_or(0);
+        let months = anchor["elapsedMonths"]
+            .as_i64()
+            .or(anchor["months"].as_i64())
+            .unwrap_or(0);
+        lines.push(format!(
+            "Âncora: {evidence}; intervalo atual: {days} dias e {months} meses (independentes)."
+        ));
+    }
+    lines.join("\n")
 }
 
 /// 8000 -> "8.000" (pt-BR thousands separator).

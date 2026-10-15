@@ -138,7 +138,7 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
         <div className="mc-col flex items-center justify-between gap-2">
           {/* Title isolated in its own bubble */}
           <div className="mc-glass-pill pointer-events-auto flex items-center gap-2.5 rounded-full px-4 py-2 shadow-lg">
-            <h1 className="text-[19px] font-extrabold tracking-tight">{archivedView ? tr("Arquivadas") : tr("Conversas")}</h1>
+            <h1 className="text-[19px] font-extrabold tracking-tight">{archivedView ? tr("Arquivados") : tr("Conversas")}</h1>
             <span
               role="status"
               title={statusLabel}
@@ -154,7 +154,7 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
               disabled={switchingArchived}
               aria-busy={switchingArchived}
               className="mc-glass-pill mc-bubble pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full shadow-lg"
-              aria-label={tr("Arquivadas")}
+              aria-label={archivedView ? tr("Conversas") : tr("Arquivados")}
             >
               {archivedView ? <ArchiveRestore size={19} /> : <Archive size={19} />}
             </button>

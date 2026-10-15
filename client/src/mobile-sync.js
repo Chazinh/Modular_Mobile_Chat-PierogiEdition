@@ -141,25 +141,34 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
     // Only metadata is persisted. Recover exact source snapshots from the encrypted Store.
     if (state.pending) {
       const pending = state.pending;
-      if (pending.code === 'CONFLICT') throw new SyncError('CONFLICT', 'Um lote conflitante foi preservado; resolva o conflito antes de promover o PC.');
       const toPc = pending.to === 'pc';
       const source = toPc ? mobile : pc, dest = toPc ? pc : mobile;
       const sourceId = toPc ? mobileId : pcId, destId = toPc ? pcId : mobileId;
       const destState = toPc ? pcState : mobileState;
-      const alreadyApplied = pending.records.every(r => {
+      const isRecordResolved = r => {
         const manifest = destState.manifests.get(r.convId);
-        return manifest && (compatible() ? manifest.hash === r.hash : manifest.contentHash === r.contentHash);
-      });
-      if (!alreadyApplied) {
+        if (!manifest) return false;
+        if (manifest.purged) {
+          const srcManifest = (toPc ? mobileState : pcState).manifests.get(r.convId);
+          if (srcManifest?.purged) return true;
+        }
+        return compatible() ? manifest.hash === r.hash : manifest.contentHash === r.contentHash;
+      };
+      const alreadyApplied = pending.records.every(isRecordResolved);
+      if (alreadyApplied) {
+        state.pending = null;
+        await persist();
+      } else {
+        if (pending.code === 'CONFLICT') throw new SyncError('CONFLICT', 'Um lote conflitante foi preservado; resolva o conflito antes de promover o PC.');
         const entries = await offer(source, sourceId, destId, pending.records.map(r => r.convId));
         try { await applyBatch(dest, sourceId, destId, pending.records, entries, pending.batchId); }
         catch (error) {
           if (error.code === 'CONFLICT') { state.pending.code = 'CONFLICT'; await persist(); }
           throw error;
         }
+        state.pending = null;
+        await persist();
       }
-      state.pending = null;
-      await persist();
       pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
     }
 
@@ -202,6 +211,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       if (base && (!p || !m)) fail('MISSING_CONVERSATIONS', 'Uma conversa da baseline desapareceu de um dos cofres.');
       if (!m) continue;
       if (!p) { pushIds.push(id); continue; }
+      if (p.purged && m.purged) continue;
       const equal = compatible() ? p.hash === m.hash : p.contentHash === m.contentHash;
       if (equal) continue;
       if (!base) fail('CONFLICT', 'Há conversas diferentes com o mesmo ID e nenhuma baseline compartilhada.');
@@ -215,6 +225,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
     const pullIds = [], pullBases = new Map();
     for (const [id, p] of pcState.manifests) {
       const m = mobileState.manifests.get(id);
+      if (p.purged && m?.purged) continue;
       if (!m || (compatible() ? m.hash !== p.hash : m.contentHash !== p.contentHash)) {
         pullIds.push(id);
         if (m) pullBases.set(id, Object.hasOwn(state.baselines, id) ? state.baselines[id].mobileHash : m.hash);
@@ -226,6 +237,10 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
     const baselines = Object.create(null);
     for (const [id, p] of pcState.manifests) {
       const m = mobileState.manifests.get(id);
+      if (p.purged && m?.purged) {
+        baselines[id] = { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash };
+        continue;
+      }
       if (!m || p.contentHash !== m.contentHash || (compatible() && p.hash !== m.hash)
           || p.deleted !== m.deleted || p.purged !== m.purged) fail('HASH_DIVERGENCE', 'Os cofres ainda não convergiram; o telefone permanece local.');
       baselines[id] = { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash };

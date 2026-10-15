@@ -178,13 +178,9 @@ for (const [presetId, routeId] of [['deepseek-v41-flash','cbai/deepseek-v4.1-fla
     const all=messages.map(m=>m.content).join('\n');
     assert.ok(!/\{\{\s*persona\s*\}\}/i.test(all));
     assert.ok(all.includes('quem pronunciou originalmente')&&all.includes('ROLE=user identifica a fonte'));
-    const provenance=JSON.parse(all.split('\n').find(line=>line.startsWith('[{')&&line.includes('"originalSpeaker"')));
-    assert.equal(provenance[0].sourceId,sourceId);
-    assert.equal(provenance[0].originalSpeaker,'Mira');
-    assert.equal(provenance[0].citingSpeaker,null);
-    assert.equal(provenance[0].use,'citation_or_imitation');
-    assert.equal(provenance[0].quote,mira.quote);
-    assert.ok(!provenance[0].quote.includes('Engraçadinha'));
+    assert.ok(all.includes(`“${mira.quote}” foi dita originalmente por Mira`));
+    assert.ok(all.includes('Comentários fora das aspas são separados'));
+    assert.ok(!all.includes(sourceId) && !all.includes('originalEvidence') && !all.includes('citingEvidence'));
     const saved=(await j('GET',`/api/chats/${cid}`)).body.history;
     assert.deepEqual(saved.map(m=>({role:m.role,content:m.content})),mira.messages);
   });
@@ -264,8 +260,8 @@ test('envio: confirmação (ack) chega ANTES da inferência; resposta em streami
   assert.match(req.body.messages[0].content, /Mira é uma maga arrogante/);
   const last = req.body.messages.at(-1);
   assert.equal(last.role, 'user');
-  assert.match(last.content, /^\[PLANO DA RESPOSTA/, 'os limites chegam antes da mensagem');
-  assert.match(last.content, /\[FIM DO PLANO\]\n\nOlá, Mira\./);
+  assert.match(last.content, /^Olá, Mira\./);
+  assert.doesNotMatch(last.content, /\[PLANO DA RESPOSTA/);
   assert.match(last.content, /não escreva nada por Alex/);
   const chat = (await j('GET', `/api/chats/${c.id}`)).body;
   assert.deepEqual(chat.history.map((m) => m.role), ['user', 'assistant']);

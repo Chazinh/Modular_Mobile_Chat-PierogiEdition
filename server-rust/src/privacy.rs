@@ -1,7 +1,7 @@
 //! Native MCVAULT1 vault: AES-256-GCM, DPAPI CurrentUser on Windows.
 //! Starts no Node/PowerShell and never writes plain-text SQLite.
-//! Non-Windows uses a versioned 256-bit key file in the private sandbox (0700/0600 on Unix).
-//! This is sandbox protection, NOT Android Keystore or protection against root/app-UID access.
+//! Android wraps the data key with Android Keystore through the direct JNI boundary.
+//! Other non-Windows platforms use a versioned sandbox key (0700/0600 on Unix).
 //! DPAPI and sandbox key files are intentionally distinct and are not cross-platform credentials.
 use crate::{Error, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -25,6 +25,8 @@ const AAD: &[u8] = b"ModularChat.encrypted-storage.v1";
 const ENTROPY: &[u8] = b"ModularChat.WindowsVault.v1";
 #[cfg(not(windows))]
 const KEY_MAGIC: &[u8] = b"MCKEY001";
+#[cfg(target_os = "android")]
+const ANDROID_KEY_MAGIC: &[u8] = b"MCKEYKS1";
 fn invalid() -> Error {
     #[cfg(windows)]
     let message = "O cofre/chave está inválido ou não pertence a esta conta do Windows. Preserve ambos os arquivos.";
@@ -105,6 +107,12 @@ fn key_for(file: &Path) -> Result<Zeroizing<Vec<u8>>> {
     let key = dpapi(&bytes, false)?;
     #[cfg(not(windows))]
     let key = {
+        #[cfg(target_os = "android")]
+        if bytes.starts_with(ANDROID_KEY_MAGIC) {
+            let key = crate::android::jni::vault_key(&bytes[ANDROID_KEY_MAGIC.len()..], false)?;
+            if key.len() != 32 { return Err(invalid()); }
+            return Ok(key);
+        }
         let key_end = KEY_MAGIC.len() + 32;
         if bytes.len() != key_end + 32
             || !bytes.starts_with(KEY_MAGIC)
@@ -128,7 +136,17 @@ fn protected_key(key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     {
         dpapi(key, true)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    {
+        let envelope = crate::android::jni::vault_key(key, true)?;
+        // Verify the OS can recover the exact key before publishing or migrating it.
+        let verified = crate::android::jni::vault_key(&envelope, false)?;
+        if verified.as_slice() != key { return Err(invalid()); }
+        let mut bytes = Zeroizing::new(ANDROID_KEY_MAGIC.to_vec());
+        bytes.extend_from_slice(&envelope);
+        Ok(bytes)
+    }
+    #[cfg(all(not(windows), not(target_os = "android")))]
     {
         let mut bytes = Zeroizing::new(Vec::with_capacity(KEY_MAGIC.len() + 64));
         bytes.extend_from_slice(KEY_MAGIC);
@@ -602,6 +620,9 @@ pub fn snapshot(source: &Path, target: &Path) -> Result<()> {
     let key = key_for(&source_key)?;
     let mut clear = unseal(&bytes, &key)?;
     let _ = deserialize(&mut clear)?;
+    #[cfg(target_os = "android")]
+    let key_bytes = protected_key(&key)?;
+    #[cfg(not(target_os = "android"))]
     let key_bytes = Zeroizing::new(read_regular(&source_key)?);
     atomic_new(&target_key, &key_bytes)?;
     atomic(target, &bytes)?;
@@ -657,6 +678,12 @@ impl Vault {
             Connection::open_in_memory()?
         };
         db.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA journal_mode=MEMORY;")?;
+        #[cfg(target_os = "android")]
+        if read_regular(&key_file)?.starts_with(KEY_MAGIC) {
+            // The old key and database have both been authenticated/deserialized above.
+            // Replace only the envelope, atomically; keep the data key and vault bytes.
+            atomic(&key_file, &protected_key(&key)?)?;
+        }
         Ok((
             Self {
                 file,

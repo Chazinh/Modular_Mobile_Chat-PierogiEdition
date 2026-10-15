@@ -305,9 +305,9 @@ fn mira_context_native_preserves_raw_original_and_prompt_rules_for_both_profiles
                 && text.contains("quem pronunciou originalmente")
                 && text.contains("ROLE=user identifica a fonte")
         );
-        assert!(
-            text.contains("preserve autor original de citações/imitações e separe comentários")
-        );
+        assert!(text.contains("foi dita originalmente por Mira"));
+        assert!(text.contains("Comentários fora das aspas são separados"));
+        assert!(!text.contains("originalEvidence") && !text.contains("citingEvidence"));
     }
 }
 

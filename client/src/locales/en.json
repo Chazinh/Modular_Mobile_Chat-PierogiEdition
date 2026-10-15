@@ -30,7 +30,7 @@
   "Salvar e confirmar": "Save and confirm",
   "Mesclar": "Merge",
   "Remover": "Remove",
-  "Arquivadas": "Archived",
+  "Arquivados": "Archived",
   "Conversas": "Chats",
   "Buscar": "Search",
   "Configurações": "Settings",
@@ -681,5 +681,18 @@
   "Deseja criar uma nova conversa?": "Start a new chat?",
   " Novo Chat": " New Chat",
   " Novo Chat\n              ": " New Chat",
-  "Refazer a última resposta": "Regenerate response"
+  "Refazer a última resposta": "Regenerate response",
+  "Conexão com o PC perdida": "PC connection lost",
+  "Não foi possível conectar ao servidor do seu PC. Deseja aguardar até 5 minutos para ver se a conexão se restabelece, ou usar a Auto-Hospedagem agora?": "Could not connect to your PC server. Would you like to wait up to 5 minutes to see if the connection is restored, or use Self-Hosting now?",
+  "Falha ao ativar a Auto-Hospedagem.": "Failed to activate Self-Hosting.",
+  "Usar Auto-Hospedagem": "Use Self-Hosting",
+  "Aguardar reconexão (5 min)": "Wait for reconnection (5 min)",
+  "PC reconectado com sucesso!": "PC reconnected successfully!",
+  "Aguardando o PC…": "Waiting for PC…",
+  "Tentando reconectar ao PC em segundo plano…": "Trying to reconnect to PC in background…",
+  "Tempo limite esgotado (5 min). O PC continua inacessível.": "Timeout reached (5 min). PC remains unreachable.",
+  "Alternar para Auto-Hospedagem agora": "Switch to Self-Hosting now",
+  "Minimizar": "Minimize",
+  "Iniciando Auto-Hospedagem…": "Starting Self-Hosting…",
+  "Ativando o banco e modelos locais sem reiniciar o app…": "Activating local database and models without restarting the app…"
 }

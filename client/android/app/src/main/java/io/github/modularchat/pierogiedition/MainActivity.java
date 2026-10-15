@@ -4,6 +4,10 @@ import com.getcapacitor.BridgeActivity;
 import android.os.Bundle;
 import android.os.Build;
 import android.content.Intent;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.ServiceConnection;
+import android.os.IBinder;
 import android.provider.Settings;
 import android.view.View;
 import android.view.Window;
@@ -16,6 +20,7 @@ import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
 import androidx.core.content.ContextCompat;
 import java.util.ArrayList;
+import java.util.concurrent.CompletableFuture;
 
 public class MainActivity extends BridgeActivity {
     private View privacyCover;
@@ -27,14 +32,84 @@ public class MainActivity extends BridgeActivity {
     private boolean transientRetried = false;
     private BiometricPrompt prompt;
     private final ArrayList<Runnable> unlockCallbacks = new ArrayList<>();
+    private boolean hostBound;
+    private final android.os.Handler hostTimeout = new android.os.Handler(android.os.Looper.getMainLooper());
+    private CompletableFuture<Void> hostReady = new CompletableFuture<>();
+    private final ServiceConnection hostConnection = new ServiceConnection() {
+        @Override public void onServiceConnected(ComponentName name, IBinder service) {
+            CompletableFuture<Void> target = hostReady;
+            ((LocalHostService.HostBinder)service).ready().whenComplete((ignored, error) -> {
+                if (error == null) target.complete(null); else target.completeExceptionally(error);
+            });
+        }
+        @Override public void onServiceDisconnected(ComponentName name) {
+            hostBound = false;
+            hostReady = new CompletableFuture<>();
+        }
+        @Override public void onBindingDied(ComponentName name) {
+            stopHostBinding();
+            hostReady.completeExceptionally(new IllegalStateException("Local service disconnected."));
+        }
+        @Override public void onNullBinding(ComponentName name) {
+            stopHostBinding();
+            hostReady.completeExceptionally(new IllegalStateException("Local service unavailable."));
+        }
+    };
     public void whenUnlocked(Runnable callback) { runOnUiThread(() -> { if (unlocked) callback.run(); else unlockCallbacks.add(callback); }); }
+
+    CompletableFuture<Void> localHostReady() {
+        startLocalHostService();
+        return hostReady;
+    }
+    private void startLocalHostService() {
+        if (!resumed || isFinishing() || isDestroyed()) return;
+        if (hostBound) {
+            if (hostReady.isCompletedExceptionally()) {
+                stopHostBinding();
+                hostReady = new CompletableFuture<>();
+            } else {
+                return;
+            }
+        } else if (hostReady.isDone() && hostReady.isCompletedExceptionally()) {
+            hostReady = new CompletableFuture<>();
+        }
+        CompletableFuture<Void> waiting = hostReady;
+        Runnable timeout = () -> waiting.completeExceptionally(new IllegalStateException("Local service readiness timed out."));
+        hostTimeout.postDelayed(timeout, 50_000);
+        waiting.whenComplete((ignored, error) -> hostTimeout.removeCallbacks(timeout));
+        Intent intent = new Intent(this, LocalHostService.class);
+        try {
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent); else startService(intent);
+            hostBound = bindService(intent, hostConnection, Context.BIND_AUTO_CREATE);
+            if (!hostBound) hostReady.completeExceptionally(new IllegalStateException("Local service binding failed."));
+        } catch (RuntimeException error) {
+            hostReady.completeExceptionally(new IllegalStateException("Local service start unavailable."));
+        }
+    }
+    private void stopHostBinding() {
+        if (!hostBound) return;
+        hostBound = false;
+        try { unbindService(hostConnection); } catch (IllegalArgumentException ignored) {}
+    }
+    void stopLocalHostService() {
+        stopHostBinding();
+        stopService(new Intent(this, LocalHostService.class));
+        hostReady.completeExceptionally(new IllegalStateException("Local service stopped."));
+        hostReady = new CompletableFuture<>();
+    }
 
     @Override public void onCreate(Bundle state) {
         registerPlugin(PrivateStoragePlugin.class);
         registerPlugin(AppIconPlugin.class);
         registerPlugin(LanguagePlugin.class);
+        registerPlugin(LocalHostPlugin.class);
+        // Only the separate measurement package can bypass the privacy gate.
+        perf = getResources().getBoolean(R.bool.mc_perf) && getPackageName().endsWith(".perf");
+        if (!perf) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         super.onCreate(state);
         try {
+            android.webkit.WebView.setWebContentsDebuggingEnabled(
+                (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0);
             android.webkit.WebView webView = getBridge() != null ? getBridge().getWebView() : null;
             if (webView != null) {
                 android.webkit.WebSettings settings = webView.getSettings();
@@ -43,12 +118,10 @@ public class MainActivity extends BridgeActivity {
                 settings.setDatabaseEnabled(true);
             }
         } catch (Exception ignored) {}
-        perf = getResources().getBoolean(R.bool.mc_perf);
         if (perf) {
             unlocked = true;
             return;
         }
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         TextView unlockView = new TextView(this);
         unlockView.setText(LanguagePlugin.text(this, "Toque para desbloquear", "Tap to unlock"));
         unlockView.setTextColor(0xffe7e7ea);
@@ -87,6 +160,7 @@ public class MainActivity extends BridgeActivity {
         super.onResume();
         resumed = true;
         transientRetried = false;
+        startLocalHostService();
         // Wait for the window to return from Recents before opening the system prompt.
         if (hasWindowFocus() && privacyCover != null && !unlocked && !prompting) authenticate();
     }
@@ -105,6 +179,11 @@ public class MainActivity extends BridgeActivity {
         unlocked = false;
         if (privacyCover != null) privacyCover.setVisibility(View.VISIBLE);
         super.onStop();
+    }
+    @Override public void onDestroy() {
+        stopHostBinding();
+        hostReady.completeExceptionally(new IllegalStateException("Local host screen closed."));
+        super.onDestroy();
     }
     private void authenticate() {
         prompting = true;

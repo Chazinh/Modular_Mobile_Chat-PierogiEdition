@@ -2,14 +2,78 @@ use modularchat_server::{presets, rules, style_policy};
 use serde_json::json;
 
 #[test]
+fn repair_keeps_rules_current_scene_and_draft_without_replaying_the_entire_history() {
+    for prefix in [
+        vec![json!({"role":"system","content":"STABLE_RULES"})],
+        vec![
+            json!({"role":"user","content":"STABLE_RULES"}),
+            json!({"role":"assistant","content":"Entendido."}),
+        ],
+    ] {
+        let mut messages = prefix.clone();
+        for turn in 0..30 {
+            messages.push(
+                json!({"role":"user","content":format!("old {turn} {}", "history ".repeat(100))}),
+            );
+            messages.push(json!({"role":"assistant","content":format!("Lia: resposta {turn}")}));
+        }
+        messages.push(json!({"role":"user","content":"CURRENT_SCENE_AND_USER"}));
+        let body = json!({"messages":messages,"stream":true,"stream_options":{"include_usage":true},"max_tokens":4000,"reasoning_effort":"low"});
+        let fixed =
+            style_policy::repair_body(&body, "Lia: DRAFT_LITERAL", "CORRECT_SIZE_AND_RATIO");
+        let kept = fixed["messages"].as_array().unwrap();
+        assert_eq!(&kept[..prefix.len()], &prefix);
+        assert_eq!(kept.len(), prefix.len() + 5);
+        assert!(
+            kept.iter()
+                .any(|m| m["content"] == "CURRENT_SCENE_AND_USER")
+        );
+        assert_eq!(kept[kept.len() - 2]["content"], "Lia: DRAFT_LITERAL");
+        assert_eq!(fixed["stream"], false);
+        assert!(fixed.get("stream_options").is_none());
+        assert_eq!(fixed["max_tokens"], body["max_tokens"]);
+        assert_eq!(fixed["reasoning_effort"], body["reasoning_effort"]);
+        assert!(
+            rules::estimate_messages(kept)
+                < rules::estimate_messages(body["messages"].as_array().unwrap()) / 5
+        );
+        assert_eq!(body["stream"], true);
+    }
+}
+
+#[test]
 fn api_budget_follows_characters_and_preserves_effort() {
     // (preset, route, requested effort, effective effort, reserve). On Gemini each level is its own route:
     // without an explicit request the route's level applies (effortByRoute), and the reserve is that level's.
     for (id, route, effort, effective, reserve) in [
-        ("gemini-38-flash", "ag/gemini-3.8-flash-low", None, "low", 2048),
-        ("claude-sonnet-5-5", "cc/claude-sonnet-5-5", Some("low"), "low", 2048),
-        ("claude-sonnet-5-5", "cc/claude-sonnet-5-5", Some("medium"), "medium", 4096),
-        ("deepseek-v41-flash", "cbai/deepseek-v4.1-flash", Some("high"), "high", 8192),
+        (
+            "gemini-38-flash",
+            "ag/gemini-3.8-flash-low",
+            None,
+            "low",
+            2048,
+        ),
+        (
+            "claude-sonnet-5-5",
+            "cc/claude-sonnet-5-5",
+            Some("low"),
+            "low",
+            2048,
+        ),
+        (
+            "claude-sonnet-5-5",
+            "cc/claude-sonnet-5-5",
+            Some("medium"),
+            "medium",
+            4096,
+        ),
+        (
+            "deepseek-v41-flash",
+            "cbai/deepseek-v4.1-flash",
+            Some("high"),
+            "high",
+            8192,
+        ),
     ] {
         let mut p = presets::request(
             &json!({"presetId":id,"routeId":route,"effort":effort}),
@@ -151,9 +215,15 @@ fn monologues_include_continuations_actions_and_utf16_without_combining_other_sp
 fn approximate_target_is_a_centre_with_room_above_it() {
     let target = json!({"botChars":2000,"lengthMode":"target"});
     assert_eq!(rules::reply_bounds(&target), (1700, 2500, 2700));
-    assert_eq!(rules::reply_bounds(&json!({"botChars":2000})), (0, 2000, 2000));
+    assert_eq!(
+        rules::reply_bounds(&json!({"botChars":2000})),
+        (0, 2000, 2000)
+    );
     // every size gets the same 35%, the largest one included; the store accepts it
-    assert_eq!(rules::reply_bounds(&json!({"botChars":8000,"lengthMode":"target"})), (6800, 10000, 10800));
+    assert_eq!(
+        rules::reply_bounds(&json!({"botChars":8000,"lengthMode":"target"})),
+        (6800, 10000, 10800)
+    );
     assert_eq!(rules::REPLY_STORE_LIMIT, 10800);
     // the API budget covers the hard cut, not only the centre
     let mut p = presets::request(
@@ -168,16 +238,31 @@ fn approximate_target_is_a_centre_with_room_above_it() {
     // 2,400 characters are inside the range; 2,600 are above it but below the cut
     let pct = 0.0;
     let ok = format!("*{}*", "a".repeat(2398));
-    assert_eq!(style_policy::assess_settings(&ok, 2000, pct, &target)["sizeOk"], true);
+    assert_eq!(
+        style_policy::assess_settings(&ok, 2000, pct, &target)["sizeOk"],
+        true
+    );
     let long = format!("*{}*", "a".repeat(2598));
-    assert_eq!(style_policy::assess_settings(&long, 2000, pct, &target)["sizeOk"], false);
+    assert_eq!(
+        style_policy::assess_settings(&long, 2000, pct, &target)["sizeOk"],
+        false
+    );
 }
 
 #[test]
 fn a_cut_reply_ends_at_its_last_complete_sentence() {
     let cut = "*Ela fecha o livro.* Lia: Vamos sair agora. A atmosfera tem se mostrado ult";
-    assert_eq!(rules::trim_to_sentence(cut), "*Ela fecha o livro.* Lia: Vamos sair agora.");
+    assert_eq!(
+        rules::trim_to_sentence(cut),
+        "*Ela fecha o livro.* Lia: Vamos sair agora."
+    );
     // no boundary in the second half: the text is kept as received
-    assert_eq!(rules::trim_to_sentence("Oi. aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), "Oi. aaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    assert_eq!(rules::trim_to_sentence("x".repeat(30).as_str()), "x".repeat(30));
+    assert_eq!(
+        rules::trim_to_sentence("Oi. aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        "Oi. aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        rules::trim_to_sentence("x".repeat(30).as_str()),
+        "x".repeat(30)
+    );
 }

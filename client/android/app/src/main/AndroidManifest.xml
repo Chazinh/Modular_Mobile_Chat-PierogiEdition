@@ -4,6 +4,7 @@
 
     <application
         android:allowBackup="false"
+        android:extractNativeLibs="true"
         android:usesCleartextTraffic="false"
         tools:replace="android:usesCleartextTraffic"
         android:networkSecurityConfig="${mcNetworkSecurityConfig}"
@@ -51,6 +52,15 @@
             </intent-filter>
         </activity-alias>
 
+        <service
+            android:name=".LocalHostService"
+            android:exported="false"
+            android:stopWithTask="true"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Embedded authenticated loopback host for on-device conversations and encrypted storage." />
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -65,6 +75,9 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.USE_FINGERPRINT" />
 </manifest>

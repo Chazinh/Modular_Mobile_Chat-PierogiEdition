@@ -12,6 +12,7 @@ import { privacyNeedsPairing } from './private-storage.js';
 import { useEvent } from './ui.jsx';
 import { transitionTo } from './press-feedback.js';
 import AutoHostStatus from './components/AutoHostStatus.jsx';
+import ConnectionLossModal from './components/ConnectionLossModal.jsx';
 import { shouldShowServerSetup } from './mobile-settings.js';
 
 // Keeps the reference of items that did not change between two lists from the server (rows are memoized).
@@ -63,10 +64,16 @@ export default function App() {
   const [unpaired, setUnpaired] = useState(() => !config.embeddedReady && privacyNeedsPairing());
   const [manualServerSetup, setManualServerSetup] = useState(false);
   const [kind, setKind] = useState(() => config.kind);
+  const [connectionLossOpen, setConnectionLossOpen] = useState(false);
+  const wasOnPcRef = useRef(config.kind === 'pc');
   const [fontSize, setFontSize] = useFontSize();
   const refreshTimer = useRef(null);
   const listViewRef = useRef(null);
   listViewRef.current = { archivedView, query };
+
+  useEffect(() => {
+    if (config.kind === 'pc') wasOnPcRef.current = true;
+  }, [kind]);
 
   useLayer(!!openId, () => setOpenId(null));
   useLayer(globalOpen, () => setGlobalOpen(false));
@@ -94,8 +101,42 @@ export default function App() {
       setStatus('offline');
       if (e.status && e.status !== 401) setError(e.message);
       if (!archivedView && !query) setChats((prev) => (prev.length ? prev : []));
+      if (isNative() && (config.kind === 'pc' || wasOnPcRef.current) && config.embeddedReady) {
+        setConnectionLossOpen(true);
+      }
     }
   }, [archivedView, query]);
+
+  const handleSwitchToLocal = useCallback(async () => {
+    await api.switchToLocal();
+    wasOnPcRef.current = false;
+    setConnectionLossOpen(false);
+    setOffline(false);
+    setStatus('online');
+    setError('');
+    setConnectionError('');
+    await refresh();
+  }, [refresh]);
+
+  const handleReconnected = useCallback(async () => {
+    await api.switchToPc();
+    setConnectionLossOpen(false);
+    setOffline(false);
+    setStatus('online');
+    setError('');
+    setConnectionError('');
+    await refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const onLoss = () => {
+      if (isNative() && (config.kind === 'pc' || wasOnPcRef.current) && config.embeddedReady) {
+        setConnectionLossOpen(true);
+      }
+    };
+    window.addEventListener('mc:pc-connection-lost', onLoss);
+    return () => window.removeEventListener('mc:pc-connection-lost', onLoss);
+  }, []);
 
   // first paint from the local cache; then the server
   useEffect(() => {
@@ -285,6 +326,12 @@ export default function App() {
           }}
         />
       )}
+      <ConnectionLossModal
+        isOpen={connectionLossOpen}
+        onClose={() => setConnectionLossOpen(false)}
+        onSwitchToLocal={handleSwitchToLocal}
+        onReconnected={handleReconnected}
+      />
     </>
   );
 }

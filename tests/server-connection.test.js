@@ -325,3 +325,39 @@ test('conexão: rejeita serviço diferente ou sem cofre e mantém origem do nave
   assert.equal(await browser.connection.resolve(), '');
   assert.equal(browser.calls.length, 0);
 });
+
+test('conexão: switchToLocal promove host Android sem reiniciar e probePc detecta volta do PC', async () => {
+  let pcOnline = true;
+  const f = autoFixture({
+    fetch: async (url) => {
+      if (!pcOnline) throw new Error('PC offline');
+      return Response.json({ ok: true, name: 'modularchat', encrypted: true });
+    },
+    sync: async () => ({ converged: true }),
+  });
+  f.connection.configure({ local });
+
+  // Initial target is PC
+  const target1 = await f.connection.resolveTarget();
+  assert.equal(target1.kind, 'pc');
+  assert.equal(await f.connection.probePc(), true);
+
+  // Switch to local host without restarting
+  const localTarget = await f.connection.switchToLocal();
+  assert.equal(localTarget.kind, 'local');
+  assert.equal((await f.connection.resolveTarget()).kind, 'local');
+
+  // PC goes offline: probePc returns false
+  pcOnline = false;
+  assert.equal(await f.connection.probePc(), false);
+
+  // PC recovers: probePc returns true
+  pcOnline = true;
+  assert.equal(await f.connection.probePc(), true);
+
+  // Switch back to PC
+  const pcTarget = await f.connection.switchToPc();
+  assert.equal(pcTarget.kind, 'pc');
+  assert.equal(f.connection.kind(), 'pc');
+});
+

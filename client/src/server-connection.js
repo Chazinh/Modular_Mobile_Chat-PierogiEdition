@@ -20,6 +20,7 @@ export function normalizeServer(value, httpsOnly = true) {
 export function createServerConnection({ storage, native, token, fetch: probe, now = Date.now, onChange = () => {},
   onStatus = () => {}, embedded = null, sync = null, mode = 'legacy', timers = globalThis }) {
   let active = null, validUntil = 0, syncedUntil = 0, syncRetryAt = 0, epoch = 0, pending = null, boundary = null, stopWatching = null;
+  let preferredKind = 'auto';
   const leases = new Set();
   const capturedEpochs = new WeakMap();
   const local = () => mode === 'auto' && native() ? embedded?.target() : null;
@@ -75,13 +76,13 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
       const response = await probe(`${server}/api/health`, {
         cache: 'no-store', credentials: 'omit', redirect: 'error',
         headers: key ? { Authorization: `Bearer ${key}` } : {},
-        signal: AbortSignal.any([signal, timeout.signal]),
+        signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
       });
       const data = await response.json();
       // Revocation is an authentication event, not a reason to switch computers.
       if (mode === 'legacy' && response.status === 401 && data.code === 'UNPAIRED') return true;
       return response.ok && data.ok === true && data.name === 'modularchat' && data.encrypted === true;
-    } catch (failure) { if (signal.aborted) throw signal.reason || failure; return false; }
+    } catch (failure) { if (signal?.aborted) throw signal.reason || failure; return false; }
     finally { timers.clearTimeout(timer); }
   }
   async function waitFor(promise, signal) {
@@ -110,8 +111,13 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
         // Fall back to configured PC or status event if localHost could not start in 5s
       }
     }
-    const saved = configured();
     const host = local();
+    if (preferredKind === 'local' && host) {
+      active = host;
+      validUntil = now() + 30000;
+      return captured(host);
+    }
+    const saved = configured();
     let lan = '', remote = '';
     try { lan = normalizeServer(saved.local); remote = normalizeServer(saved.remote); }
     catch (failure) { if (!host) throw failure; onStatus({ code: 'INVALID_PC_CONFIG', message: failure.message, kind: 'local' }); }
@@ -119,6 +125,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     const startedAt = epoch;
     const controller = new AbortController();
     const pcToken = token() || '';
+    const wasPc = active?.kind === 'pc';
     const job = (async () => {
       let selected = null, syncResult;
       if (lan && await available(lan, pcToken, controller.signal)) selected = { server: lan, kind: 'pc' };
@@ -153,10 +160,18 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
         } finally { if (boundary === controller) boundary = null; }
       }
       if (!selected && host) {
+        if (wasPc) {
+          onStatus({ code: 'PC_CONNECTION_LOST', message: 'Conexão com o PC perdida.', server: lan || remote, kind: 'pc' });
+        }
         await embedded.activate(controller.signal); // Starts downloads through the API, never loads a model in JS.
         selected = host;
       }
-      if (!selected) throw Error('Não consegui conectar ao PC por HTTPS. Confira os endereços e o certificado.');
+      if (!selected) {
+        if (wasPc) {
+          onStatus({ code: 'PC_CONNECTION_LOST', message: 'Conexão com o PC perdida.', server: lan || remote, kind: 'pc' });
+        }
+        throw Error('Não consegui conectar ao PC por HTTPS. Confira os endereços e o certificado.');
+      }
       if (startedAt !== epoch || controller.signal.aborted) throw error('STALE_CONNECTION', 'A conexão mudou. Tente novamente.');
       const changed = active?.server !== selected.server || active?.kind !== selected.kind;
       active = selected;
@@ -253,7 +268,48 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     stopWatching = stop;
     return stop;
   }
-  return { configured, configure, current, kind, hasLocal, hasServer, resolve, resolveTarget, acquireTarget, invalidate, start };
+  async function switchToLocal() {
+    preferredKind = 'local';
+    if (embedded?.ensureStarted && !embedded?.target()) {
+      try {
+        await Promise.race([
+          embedded.ensureStarted(),
+          new Promise((_, reject) => timers.setTimeout(() => reject(new Error('timeout')), 8000)),
+        ]);
+      } catch (e) {}
+    }
+    const host = local();
+    if (host) {
+      if (embedded?.activate) {
+        try { await embedded.activate(); } catch (e) {}
+      }
+      active = host;
+      validUntil = now() + 30000;
+      onChange(host.server, { kind: 'local' });
+    }
+    invalidate();
+    return captured(host || active);
+  }
+  async function switchToPc() {
+    preferredKind = 'auto';
+    invalidate();
+    return resolveTarget(undefined, { fresh: true });
+  }
+  async function probePc() {
+    const saved = configured();
+    let lan = '', remote = '';
+    try {
+      lan = normalizeServer(saved.local, native());
+      remote = normalizeServer(saved.remote);
+    } catch {
+      return false;
+    }
+    const pcToken = token() || '';
+    if (lan && await available(lan, pcToken, undefined, 2500)) return true;
+    if (remote && remote !== lan && await available(remote, pcToken, undefined, 2500)) return true;
+    return false;
+  }
+  return { configured, configure, current, kind, hasLocal, hasServer, resolve, resolveTarget, acquireTarget, invalidate, start, switchToLocal, switchToPc, probePc };
 }
 
 const native = () => !!(typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.());
@@ -266,7 +322,12 @@ const connection = createServerConnection({
   native, mode: 'auto', embedded: localHost, sync: options => mobileSync.synchronize(options),
   token: () => privateGet('mc.token'), fetch: (...args) => fetch(...args),
   onChange: (server, detail) => window.dispatchEvent(new CustomEvent('mc:connection-change', { detail: { server, ...detail } })),
-  onStatus: detail => window.dispatchEvent(new CustomEvent('mc:connection-health', { detail })),
+  onStatus: detail => {
+    window.dispatchEvent(new CustomEvent('mc:connection-health', { detail }));
+    if (detail?.code === 'PC_CONNECTION_LOST') {
+      window.dispatchEvent(new CustomEvent('mc:pc-connection-lost', { detail }));
+    }
+  },
 });
 export const configuredConnection = () => connection.configured();
 export const configureConnection = value => connection.configure(value);
@@ -280,4 +341,14 @@ export const selectedKind = () => connection.kind();
 export const hasEmbeddedServer = () => connection.hasLocal();
 export const startConnection = () => connection.start({ window, document, navigator });
 export const invalidateConnection = () => connection.invalidate();
-export const connectionFailed = target => { if (native() && (!target || target.server === connection.current())) connection.invalidate(); };
+export const connectionFailed = target => {
+  if (native() && (!target || target.server === connection.current())) {
+    if (connection.kind() === 'pc') {
+      window.dispatchEvent(new CustomEvent('mc:pc-connection-lost', { detail: { server: target?.server } }));
+    }
+    connection.invalidate();
+  }
+};
+export const switchToLocal = () => connection.switchToLocal();
+export const switchToPc = () => connection.switchToPc();
+export const probePc = () => connection.probePc();

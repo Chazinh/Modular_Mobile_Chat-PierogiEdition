@@ -538,10 +538,10 @@ async fn timeline_puts_episodes_and_notes_outside_the_window_in_order_without_ga
     let ctx = ctx.unwrap();
     let live = last(&ctx);
     assert!(live.contains("LINHA DO TEMPO ANTERIOR"));
-    assert!(live.contains("turnos 1–2: Episódio inicial"));
+    assert!(live.contains("- Episódio inicial"));
     for n in [3, 4] {
         assert!(
-            live.contains(&format!("turnos {n}–{n}: Nota do turno {n}.")),
+            live.contains(&format!("- Nota do turno {n}.")),
             "turno {n}"
         );
     }
@@ -553,7 +553,7 @@ async fn timeline_puts_episodes_and_notes_outside_the_window_in_order_without_ga
         !live.contains("Nota do turno 5."),
         "turnos da janela recente não se repetem"
     );
-    assert!(live.find("turnos 1–2").unwrap() < live.find("turnos 3–3").unwrap());
+    assert!(live.find("Episódio inicial").unwrap() < live.find("Nota do turno 3").unwrap());
 }
 
 #[tokio::test]
@@ -675,7 +675,7 @@ async fn global_settings_reach_the_system_prompt_and_the_anchor() {
         "Priorize a narração, com falas pontuais: aproximadamente 30% de diálogo e 70% de narração"
     ));
     assert!(sys.contains("CONTEÚDO E EXPLICITUDE (definido pelo usuário; vale para toda a história):\nConteúdo +18: proibido."));
-    assert!(last(&custom).contains("30% falas / 70% narração"));
+    assert!(system(&custom).contains("30% de diálogo e 70% de narração"));
     // extremes: narration only / speech only, with no contradictory example
     s.call(Request::SetGlobalSettings(
         json!({"botChars":500,"dialoguePct":0,"content":""}),
@@ -1154,8 +1154,8 @@ async fn prompt_is_identical_when_only_the_needed_pairs_are_loaded() {
     assert!(sent[0].0 == 40 && sent[1].0 == 30, "{sent:?}");
     assert!(sent[1].1 < sent[0].1, "{sent:?}");
     // the timeline brings the notes before the window (turns 1–10) and none after it
-    assert!(texts[0].contains("turnos 10–10: nota 10"));
-    assert!(!texts[0].contains("turnos 11–11"));
+    assert!(texts[0].contains("- nota 10"));
+    assert!(!texts[0].contains("- nota 11"));
 }
 
 #[tokio::test]

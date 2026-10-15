@@ -2,6 +2,7 @@ node_modules/
 client/node_modules/
 client/dist/
 client/android/app/build/
+client/android/app/src/main/jniLibs/**/*.so
 client/android/build/
 client/android/.gradle/
 client/android/local.properties

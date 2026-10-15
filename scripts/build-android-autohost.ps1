@@ -1,7 +1,7 @@
 # Build only the Android ARM64 Rust/JNI host; never sync frontend, assemble or install an APK.
 [CmdletBinding()]
 param(
-    [string]$Local = 'C:\Users\Administrator\RoleplayChat-local',
+    [string]$Local = (Join-Path $env:USERPROFILE 'ModularChat-local'),
     [switch]$ValidateJava
 )
 $ErrorActionPreference = 'Stop'
@@ -38,8 +38,8 @@ function Invoke-BuildProcess([string]$Executable, [string]$Arguments, [string]$D
         throw "Build failed (exit $exitCode). Full log: $Log"
     }
 }
-foreach ($required in @($clang, $readelf, (Join-Path $ndk 'toolchains\llvm\prebuilt\windows-x86_64\sysroot\usr\include\jni.h'), (Join-Path $sdk 'cmake\3.22.1\bin\cmake.exe'))) {
-    if (-not (Test-Path -LiteralPath $required)) { throw "Official toolchain missing: $required. Install ndk;28.2.13676358 and cmake;3.22.1 with sdkmanager." }
+foreach ($required in @($clang, $readelf)) {
+    if (-not (Test-Path -LiteralPath $required)) { throw "Official toolchain missing: $required. Install ndk;28.2.13676358 with sdkmanager." }
 }
 $installedTargets = & rustup target list --installed
 if ($LASTEXITCODE -ne 0 -or $installedTargets -notcontains 'aarch64-linux-android') { throw 'Run rustup target add aarch64-linux-android first.' }
@@ -61,7 +61,6 @@ if ($ValidateJava) {
     $overrides.JAVA_HOME = $jdk.FullName
     $overrides.ANDROID_HOME = $sdk
     $overrides.GRADLE_USER_HOME = Join-Path $Local 'gradle-home'
-    $overrides.MC_ANDROID_NATIVE_BUILD_DIR = Join-Path $work 'cmake'
     $signing = Join-Path $Local 'signing\keystore.properties'
     if (Test-Path -LiteralPath $signing) { $overrides.MC_KEYSTORE_PROPS = $signing }
 }
@@ -92,6 +91,9 @@ try {
     foreach ($symbol in @('mc_android_start', 'mc_android_stop', 'mc_android_status', 'mc_android_last_error')) {
         if ($text -notmatch "\b$symbol\b") { throw "Missing C ABI export: $symbol" }
     }
+    foreach ($symbol in @('nativeStart', 'nativeStop', 'nativeStatus', 'nativeLastError')) {
+        if ($text -notmatch "\bJava_io_github_modularchat_pierogiedition_NativeHost_$symbol\b") { throw "Missing direct Rust JNI export: $symbol" }
+    }
     if ($text -notmatch '\(SONAME\).*\[libmodularchat_server\.so\]') { throw 'Runtime SONAME missing.' }
     foreach ($line in ($elf | Where-Object { $_ -match '\(NEEDED\)' })) {
         if ($line -match '\[(.+)\]' -and $Matches[1] -notin @('libc.so', 'libdl.so', 'libm.so', 'liblog.so')) { throw "Unpackaged non-system native dependency: $($Matches[1])" }
@@ -107,31 +109,15 @@ try {
         $gradleLog = Join-Path $work 'gradle-native-java.log'
         Push-Location (Join-Path $project 'client\android')
         try {
-            $gradleArgs = '/d /s /c ""' + (Join-Path $project 'client\android\gradlew.bat') + '" --no-daemon --console=plain --init-script "' + $gradleInit + '" :app:compileReleaseJavaWithJavac :app:externalNativeBuildRelease :app:mergeReleaseNativeLibs"'
+            $gradleArgs = '/d /s /c ""' + (Join-Path $project 'client\android\gradlew.bat') + '" --no-daemon --console=plain --init-script "' + $gradleInit + '" :app:compileReleaseJavaWithJavac :app:mergeReleaseNativeLibs"'
             Invoke-BuildProcess $env:ComSpec $gradleArgs (Get-Location).Path $gradleLog
         } finally { Pop-Location }
-        $bridge = Get-ChildItem -LiteralPath (Join-Path $work 'gradle\_app\intermediates\cxx') -Filter libmc_android_bridge.so -Recurse -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-        if (-not $bridge) { throw 'JNI output was not produced.' }
-        $bridgeElf = & $readelf -h -lW -d --dyn-syms $bridge.FullName
-        if ($LASTEXITCODE -ne 0) { throw 'JNI llvm-readelf failed.' }
-        [IO.File]::WriteAllLines((Join-Path $work 'jni-arm64-elf.txt'), [string[]]$bridgeElf)
-        $bridgeText = $bridgeElf -join "`n"
-        if ($bridgeText -notmatch 'Machine:\s+AArch64' -or $bridgeText -notmatch 'Type:\s+DYN' -or
-            $bridgeText -notmatch '\(SONAME\).*\[libmc_android_bridge\.so\]' -or
-            $bridgeText -notmatch '\(NEEDED\).*\[libmodularchat_server\.so\]') { throw 'JNI ELF architecture, SONAME or Rust dependency invalid.' }
-        foreach ($segment in ($bridgeElf | Where-Object { $_ -match '^\s*LOAD\s' })) {
-            if ($segment -notmatch '(0x[0-9a-f]+)\s*$' -or [Convert]::ToInt64($Matches[1].Substring(2), 16) -lt 16384) { throw 'JNI ELF LOAD alignment is below 16 KiB.' }
-        }
-        foreach ($symbol in @('nativeStart', 'nativeStop', 'nativeStatus', 'nativeLastError')) {
-            if ($bridgeText -notmatch "\bJava_io_github_modularchat_pierogiedition_NativeHost_$symbol\b") { throw "Missing JNI export: $symbol" }
-        }
-        # CMake owns packaging of the bridge; copying it to jniLibs would duplicate AGP's generated library.
         $merged = Join-Path $work 'gradle\_app\intermediates\merged_native_libs\release\mergeReleaseNativeLibs\out\lib\arm64-v8a'
-        foreach ($name in @('libmodularchat_server.so', 'libmc_android_bridge.so')) {
-            if (-not (Test-Path -LiteralPath (Join-Path $merged $name))) { throw "Missing merged native library: $name" }
-        }
-        Write-Output "JNI output: $($bridge.FullName); merged ARM64 libraries: $merged"
-        Write-Output "Release Java, JNI/CMake and native-library merge OK. Log: $gradleLog"
+        $runtime = Join-Path $merged 'libmodularchat_server.so'
+        if (-not (Test-Path -LiteralPath $runtime)) { throw 'Missing merged Rust/JNI runtime.' }
+        if (Test-Path -LiteralPath (Join-Path $merged 'libmc_android_bridge.so')) { throw 'Obsolete C JNI bridge is still packaged.' }
+        if ((Get-FileHash -LiteralPath $runtime).Hash -ne (Get-FileHash -LiteralPath $library).Hash) { throw 'Merged Rust/JNI runtime differs from this build.' }
+        Write-Output "Release Java, direct Rust JNI and native-library merge OK. Log: $gradleLog"
     }
 } finally {
     foreach ($name in $previous.Keys) {

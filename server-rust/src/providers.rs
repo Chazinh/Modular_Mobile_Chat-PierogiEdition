@@ -633,6 +633,15 @@ impl Provider {
     ) -> reqwest::RequestBuilder {
         let mut body = body.clone();
         body["model"] = Value::String(model.to_owned());
+        // Explicit breakpoints are an OpenRouter extension. Other compatible
+        // endpoints (including 9Router) retain their existing wire contract.
+        if reqwest::Url::parse(&self.base_url).ok().is_some_and(|url| url.host_str() == Some("openrouter.ai"))
+            && let Some(system) = body["messages"].as_array_mut().and_then(|messages| messages.first_mut())
+            && system["role"] == "system"
+            && let Some(text) = system["content"].as_str()
+        {
+            system["content"] = serde_json::json!([{"type":"text","text":text,"cache_control":{"type":"ephemeral"}}]);
+        }
         let mut request = client
             .post(format!("{}/chat/completions", self.base_url))
             .json(&body)

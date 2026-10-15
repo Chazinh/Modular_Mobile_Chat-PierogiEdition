@@ -6,8 +6,9 @@
             <certificates src="user" />
         </trust-anchors>
     </base-config>
-    <!-- Only the internal Capacitor origin uses HTTP. Remote connections require HTTPS. -->
+    <!-- Capacitor and the embedded loopback host use HTTP. Remote connections require HTTPS. -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>
 </network-security-config>

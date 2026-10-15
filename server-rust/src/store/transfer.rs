@@ -468,11 +468,16 @@ pub(super) fn validate_sync(data: &Value, removed: &HashMap<&str, HashSet<&str>>
             if !seen.insert(at.clone()) {
                 return Err(fail());
             }
-            let row = inter.get(&at).ok_or_else(fail)?;
-            at = s(row, "parent_id");
+            if let Some(row) = inter.get(&at) {
+                at = s(row, "parent_id");
+            } else if removed.get("interactions").is_some_and(|r| r.contains(at.as_str())) {
+                break;
+            } else {
+                return Err(fail());
+            }
         }
         if let Some(parent) = i["parent_id"].as_str()
-            && inter.get(parent).is_none_or(|row| n(row, "seq") >= n(i, "seq"))
+            && inter.get(parent).is_some_and(|row| n(row, "seq") >= n(i, "seq"))
         {
             return Err(fail());
         }

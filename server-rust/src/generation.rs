@@ -506,7 +506,7 @@ impl Manager {
             } else {
                 None
             };
-            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint().await,"beforeSeq":data["beforeSeq"],"windowStartSeq":data["pairs"].as_array().and_then(|a|a.get(a.len().saturating_sub(30))).map(|p|p["seq"].clone()).unwrap_or(data["current"]["seq"].clone()),"limit":24}))).await?;
+            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint().await,"beforeSeq":data["beforeSeq"],"windowStartSeq":context::retrieval_window_start(&data),"limit":24}))).await?;
             context::assemble(&data, &retrieval, &g.mode, &plan, calibration)
         };
         let enriched = tokio::select! {_=g.cancelled()=>None,v=tokio::time::timeout(Duration::from_secs(6),enrich)=>Some(v)};
@@ -747,15 +747,9 @@ impl Manager {
             && status == "complete"
             && before["ok"] != true
         {
-            let mut repair_body = plan.body.clone();
-            repair_body["stream"] = json!(false);
-            repair_body
-                .as_object_mut()
-                .unwrap()
-                .remove("stream_options");
-            let messages = repair_body["messages"].as_array_mut().unwrap();
-            messages.push(json!({"role":"assistant","content":visible}));
-            messages.push(json!({"role":"user","content":style_policy::instruction_settings(&before,pct,&data["globalSettings"])}));
+            let repair_body = style_policy::repair_body(&plan.body, &visible,
+                &style_policy::instruction_settings(&before,pct,&data["globalSettings"]));
+            style_report["inputEstimate"] = json!(rules::estimate_messages(repair_body["messages"].as_array().unwrap()));
             let repair = async {
                 let response = match &backend {
                     crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
