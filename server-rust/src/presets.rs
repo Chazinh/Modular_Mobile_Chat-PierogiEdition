@@ -3,11 +3,15 @@ use serde_json::{Value, json};
 use std::sync::LazyLock;
 
 /// Version of the preset definitions; every generation records it.
-pub const PRESET_VERSION: u32 = 9;
+pub const PRESET_VERSION: u32 = 10;
 /// Retired presets: old conversations that use them still open and generate with the current default preset.
 const RETIRED_PRESETS: &[&str] = &["space-bunny"];
 /// Routes 9Router still lists but the provider shut down (z-ai/glm-5.2 on NVIDIA: HTTP 410 since 2026-08-21).
 const RETIRED_ROUTE_MARKS: &[&str] = &["space-bunny", "nvidia/z-ai/glm-5.2"];
+pub fn selectable_route(route: &str) -> bool {
+    !route.trim().is_empty() && route.len() <= 512 && !route.chars().any(char::is_control)
+        && !RETIRED_ROUTE_MARKS.iter().any(|m| route.to_lowercase().contains(m))
+}
 static PRESETS: LazyLock<Vec<Value>> =
     LazyLock::new(|| serde_json::from_str(include_str!("presets.json")).unwrap());
 pub fn by_id(id: &str) -> Value {
@@ -99,10 +103,9 @@ pub fn effort_for(preset: &Value, route: &str, requested: &Value) -> Value {
     }
 }
 pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
-    let only_mobile_local = ids.len() == 1 && ids[0] == "mobile-local";
+    let has_server_routes = ids.iter().any(|id| id != "mobile-local" && !id.starts_with("mobile-api:"));
     PRESETS
         .iter()
-        .filter(|p| p["id"] != "generic")
         .map(|p| {
             let mut out = p.clone();
             // routes listed by the providers + known direct routes served without being listed in /models
@@ -111,23 +114,14 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                 .filter(|id| {
                     for_route(id)["id"] == p["id"]
                         && p["routeAliases"][id.as_str()].is_null()
-                        && !RETIRED_ROUTE_MARKS
-                            .iter()
-                            .any(|m| id.to_lowercase().contains(m))
+                        && selectable_route(id)
                 })
                 .cloned()
                 .collect();
-            if !ids.is_empty() && !s(p, "id").starts_with("mobile-") {
+            if has_server_routes && !s(p, "id").starts_with("mobile-") {
                 for u in p["unlistedRoutes"].as_array().into_iter().flatten() {
                     if let Some(u) = u.as_str().filter(|u| !route_ids.iter().any(|r| r == u)) {
                         route_ids.push(u.to_string());
-                    }
-                }
-                if only_mobile_local && route_ids.is_empty() {
-                    for pr in p["preferredRoutes"].as_array().into_iter().flatten() {
-                        if let Some(pr) = pr.as_str().filter(|r| !route_ids.iter().any(|x| x == r)) {
-                            route_ids.push(pr.to_string());
-                        }
                     }
                 }
             }
@@ -141,11 +135,21 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                 json!(!routes.is_empty())
             };
             out["routes"] = json!(routes);
+            if p["id"] == "generic" {
+                out["label"] = json!("Outros modelos do servidor");
+                out["selectable"] = json!(!route_ids.is_empty());
+            }
             out
         })
+        .filter(|p| p["id"] != "generic" || p["selectable"] == true)
         .collect()
 }
 pub fn resolve(body: &Value, current: Option<&Value>) -> Result<Value> {
+    resolve_available(body, current, &[])
+}
+/// Unknown model families remain selectable only when advertised by a configured provider.
+/// They use the generic request contract, without invented effort/thinking controls.
+pub fn resolve_available(body: &Value, current: Option<&Value>, available: &[String]) -> Result<Value> {
     let default = std::env::var("DEFAULT_MODEL").unwrap_or("cbai/deepseek-v4.1-flash".into());
     let route = body["routeId"]
         .as_str()
@@ -167,10 +171,11 @@ pub fn resolve(body: &Value, current: Option<&Value>) -> Result<Value> {
     };
     if preset["id"] == "generic"
         && !current.is_some_and(|c| c["routeId"] == route && c["presetId"] == "generic")
+        && !(selectable_route(route) && available.iter().any(|id| id == route))
     {
         return Err(Error::new(
             400,
-            "Escolha uma rota com esforço definido pelo aplicativo.",
+            "Escolha um modelo publicado pelos provedores configurados.",
         ));
     }
     let route = alias_route(&preset, route);

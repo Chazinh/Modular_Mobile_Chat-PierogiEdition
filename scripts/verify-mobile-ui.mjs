@@ -105,6 +105,10 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.endsWith('/message')) {
       let raw = ''; for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw); calls.push(body);
+      if(failMessage==='rejected') {
+        res.writeHead(503, {'Content-Type':'application/json'});
+        return res.end(JSON.stringify({error:'FALHA_PROVEDOR_TESTE'}));
+      }
       if(failMessage==='pre-headers')return req.socket.destroy(); // Chromium may retry below fetch; preserve every physical opId.
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       if(failMessage==='accepted-sse') {
@@ -427,6 +431,22 @@ try {
     await waitFor(`document.querySelector('.mc-sheet')`);
   };
   const enter = (selector,text) => evaluate(`(()=>{const t=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(t,${JSON.stringify(text)});t.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  // A rejected request must render the error without unmounting the chat (send AND regenerate).
+  // This exercises isNative() in ChatView's error branch, which used to throw ReferenceError.
+  const preservedHistory = JSON.stringify(chat.history);
+  for (const mode of ['regenerate', 'send']) {
+    failMessage='rejected';
+    if(mode==='send') {await enter('textarea','RASCUNHO_ERRO_PRESERVADO');await click('Enviar');}
+    else await click('Refazer a última resposta');
+    await waitFor(`document.querySelector('.mc-scroll')?.textContent.includes('FALHA_PROVEDOR_TESTE')`);
+    assert.equal(calls.at(-1).mode,mode);
+    assert.equal(await evaluate(`!!document.querySelector('.mc-chat')&&!!document.querySelector('textarea')`),true,`${mode}: error preserves the screen`);
+    assert.equal(JSON.stringify(chat.history),preservedHistory,`${mode}: rejected request preserves conversation`);
+    if(mode==='send')assert.equal(await evaluate(`document.querySelector('textarea').value`),'RASCUNHO_ERRO_PRESERVADO');
+    assert.deepEqual(errors,[],`${mode}: no render exception`);
+    await textButton('fechar');
+    failMessage=false;
+  }
   chat.history[1].content='Mira: **Fala com markdown**\n*Uma ação.*';chat.revision++;await refresh();
   await menu('a1');await textButton('Copiar');await waitFor(`window.__copied`);
   assert.equal(await evaluate('window.__copied'),chat.history[1].content);
@@ -660,10 +680,10 @@ try {
   // Real cached-first opening, with a held GET and a stale public/generic preset cache.
   chat=initial();chat.history[2].content+='\n'+('Trecho de leitura no cache. '.repeat(220));await refresh();await pause(200);
   const stalePresets={presets:[
-    {id:'generic',label:'LEGADO_GENERICO',efforts:['high'],routes:[{id:'hidden'}]},
+    {id:'generic',selectable:false,label:'LEGADO_GENERICO',efforts:['high'],routes:[{id:'hidden'}]},
     {id:'unknown',label:'LEGADO_OUTRO',efforts:['high'],routes:[{id:'hidden2'}]},
     {id:'deepseek-v41-flash',label:'PRESET_PERMITIDO_OFFLINE',efforts:['high'],defaultEffort:'high',routes:[{id:'cbai/deepseek-v4.1-flash'}]},
-    // api.cachedPresets() only trusts a cache with the full Gemini preset (3 levels, 3 routes); without it, it falls back to the defaults
+    {id:'future-family',selectable:true,label:'MODELO_MODULAR_OFFLINE',efforts:[],routes:[{id:'oc/deepseek-v4-flash'}]},
     {id:'gemini-38-flash',label:'GEMINI_CACHE',efforts:['low','medium','high'],defaultEffort:'low',routes:[{id:'ag/gemini-3.8-flash-low'},{id:'ag/gemini-3.8-flash-medium'},{id:'ag/gemini-3.8-flash-high'}]},
   ]};
   await evaluate(`new Promise((resolve,reject)=>{const req=indexedDB.open('modularchat',1);req.onsuccess=()=>{const db=req.result,tx=db.transaction('kv','readwrite');tx.objectStore('kv').put(${JSON.stringify(stalePresets)},'presets');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=reject};req.onerror=reject})`);
@@ -708,6 +728,7 @@ try {
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Modelo e esforço')).click()`);
   await waitFor(`document.body.textContent.includes('PRESET_PERMITIDO_OFFLINE')`);
   assert.equal(await evaluate(`document.body.textContent.includes('LEGADO_GENERICO')||document.body.textContent.includes('LEGADO_OUTRO')`),false,'offline cache hides generic and unsupported presets');
+  assert.equal(await evaluate(`document.body.textContent.includes('MODELO_MODULAR_OFFLINE')`),true,'new server presets survive cache and render in model selection');
   await screenshot('cached-get-anchor-offline-presets');
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }); await screenshot('desktop');
   // Separate accepted SSE without an operation ACK from Chromium's pre-header HTTP retries.

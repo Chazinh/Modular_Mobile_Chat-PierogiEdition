@@ -293,7 +293,7 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
   useLanguage();
   const isPc = config.kind === 'pc';
   const list = (presets?.presets || [])
-    .filter(p => p.selectable !== false && p.id !== 'generic')
+    .filter(p => p.selectable !== false)
     .filter(p => !isPc || (p.id !== 'mobile-local' && p.id !== 'mobile-api'));
   const savedThinking = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
   const [sel, setSel] = useState({ presetId: chat.presetId, routeId: chat.routeId, effort: chat.effort, thinkingEnabled: savedThinking });

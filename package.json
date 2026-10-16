@@ -1,6 +1,6 @@
 {
   "name": "modularchat-pierogiedition",
-  "version": "1.0.0",
+  "version": "3.1.18",
   "description": "ModularChat (Pierogi Edition): local Rust server with encrypted memory, pluggable OpenAI-compatible model providers and an Android app. This package only holds the start, test and verification scripts.",
   "type": "module",
   "engines": {
@@ -10,8 +10,13 @@
     "start": "powershell -NoProfile -ExecutionPolicy Bypass -File start-server.ps1",
     "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File start-server.ps1 -Sandbox -NoUpstream",
     "build:rust": "cargo build --manifest-path server-rust/Cargo.toml --bins",
-    "test": "node --test --test-concurrency=1 tests/*.test.js tests/rust-runtime.mjs tests/rust-privacy.mjs",
+    "test": "node scripts/run-all-tests.mjs",
+    "test:all": "node scripts/run-all-tests.mjs --all",
+    "test:unit": "node scripts/run-all-tests.mjs --unit",
+    "test:fast": "node scripts/run-all-tests.mjs --unit",
+    "test:integration": "node scripts/run-all-tests.mjs --integration",
     "test:rust": "cargo test --manifest-path server-rust/Cargo.toml",
+    "test:legacy": "node --test --test-concurrency=1 tests/*.test.js tests/rust-runtime.mjs tests/rust-privacy.mjs",
     "validate-routes": "node scripts/validate-routes.mjs"
   }
 }

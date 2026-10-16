@@ -339,7 +339,7 @@ fn vector_validation() {
 #[test]
 fn presets_filter_historical() {
     assert!(
-        presets::public(&["other/model".into()], &json!({}))
+        presets::public(&["oc/space-bunny-free".into()], &json!({}))
             .iter()
             .all(|p| p["id"] != "generic")
     );
@@ -351,6 +351,39 @@ fn presets_filter_historical() {
         )
         .is_ok()
     );
+}
+#[test]
+fn configured_catalog_keeps_opencode_and_new_models_without_inventing_controls() {
+    let ids = vec!["oc/deepseek-v4-flash".into(), "custom:new-model".into(),
+        "oc/deepseek-v4.1-flash".into(), "oc/space-bunny-free".into()];
+    let catalog = presets::public(&ids, &json!({}));
+    let generic = catalog.iter().find(|p| p["id"] == "generic").unwrap();
+    assert_eq!(generic["selectable"], true);
+    assert_eq!(generic["routes"].as_array().unwrap().len(), 2);
+    assert!(catalog.iter().any(|p| p["id"] == "deepseek-v41-flash"
+        && p["routes"].as_array().unwrap().iter().any(|r| r["id"] == "oc/deepseek-v4.1-flash")));
+    for route in ["oc/deepseek-v4-flash", "custom:new-model"] {
+        let resolved = presets::resolve_available(&json!({"presetId":"generic","routeId":route,"effort":"high"}), None, &ids).unwrap();
+        assert_eq!(resolved["routeId"], route);
+        assert!(resolved["effort"].is_null());
+        let request = presets::request(&resolved, vec![], &json!({}));
+        for field in ["reasoning_effort", "reasoning", "thinking", "output_config"] {
+            assert!(request.body.get(field).is_none(), "{field}");
+        }
+    }
+    for route in ["unconfigured/model", "oc/space-bunny-free", ""] {
+        assert!(presets::resolve_available(&json!({"routeId":route}), None, &ids).is_err());
+    }
+}
+#[test]
+fn android_without_cloud_provider_does_not_advertise_fake_remote_routes() {
+    let catalog = presets::public(&["mobile-local".into()], &json!({}));
+    let local = catalog.iter().find(|p|p["id"]=="mobile-local").unwrap();
+    assert_eq!(local["available"],true);
+    for preset in catalog.iter().filter(|p|p["id"]!="mobile-local") {
+        assert_eq!(preset["available"],false,"{preset}");
+        assert!(preset["routes"].as_array().unwrap().is_empty());
+    }
 }
 #[test]
 fn new_presets_routes_thinking_and_unlisted_routes() {

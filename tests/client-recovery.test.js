@@ -32,6 +32,20 @@ test('presets: cache nativo mobile não é substituído pelos defaults PC', asyn
   finally { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous; }
 });
 
+test('presets: catálogo extensível e cache sem Gemini conservam o OpenCode e novos modelos', async () => {
+  const catalog = { presets: [
+    { id: 'generic', selectable: true, label: 'Outros modelos do servidor', routes: [{ id: 'oc/deepseek-v4-flash' }], efforts: [] },
+    { id: 'new-family', selectable: true, routes: [{ id: 'custom:model' }], efforts: [] },
+  ] };
+  assert.deepEqual(publicPresets(catalog), catalog);
+  assert.deepEqual(publicPresets({ presets: [{ id: 'generic', selectable: false }] }).presets, []);
+  const previous = globalThis.localStorage;
+  const saved = new Map([['mc.kv.presets', JSON.stringify(catalog)]]);
+  globalThis.localStorage = { getItem: k => saved.get(k) || null, setItem: (k, v) => saved.set(k, v), removeItem: k => saved.delete(k) };
+  try { assert.deepEqual(await api.cachedPresets(), catalog); }
+  finally { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous; }
+});
+
 test('privacidade: checkpoint de sync nunca cai no localStorage plaintext quando proteção indisponível', async () => {
   await assert.rejects(privateSet('mc.sync.fixture', '{"hash":"marker"}'), /armazenamento protegido/);
 });

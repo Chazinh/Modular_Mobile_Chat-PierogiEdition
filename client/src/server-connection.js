@@ -28,7 +28,9 @@ export async function testPcConnection(value, { httpsOnly = false, signal, fetch
 
 // Dependencies are explicit so network changes and concurrent probes can be verified in isolation.
 export function createServerConnection({ storage, native, token, fetch: probe, now = Date.now, onChange = () => {},
-  onStatus = () => {}, embedded = null, sync = null, mode = 'legacy', timers = globalThis }) {
+  onStatus: notifyStatus = () => {}, embedded = null, sync = null, mode = 'legacy', timers = globalThis }) {
+  let health = null;
+  const onStatus = detail => { health = detail; notifyStatus(detail); };
   let active = null, validUntil = 0, syncedUntil = 0, syncRetryAt = 0, epoch = 0, pending = null, boundary = null, stopWatching = null;
   let preferredKind = 'auto';
   const leases = new Map();
@@ -335,7 +337,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     if (remote && remote !== lan && await available(remote, pcToken, signal, 2500)) return true;
     return false;
   }
-  return { configured, configure, current, kind, snapshot, hasLocal, hasServer, resolve, resolveTarget, acquireTarget, invalidate, start, switchToLocal, switchToPc, probePc };
+  return { configured, configure, current, kind, snapshot, health: () => health, hasLocal, hasServer, resolve, resolveTarget, acquireTarget, invalidate, start, switchToLocal, switchToPc, probePc };
 }
 
 const native = () => !!(typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.());
@@ -365,6 +367,7 @@ export const resolveTarget = (signal, options) => connection.resolveTarget(signa
 export const acquireTarget = options => connection.acquireTarget(options);
 export const selectedKind = () => connection.kind();
 export const connectionSnapshot = () => connection.snapshot();
+export const connectionHealth = () => connection.health();
 export const hasEmbeddedServer = () => connection.hasLocal();
 export const startConnection = () => connection.start({ window, document, navigator });
 export const invalidateConnection = () => connection.invalidate();

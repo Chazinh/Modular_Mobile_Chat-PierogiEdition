@@ -1357,7 +1357,13 @@ impl Database {
                 self.sync_idle(&c)?;
                 let snapshot = self.sync_snapshot(&c)?;
                 self.sync_validate(&snapshot)?;
-                let entry = json!({"convId":c,"hash":row["hash"],"contentHash":row["content_hash"],"snapshot":snapshot});
+                // A private client marker can disappear while encrypted Store checkpoints survive.
+                // Only hashes scoped to this peer are offered; never checkpoint contents.
+                let mut checkpoints = vec![row["hash"].clone()];
+                for saved in self.rows("SELECT hash FROM sync_checkpoints WHERE peer_id=? AND conv_id=? ORDER BY rowid DESC LIMIT 127", &[json!(peer),json!(c)])? {
+                    if !checkpoints.contains(&saved["hash"]) { checkpoints.push(saved["hash"].clone()); }
+                }
+                let entry = json!({"convId":c,"hash":row["hash"],"contentHash":row["content_hash"],"snapshot":snapshot,"checkpointHashes":checkpoints});
                 out["snapshots"].as_array_mut().unwrap().push(entry);
                 out["manifests"]
                     .as_array_mut()
@@ -2051,6 +2057,25 @@ fn row_map(data: Option<&Value>, table: &str, pk: &[&str]) -> BTreeMap<String, V
         .map(|r| (key(r, pk), r.clone()))
         .collect()
 }
+// Queue execution metadata is not a narrative edit. A completed receipt must
+// never be downgraded or executed again by a peer with an older/failed attempt.
+fn merge_job_runtime(ours: &Value, theirs: &Value) -> Option<Value> {
+    let mut a = ours.clone();
+    let mut b = theirs.clone();
+    for k in ["status", "attempts", "updated_at"] {
+        a.as_object_mut()?.remove(k); b.as_object_mut()?.remove(k);
+    }
+    if a != b { return None; }
+    let rank = |v: &Value| match v.as_str() {
+        Some("skipped") => 5, Some("done") => 4, Some("blocked") => 3,
+        Some("pending") => 2, Some("failed") => 1, _ => 0,
+    };
+    let mut merged = ours.clone();
+    if rank(&theirs["status"]) > rank(&ours["status"]) { merged["status"] = theirs["status"].clone(); }
+    merged["attempts"] = json!(n(ours,"attempts").max(n(theirs,"attempts")));
+    merged["updated_at"] = json!(s(ours,"updated_at").max(s(theirs,"updated_at")));
+    Some(merged)
+}
 fn merge_snapshot(
     base: Option<&Value>,
     ours: Option<&Value>,
@@ -2121,6 +2146,14 @@ fn merge_snapshot(
                 rows.insert(id, remote);
                 continue;
             }
+            if table == "jobs" {
+                if let Some(job) = merge_job_runtime(local.unwrap(), &remote) {
+                    rows.insert(id, job); continue;
+                }
+                if !base_row_same(old, local.unwrap()) && !base_row_same(old, &remote) {
+                    return Err(format!("JOB_DEFINITION_DIVERGED:{id}"));
+                }
+            }
             if base_row_same(old, &remote) {
                 continue;
             }
@@ -2160,7 +2193,7 @@ fn merge_snapshot(
                 && matches!(local.unwrap()["status"].as_str(), Some("done" | "skipped"))
                 && local.unwrap()["status"] != remote["status"]
             {
-                return Err(format!("TERMINAL_JOB:{id}"));
+                return Err(format!("JOB_DEFINITION_DIVERGED:{id}"));
             }
             rows.insert(id, remote);
         }

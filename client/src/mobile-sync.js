@@ -98,6 +98,10 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
             if (!convIds.includes(entry.convId) || result.has(entry.convId) || !hashValid(entry.hash) || !hashValid(entry.contentHash)
                 || entry.snapshot?.convId !== entry.convId || entry.snapshot.full !== true) fail('INVALID_SYNC', 'Snapshot de conversa inválido.');
             if (bytes(entry.snapshot) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'Uma conversa excede 8 MiB; ela foi preservada sem truncagem.');
+            if (entry.checkpointHashes !== undefined && (!Array.isArray(entry.checkpointHashes) || entry.checkpointHashes.length > 128
+                || entry.checkpointHashes.some(hash => !hashValid(hash)) || new Set(entry.checkpointHashes).size !== entry.checkpointHashes.length)) {
+              fail('INVALID_SYNC', 'Os checkpoints oferecidos pelo servidor são inválidos.');
+            }
             result.set(entry.convId, entry);
           }
           if (!data.hasMore) break;
@@ -119,6 +123,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
     try { state = saved ? JSON.parse(saved) : { version: 1, pcId, mobileId, baselines: {}, pending: null }; }
     catch { fail('INVALID_BASELINE', 'Não foi possível ler o checkpoint privado de sincronização.'); }
     if (state.version !== 1 || state.pcId !== pcId || state.mobileId !== mobileId || !state.baselines) fail('INVALID_BASELINE', 'O checkpoint não pertence a estes cofres.');
+    state.baselines = Object.assign(Object.create(null), state.baselines);
     const persist = async () => {
       check();
       const value = JSON.stringify(state);
@@ -196,7 +201,11 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         return compatible() ? manifest.hash === r.hash : manifest.contentHash === r.contentHash;
       };
       const alreadyApplied = pending.records.every(isRecordResolved);
-      if (alreadyApplied) {
+      const rejectedJobMetadata = pending.code === 'CONFLICT' && pending.conflicts?.length > 0
+        && pending.conflicts.every(c => c.reason?.startsWith('ROW_DIVERGED:jobs:') || c.reason?.startsWith('TERMINAL_JOB:'));
+      if (alreadyApplied || rejectedJobMetadata) {
+        // Only a previously rejected queue-metadata conflict can be replanned.
+        // No generation/write receipt with uncertain acceptance is discarded.
         state.pending = null;
         await persist();
       } else {
@@ -235,8 +244,29 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       }
     }
 
-    const pushIds = [], pushBases = new Map();
     const ids = [...new Set([...pcState.manifests.keys(), ...mobileState.manifests.keys()])].sort();
+    const missing = ids.filter(id => {
+      const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
+      return p && m && !Object.hasOwn(state.baselines, id) && !(p.purged && m.purged)
+        && (compatible() ? p.hash !== m.hash : p.contentHash !== m.contentHash);
+    });
+    // Recover only an ancestor demonstrably retained by BOTH encrypted Stores.
+    // Current hashes alone are never invented as a baseline for divergent histories.
+    for (let start = 0; start < missing.length; start += 4) {
+      const group = missing.slice(start, start + 4);
+      const pcOffers = await offer(pc, pcId, mobileId, group);
+      const mobileOffers = await offer(mobile, mobileId, pcId, group);
+      for (const id of group) {
+        const p = pcOffers.get(id), m = mobileOffers.get(id);
+        if (p.hash !== pcState.manifests.get(id).hash || m.hash !== mobileState.manifests.get(id).hash) fail('STALE_SYNC', 'O cofre mudou durante a recuperação do checkpoint.');
+        const retained = new Set(m.checkpointHashes || []);
+        const common = (p.checkpointHashes || []).find(hash => retained.has(hash));
+        if (!common) fail('CONFLICT', 'As duas versões foram preservadas. Nenhum checkpoint comum foi encontrado para recuperar a comparação desta conversa.');
+        state.baselines[id] = { pcHash: common, mobileHash: common, contentHash: null };
+      }
+      await persist();
+    }
+    const pushIds = [], pushBases = new Map();
     for (const id of ids) {
       const p = pcState.manifests.get(id), m = mobileState.manifests.get(id), base = Object.hasOwn(state.baselines, id) ? state.baselines[id] : null;
       if (base && (!p || !m)) fail('MISSING_CONVERSATIONS', 'Uma conversa da baseline desapareceu de um dos cofres.');

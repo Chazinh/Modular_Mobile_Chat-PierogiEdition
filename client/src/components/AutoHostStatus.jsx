@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api, config, isNative } from '../api.js';
 import { tr, useLanguage } from '../i18n.js';
 import { downloadProgress, startStatusPolling } from '../autohost-status.js';
+import { connectionHealth } from '../server-connection.js';
+import PcConnectionButton from './PcConnectionButton.jsx';
 
 const phases = { pending: 'Aguardando download', downloading: 'Baixando', verifying: 'Verificando arquivo', ready: 'Arquivo disponível', error: 'Erro no download', cancelled: 'Download pausado' };
 const toMB = bytes => ((Number(bytes) || 0) / (1024 * 1024)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -20,7 +22,7 @@ export default function AutoHostStatus() {
   useLanguage();
   const [status, setStatus] = useState(null);
   const [kind, setKind] = useState(() => config.kind);
-  const [health, setHealth] = useState(null);
+  const [health, setHealth] = useState(() => connectionHealth());
   const [error, setError] = useState('');
   const [retrying, setRetrying] = useState(false);
   const polling = useRef(null), action = useRef(null);
@@ -62,7 +64,8 @@ export default function AutoHostStatus() {
         {kind === 'local' && (downloadError || !status?.activated || !status?.chat?.ok) && <button type="button" disabled={retrying} onClick={retry} className="rounded-full bg-composer px-3 py-1 font-medium disabled:opacity-40">{tr(!status?.activated ? 'Baixar e ativar modelos' : downloadError ? 'Tentar ativar modelos' : 'Ativar modelos')}</button>}
       </div>
       {syncLabel && <p role="status" className={conflict ? 'text-yellow-300' : 'text-textMuted'}>{tr(syncLabel)}</p>}
-      {health?.message && !syncLabel && <p className="text-yellow-300">{tr(health.message)}</p>}
+      {health?.message && health.message !== syncLabel && <p className="text-yellow-300">{tr(health.message)}</p>}
+      <PcConnectionButton />
       {standby && <p className="text-textMuted">{tr(resident ? 'Android em standby · descarregando modelos' : 'Android em standby · nenhum modelo residente')}</p>}
       {status ? <div className="mt-1 space-y-1 text-textMuted">
         <DownloadStatus model={status.chat} title={tr('Modelo de conversa')} />

@@ -97,6 +97,53 @@ async fn mirror(pc: &Fixture, phone: &Fixture, c: &str) -> Value {
     assert_eq!(out["accepted"][0]["hash"], first["hash"]);
     first
 }
+#[tokio::test]
+async fn recovery_offers_only_checkpoint_hashes_retained_for_the_same_peer() {
+    let pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let c = pc.create().await;
+    let first = mirror(&pc,&phone,&c).await;
+    pc.store.call(Request::PatchConversation{conv_id:c.clone(),patch:json!({"name":"PC changed"}),base_character_rev:None}).await.unwrap();
+    let current = offer(&pc,&phone.server,&c).await;
+    assert_ne!(current["hash"],first["hash"]);
+    assert!(current["checkpointHashes"].as_array().unwrap().contains(&first["hash"]));
+    assert!(offer(&phone,&pc.server,&c).await["checkpointHashes"].as_array().unwrap().contains(&first["hash"]));
+    let stranger = offer(&pc,&json!(id()),&c).await;
+    assert_eq!(stranger["checkpointHashes"],json!([current["hash"]]));
+    assert!(current["checkpointHashes"].as_array().unwrap().len() <= 128);
+    assert!(current["checkpointHashes"].as_array().unwrap().iter().all(|v|v.as_str().is_some_and(|s|s.len()==64)));
+    pc.close().await; phone.close().await;
+}
+#[tokio::test]
+async fn independent_job_execution_metadata_converges_without_reexecuting_terminal_jobs() {
+    for (left,right,expected) in [("done","failed","done"),("done","skipped","skipped"),("pending","failed","pending"),("failed","blocked","blocked"),("blocked","pending","blocked")] {
+        let pc=Fixture::new().await; let phone=Fixture::new().await; let c=pc.create().await;
+        let job=pc.store.call(Request::EnqueueJob(json!({"convId":c,"kind":"cast"}))).await.unwrap();
+        let first=mirror(&pc,&phone,&c).await;
+        for (store,status) in [(&pc,left),(&phone,right)] {
+            assert_eq!(store.store.call(Request::ClaimJob).await.unwrap()["id"],job["id"]);
+            store.store.call(Request::FinishJob{id:job["id"].as_str().unwrap().into(),status:status.into(),error:None}).await.unwrap();
+        }
+        let incoming=offer(&phone,&pc.server,&c).await;
+        let applied=pc.delta(batch(&phone.server,vec![push(&incoming,first["hash"].clone())])).await.unwrap();
+        assert!(applied["conflicts"].as_array().unwrap().is_empty(),"{applied}");
+        let merged=offer(&pc,&phone.server,&c).await;
+        assert_eq!(merged["snapshot"]["jobs"][0]["status"],expected);
+        let pulled=phone.delta(batch(&pc.server,vec![push(&merged,first["hash"].clone())])).await.unwrap();
+        assert!(pulled["conflicts"].as_array().unwrap().is_empty(),"{pulled}");
+        assert_eq!(offer(&phone,&pc.server,&c).await["hash"],merged["hash"]);
+        if ["done","skipped"].contains(&expected) {
+            assert!(pc.store.call(Request::ClaimJob).await.unwrap().is_null());
+            assert!(phone.store.call(Request::ClaimJob).await.unwrap().is_null());
+        }
+        let mut changed=merged.clone();
+        changed["snapshot"]["jobs"][0]["payload_json"]=json!("{\"skipReview\":true}");
+        rehash(&mut changed);
+        let rejected=pc.delta(batch(&phone.server,vec![push(&changed,first["hash"].clone())])).await.unwrap();
+        assert!(rejected["conflicts"].as_array().unwrap().iter().any(|r|r["reason"].as_str().unwrap().starts_with("JOB_DEFINITION_DIVERGED:")),"{rejected}");
+        pc.close().await; phone.close().await;
+    }
+}
 async fn turn(f: &Fixture, c: &str, text: &str, op: &str) -> Value {
     let request: TurnRequest =
         serde_json::from_value(json!({"convId":c,"mode":"send","content":text,

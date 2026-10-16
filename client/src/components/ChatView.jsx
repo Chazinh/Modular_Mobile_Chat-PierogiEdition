@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2,
   ArrowDown, Keyboard, Layers, Info, WifiOff, Check, AlertTriangle,
 } from 'lucide-react';
-import { api, config, uuid } from '../api.js';
+import { api, config, uuid, isNative } from '../api.js';
 import { connectionSnapshot } from '../server-connection.js';
 import { watchProviderCatalog } from '../provider-catalog.js';
 import { useLayer } from '../nav.js';
@@ -22,6 +22,7 @@ import { useReadingGesture, useDrawerGesture, useTopBar } from '../gestures.js';
 import AvatarViewerModal from './AvatarViewerModal.jsx';
 import RenameModal from './RenameModal.jsx';
 import { resetPull } from '../drawer-motion.js';
+import PcConnectionButton from './PcConnectionButton.jsx';
 
 const STATUS_NOTE = {
   interrupted: 'Interrompida. O trecho recebido foi salvo.',
@@ -760,6 +761,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
                 <span className="flex-1 break-words">{tr(error)}</span>
                 <button onClick={() => setError('')} className="shrink-0 text-xs underline">{tr("fechar")}</button>
               </div>
+              <PcConnectionButton />
               {isNative() && (String(error).includes('compacto') || String(error).includes('standby') || String(error).includes('LOCAL_')) && (
                 <button
                   type="button"

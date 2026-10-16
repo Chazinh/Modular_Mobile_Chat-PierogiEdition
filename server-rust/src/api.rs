@@ -211,7 +211,7 @@ impl AppState {
             None => Vec::new(),
         }
         .into_iter()
-        .filter(|id| presets::for_route(id)["id"] != "generic")
+        .filter(|id| presets::selectable_route(id))
         .collect();
         if self.config.is_android() {
             ids.push("mobile-local".into());
@@ -265,6 +265,18 @@ impl AppState {
                 409,
                 "Configuração disponível apenas no host mobile.",
             ))
+        }
+    }
+    async fn resolve_route(&self, body: &Value, current: Option<&Value>) -> Result<Value> {
+        match presets::resolve(body, current) {
+            Ok(route) => Ok(route),
+            Err(original) => {
+                let route = body["routeId"].as_str().or(body["model"].as_str()).unwrap_or_default();
+                if presets::for_route(route)["id"] != "generic" {
+                    return Err(original);
+                }
+                presets::resolve_available(body, current, &self.models().await?)
+            }
         }
     }
     async fn update_providers(&self, body: &Value) -> Result<Value> {
@@ -741,7 +753,7 @@ async fn dispatch(
                 b["routeId"] = json!("mobile-local");
                 b["presetId"] = json!("mobile-local");
             }
-            let route = presets::resolve(&b, None)?;
+            let route = state.resolve_route(&b, None).await?;
             let persona = persona(&state, &b).await?;
             b["persona"] = persona["name"].clone();
             if !b["settings"].is_object() {
@@ -951,7 +963,7 @@ async fn dispatch(
                         .iter()
                         .any(|k| b.get(*k).is_some())
                     {
-                        let route = presets::resolve(&b, Some(&current))?;
+                        let route = state.resolve_route(&b, Some(&current)).await?;
                         for k in ["routeId", "presetId", "effort"] {
                             b[k] = route[k].clone();
                         }

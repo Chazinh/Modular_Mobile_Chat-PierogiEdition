@@ -2,7 +2,7 @@
 # Optional -Serial validates the packaged executable in a unique /data/local/tmp directory only.
 [CmdletBinding()]
 param(
-    [string]$Local = (Join-Path $env:USERPROFILE 'RoleplayChat-local'),
+    [string]$Local = (Join-Path $env:USERPROFILE 'ModularChat-local'),
     [ValidateRange(1, 32)][int]$Jobs = [Math]::Min(6, [Environment]::ProcessorCount),
     [ValidateRange(60, 1500)][int]$BuildTimeoutSeconds = 1200,
     [ValidatePattern('^[A-Za-z0-9_.:-]*$')][string]$Serial = ''

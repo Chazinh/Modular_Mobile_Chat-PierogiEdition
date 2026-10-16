@@ -258,6 +258,14 @@ test('auto: BUSY aguarda 10s para novo sync mesmo com writes locais consecutivos
   assert.equal(syncs, 2);
 });
 
+test('auto: último motivo de permanecer no Android continua disponível para uma tela montada depois', async () => {
+  const f = autoFixture({ sync: async () => {throw Object.assign(Error('Conflito de sincronização preservado'),{code:'CONFLICT'});} });
+  f.connection.configure({local});
+  assert.equal((await f.connection.resolveTarget()).kind,'local');
+  assert.equal(f.connection.health().code,'CONFLICT');
+  assert.equal(f.connection.health().message,'Conflito de sincronização preservado');
+});
+
 test('PC ativo: checagem periódica observa memória sem interromper inferência nem desconectar', async () => {
   let now = 0, calls = 0; const policies = [];
   const f = autoFixture({ now: () => now, sync: async options => {

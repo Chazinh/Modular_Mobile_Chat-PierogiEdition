@@ -189,7 +189,7 @@ const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude
 export const publicPresets = data => data ? {
   ...data,
   presets: (data.presets || [])
-    .filter(p => PUBLIC_PRESETS.has(p.id))
+    .filter(p => p.selectable !== false && (p.selectable === true || PUBLIC_PRESETS.has(p.id)))
     .filter(p => config.kind !== 'pc' || (p.id !== 'mobile-local' && p.id !== 'mobile-api'))
     .map(p => p.id === 'glm-52' ? { ...p, label: 'GLM' } : p),
 } : null;
@@ -204,8 +204,7 @@ export const api = {
     const raw = await kv.get('presets', null);
     const cached = publicPresets(raw);
     if (config.kind !== 'pc' && cached?.presets?.some(p => p.id === 'mobile-local' || p.id === 'mobile-api')) return cached;
-    const gemini = cached?.presets?.find((p) => p.id === 'gemini-38-flash');
-    if (!cached || !gemini || !gemini.efforts || gemini.efforts.length < 3 || !gemini.routes || gemini.routes.length < 3) {
+    if (!cached?.presets?.length) {
       await kv.set('presets', DEFAULT_PRESETS).catch(() => {});
       return DEFAULT_PRESETS;
     }

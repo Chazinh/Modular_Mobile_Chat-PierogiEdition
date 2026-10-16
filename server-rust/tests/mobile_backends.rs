@@ -661,25 +661,35 @@ async fn generation_post_error_and_partial_stream_never_send_to_fallback() {
 }
 
 #[tokio::test]
-async fn mobile_without_provider_prepares_local_and_preserves_original_message_and_route() {
+async fn mobile_without_provider_requires_explicit_local_model_without_mutating_remote_chat() {
     let dir = tempfile::tempdir().unwrap();
     let native = tempfile::tempdir().unwrap();
     let state = state(dir.path(), native.path()).await;
-    let generation = generation_finishes(&state, "cbai/glm-5.2").await;
+    for route in ["cbai/glm-5.2", "oc/deepseek-v4.1-flash-free", "mobile-api:missing:model"] {
+        let conv = state.store.call(Request::CreateConversation(json!({"routeId":route,"presetId":"glm-52","name":"Remote model fixture"}))).await.unwrap();
+        let request: TurnRequest = serde_json::from_value(json!({"convId":conv["id"],"mode":"send","content":"Mensagem preservada.","opId":modularchat_server::id()})).unwrap();
+        let error = match state.generation.start(request).await { Err(e) => e, Ok(_) => panic!("Remote route ran with local model") };
+        assert_eq!(error.status,409);
+        assert_eq!(error.extra["code"],"REMOTE_MODEL_UNAVAILABLE");
+        let saved = state.store.call(Request::GetConversation(conv["id"].as_str().unwrap().into())).await.unwrap();
+        assert_eq!(saved["routeId"],route);
+        assert_eq!(saved["history"].as_array().unwrap().len(),0);
+    }
+    let generation = generation_finishes(&state, "mobile-local").await;
     assert_eq!(
         generation.ack["context"]["routing"]["effectiveRoute"],
         "mobile-local"
     );
     assert_eq!(
         generation.ack["context"]["routing"]["requestedRoute"],
-        "cbai/glm-5.2"
+        "mobile-local"
     );
     let conv = state
         .store
         .call(Request::GetConversation(generation.conv.clone()))
         .await
         .unwrap();
-    assert_eq!(conv["routeId"], "cbai/glm-5.2");
+    assert_eq!(conv["routeId"], "mobile-local");
     assert!(conv.to_string().contains("Olá, personagem."));
     assert!(generation.output.lock().await.final_event.is_some());
     state.shutdown().await;

@@ -20,10 +20,12 @@ import { createRoot } from 'react-dom/client';
 import GlobalSettings from ${modulePath('src/components/GlobalSettings.jsx')};
 import HomeDrawer from ${modulePath('src/components/HomeDrawer.jsx')};
 import ServerSetup from ${modulePath('src/components/ServerSetup.jsx')};
+import PcConnectionButton from ${modulePath('src/components/PcConnectionButton.jsx')};
 import { ConfirmProvider } from ${modulePath('src/components/ConfirmProvider.jsx')};
-import { api } from ${modulePath('src/api.js')};
+import { api, config } from ${modulePath('src/api.js')};
 const drawer=new URLSearchParams(location.search).get('surface')==='drawer';
 const setup=new URLSearchParams(location.search).get('surface')==='setup';
+const restore=new URLSearchParams(location.search).get('surface')==='restore';
 let host='pc', fail=false, hold=false, release, stale;
 let rows={pc:[{id:'old',name:'Pareamento antigo'},{id:'second',name:'Segundo antigo'}],local:[{id:'android',name:'Host Android'}]};
 window.__calls=[];
@@ -55,7 +57,18 @@ if(setup){
   let syncAttempts=0;
   api.switchToPc=async()=>{window.__connectCalls.push('switch');if(++syncAttempts===1)throw Object.assign(Error('job ativo'),{code:'BUSY'});return {kind:'pc'}};
 }
-const Surface=setup?ServerSetup:drawer?HomeDrawer:GlobalSettings;
+if(restore){
+  host='local';window.Capacitor={isNativePlatform:()=>true,isPluginAvailable:()=>false};
+  localStorage.setItem('mc.connection',JSON.stringify({local:'http://192.168.1.6:3000',remote:''}));
+  Object.defineProperty(config,'kind',{get:()=>host});
+  window.__restore={mode:'error',calls:0};
+  api.switchToPc=async signal=>{window.__restore.calls++;
+    if(window.__restore.mode==='error')throw Object.assign(Error('CONFLITO_PC_VISIVEL'),{code:'CONFLICT'});
+    if(window.__restore.mode==='hold')await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
+    host='pc';return {kind:'pc'};
+  };
+}
+const Surface=restore?PcConnectionButton:setup?ServerSetup:drawer?HomeDrawer:GlobalSettings;
 createRoot(document.getElementById('root')).render(<React.StrictMode><ConfirmProvider><Surface fontSize={16} onFontSize={()=>{}} onClose={()=>{}} onChanged={()=>{}} onResetServer={()=>{}} onDone={()=>{window.__connectCalls?.push('done')}}/></ConfirmProvider></React.StrictMode>);
 `);
 const { build } = await import(pathToFileURL(path.join(client, 'node_modules/vite/dist/node/index.js')).href);
@@ -222,6 +235,20 @@ try {
   assert.deepEqual(await evaluate('window.__connectCalls'),['health','pair','switch','switch','done'],'BUSY retries sync without replaying the consumed pairing code');
   assert.deepEqual(runtimeErrors,[]);
   console.log('PASS ServerSetup: real Testar/Conectar form, loopback feedback before requests, LAN health, remote-only test and pairing/promotion order.');
+  await cdp('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/?surface=restore`});
+  await waitFor(`document.body.textContent.includes('Conectar ao PC')`);
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Conectar ao PC').click()`);
+  await waitFor(`document.querySelector('[role="status"]')?.textContent.includes('CONFLITO_PC_VISIVEL')`);
+  assert.equal(await evaluate(`window.__restore.calls`),1,'failure does not generate a new code or repeat connection');
+  await evaluate(`window.__restore.mode='hold';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Conectar ao PC').click()`);
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Cancelar')`);
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Cancelar').click()`);
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Conectar ao PC'&&!b.disabled)`);
+  await evaluate(`window.__restore.mode='ok';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Conectar ao PC').click()`);
+  await waitFor(`!document.querySelector('button')`);
+  assert.equal(await evaluate(`window.__restore.calls`),3,'explicit reconnection only; no message generation');
+  assert.deepEqual(runtimeErrors,[]);
+  console.log('PASS PC restoration from Android: visible sync failure, cancellation and explicit promotion, no new pairing/message.');
 } finally {
   ws?.close();edge.kill();await new Promise(resolve=>server.close(resolve));
   await pause(250);

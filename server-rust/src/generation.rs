@@ -398,6 +398,13 @@ impl Manager {
         {
             return Err(Error::new(503, "Destino de fallback indisponível."));
         }
+        if self.config.is_android() && requested_route != "mobile-local"
+            && matches!(backend, crate::providers::SelectedBackend::Local)
+        {
+            return Err(Error::new(409,
+                "Este modelo não está configurado no Android. Conecte ao PC para usar o modelo escolhido ou selecione explicitamente o modelo local nas opções do chat.")
+                .extra("code", "REMOTE_MODEL_UNAVAILABLE"));
+        }
         if self.config.is_android() {
             match &backend {
                 crate::providers::SelectedBackend::Local => {

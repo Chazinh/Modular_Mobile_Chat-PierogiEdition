@@ -1,4 +1,7 @@
 {
+  "Conectar ao PC": "Connect to PC",
+  "Conectando ao PC…": "Connecting to PC…",
+  "Pareamento salvo. Aguardando trabalho ativo para conectar ao PC…": "Pairing saved. Waiting for active work before connecting to the PC…",
   "Não foi possível criar o chat: {0}": "Could not create the chat: {0}",
   "Não foi possível abrir o armazenamento protegido. Preserve os dados e abra novamente o servidor.": "Could not open protected storage. Keep your data and reconnect to the server.",
   "Imagem inválida.": "Invalid image.",
@@ -287,7 +290,7 @@
   "Estilo e limites (global)": "Style & limits (global)",
   "Histórico": "History",
   "Novo Chat": "New Chat",
-  "Persona (seu nome no roleplay)": "Persona (your roleplay name)",
+  "Persona (seu nome na conversa)": "Persona (your name in the chat)",
   "Ex.: Alex": "E.g.: Alex",
   "Contexto enviado ao modelo": "Context sent to the model",
   "A conversa inteira fica guardada no PC. A cada resposta o modelo recebe: regras, personalização, persona, cena atual, quem sabe o quê, threads, até 8 memórias relevantes e os últimos": "The entire chat is stored on your PC. For each response the model receives: rules, character card, persona, current scene, context threads, up to 8 relevant memories, and the latest",

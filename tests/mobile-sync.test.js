@@ -91,6 +91,16 @@ function fixture(options = {}) {
   return { states, store, calls, put, sync: createMobileSync({ fetch: send, store }), options: { pc: pcTarget, mobile } };
 }
 
+test('sync: sem prova de ancestral comum não inventa baseline nem sobrescreve históricos', async () => {
+  const f = fixture();
+  f.put('pc','same-id','Versão do PC');
+  f.put('mobile','same-id','Versão do Android');
+  await assert.rejects(f.sync.synchronize(f.options),{code:'CONFLICT'});
+  assert.equal(f.states.pc.rows.get('same-id').snapshot.conversation.name,'Versão do PC');
+  assert.equal(f.states.mobile.rows.get('same-id').snapshot.conversation.name,'Versão do Android');
+  assert.equal(f.calls.filter(c=>c.body?.pushes?.length).length,0);
+});
+
 test('sync: LAN HTTP sincroniza cofres; HTTP publico e URLs com caminho são recusados antes do envio', async () => {
   const lan = fixture({ pcServer: 'http://192.168.1.6:3000' });
   lan.put('pc', 'lan-conversation', 'LAN sync');
@@ -225,6 +235,30 @@ test('sync: recupera recibo legado PUBLIC_SETTINGS_BATCH em lotes individuais, b
   assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
 });
 
+test('sync: recalcula somente lote rejeitado por metadados de job e preserva conflito na definição', async () => {
+  for(const reason of ['ROW_DIVERGED:jobs:[job-id]','JOB_DEFINITION_DIVERGED:job-id']) {
+    const f=fixture();f.put('pc','queue','inicial');await f.sync.synchronize(f.options);
+    f.put('mobile','queue','texto móvel preservado');
+    const before=f.calls.length;
+    const state=JSON.parse([...f.store.values.values()][0]);
+    state.pending={to:'pc',batchId:randomUUID(),code:'CONFLICT',conflicts:[{convId:'queue',reason}],records:[{
+      convId:'queue',hash:f.states.mobile.rows.get('queue').hash,baseHash:state.baselines.queue.pcHash
+    }]};
+    const oldBatch=state.pending.batchId;
+    f.store.values.set([...f.store.values.keys()][0],JSON.stringify(state));
+    if(reason.startsWith('ROW_DIVERGED:jobs:')) {
+      assert.equal((await f.sync.synchronize(f.options)).converged,true);
+      assert.equal(f.states.pc.rows.get('queue').snapshot.conversation.name,'texto móvel preservado');
+      const pushes=f.calls.slice(before).filter(c=>c.body?.pushes?.length);
+      assert.equal(pushes.length,1);assert.notEqual(pushes[0].body.batchId,oldBatch);
+    } else {
+      await assert.rejects(f.sync.synchronize(f.options),{code:'CONFLICT'});
+      assert.equal(f.calls.slice(before).filter(c=>c.body?.pushes?.length).length,0);
+      assert.equal(JSON.parse([...f.store.values.values()][0]).pending.batchId,oldBatch);
+    }
+  }
+});
+
 test('sync: não separa resposta de conflito sem confirmação de rejeição atômica', async () => {
   for (const invalid of [
     { status: 409, data: { ackBatch: 'unexpected', accepted: [{ convId: 'one' }] } },
@@ -308,7 +342,9 @@ test('sync: hash divergente com fingerprint compatível e conversa perdida bloqu
   await assert.rejects(lost.sync.synchronize(lost.options), { code: 'MISSING_CONVERSATIONS' });
 });
 
-test('sync Rust real: Stores criptografados, baseline, merge offline, pullback e IDs', {
+for (const loseCheckpoint of [false, true]) test(loseCheckpoint
+  ? 'sync Rust real: recupera checkpoint privado perdido sem perder alterações independentes dos dois cofres'
+  : 'sync Rust real: Stores criptografados, baseline, merge offline, pullback e IDs', {
   skip: !process.env.MC_CONTRACT_EXE || !existsSync(process.env.MC_CONTRACT_EXE), timeout: 60000,
 }, async () => {
   const tempRoot = path.join(os.tmpdir(), 'Cline', 'modularchat-autohost-v4-client');
@@ -346,6 +382,7 @@ test('sync Rust real: Stores criptografados, baseline, merge offline, pullback e
     assert.equal((await mobileStore.call('getConversation', chat.id)).id, chat.id);
     await mobileStore.call('patchConversation', chat.id, { name: 'Offline' });
     await pcStore.call('patchConversation', chat.id, { temperature: 0.85 });
+    if (loseCheckpoint) store.values.clear();
     const settings = await mobileStore.call('getGlobalSettings');
     const wantedBotChars = settings.botChars === 3000 ? 4000 : 3000;
     await mobileStore.call('setGlobalSettings', { ...settings, botChars: wantedBotChars });

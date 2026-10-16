@@ -5,6 +5,24 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.21: Model Providers, Crash-Free Error Handling, and Vault Baseline Recovery — 2026-10-16
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Model Catalog, Provider Restoration & Crash Fix (`client/src/components/ChatView.jsx`, `api.js`, `SettingsDrawer.jsx`)**:
+  - Fixed `ReferenceError: isNative is not defined` in `ChatView.jsx`, ensuring error messages render cleanly without unmounting React components or showing a blank screen. Message drafts and chat history are preserved.
+  - Enabled generic and server-advertised model routes (including OpenCode DeepSeek variants like `oc/deepseek-v4.1-flash-free`) under "Outros modelos do servidor" without requiring hardcoded client presets or inventing unsupported thinking/effort controls.
+  - Eliminated artificial cache invalidation that required `gemini-38-flash` in cached catalogs, maintaining loaded models across provider combinations.
+
+- **Explicit Local vs Remote Execution & PC Reconnection (`server-rust/src/generation.rs`, `AutoHostStatus.jsx`, `PcConnectionButton.jsx`)**:
+  - Eliminated silent fallback of remote model routes to local Qwen when running on the Android host. Unconfigured remote models now return HTTP 409 (`REMOTE_MODEL_UNAVAILABLE`), preventing physical context limits of local models from being erroneously applied to remote models.
+  - Added dedicated **"Conectar ao PC"** action button to the Android status panel and chat error views, allowing one-tap reconnection to the paired PC with real-time feedback and cancellation without re-requesting a pairing code.
+
+- **Vault Checkpoint Baseline Recovery & Queue Metadata Merge (`client/src/mobile-sync.js`, `server-rust/src/store/sync.rs`)**:
+  - Safe baseline comparison recovery between PC and mobile vaults using verified historical checkpoint hashes (`checkpointHashes`), preventing divergence locks when the client's private baseline marker is lost.
+  - Deterministic queue execution metadata merging (`merge_job_runtime`), resolving false `ROW_DIVERGED:jobs` conflicts between devices while ensuring completed/skipped tasks are never re-executed.
+
+
 ### ModularChat 3.1.17: Historical Relationship Links, Sync Snapshots, and Background Memory Prioritization — 2026-10-16
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
@@ -98,7 +116,7 @@ _Development assisted by Artificial Intelligence (multi-agent collaboration)._
 - **Local Mobile Model Route Isolation & Execution Safeguards**: Filtered out local mobile models (`mobile-local` and `mobile-api`) from preset listings in `client/src/api.js` and `client/src/components/SettingsDrawer.jsx` when connected to a PC. Added protective client-side interception in `client/src/components/ChatView.jsx` and `api.js` to prevent executing local mobile routes on PC backends.
 - **Model Selector Grey/Black Screen Fix**: Resolved an unhandled `ReferenceError: config is not defined` in `SettingsDrawer.jsx` by explicitly importing `config` from `api.js`. Added confirmation prompts (`confirm(tr("Deseja criar uma nova conversa?"))`) before creating chats from the drawer.
 - **Home Drawer & Cascading Navigation**: Introduced `client/src/components/HomeDrawer.jsx` providing a unified liquid-glass drawer experience for the main home screen (`ChatList.jsx`), with smooth spring animations, global style controls, reading settings, and server resets.
-- **Comprehensive English Localization Overhaul**: Modernized English translations in `client/src/locales/en.json`, adopting cleaner naming conventions (e.g., "Chats" instead of "Conversations") and industry-standard roleplay/AI terminology ("Character card", "Reasoning", "Model & effort", "Continue scene", "Regenerate response").
+- **Comprehensive English Localization Overhaul**: Modernized English translations in `client/src/locales/en.json`, adopting cleaner naming conventions (e.g., "Chats" instead of "Conversations") and industry-standard character/AI terminology ("Character card", "Reasoning", "Model & effort", "Continue scene", "Regenerate response").
 - **Application Showcase Banner**: Added 2560x1440 high-resolution presentation showcase graphic (`assets/showcase.png`, `showcase.png`) and updated `README.md` to display edge-to-edge mockup visuals without system bars or camera punch-holes.
 
 ### Home screen connection warning fix, TLS handshake deadline, and AutoHost settings — 2026-10-14

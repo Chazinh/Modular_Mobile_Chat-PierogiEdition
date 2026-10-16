@@ -193,7 +193,7 @@ test('UI wiring: trocar/cancelar PC não apaga configuração/token e formulári
   assert.ok(reset.includes('setManualServerSetup(true)'));
   assert.doesNotMatch(reset, /config\.(server|token)\s*=/);
   assert.ok(app.includes('onCancel={manualServerSetup ? closeTopLayer : undefined}'));
-  assert.ok(setup.includes('onClick={onCancel || onDone}'));
+  assert.ok(setup.includes('action.current?.abort(); (onCancel || onDone)();'));
   assert.ok(setup.includes('rollback?.()'));
   assert.match(settings, /value=\{form\.apiKey\} type="password"/);
   assert.ok(settings.includes('setForm(emptyProviderForm()); setEditId(null); setFormOpen(false)'));
