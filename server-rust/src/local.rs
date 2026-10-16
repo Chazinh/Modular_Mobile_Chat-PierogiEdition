@@ -22,12 +22,16 @@ use tokio::{
 #[cfg(windows)]
 fn tie_to_server(child: &Child) {
     use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
         SetInformationJobObject,
     };
     static JOB: OnceLock<usize> = OnceLock::new();
+    // SAFETY: null names/security attributes request an unnamed job with default security.
+    // The zeroed Win32 information struct is valid, and its pointer/size match the API.
+    // Only a successfully configured handle is retained for the server's lifetime.
     let job = *JOB.get_or_init(|| unsafe {
         let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if handle.is_null() {
@@ -35,17 +39,22 @@ fn tie_to_server(child: &Child) {
         }
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
+        if SetInformationJobObject(
             handle,
             JobObjectExtendedLimitInformation,
             std::ptr::addr_of!(info).cast(),
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
+        ) == 0 {
+            CloseHandle(handle);
+            return 0;
+        }
         handle as usize
     });
     if job != 0
         && let Some(raw) = child.raw_handle()
     {
+        // SAFETY: JOB contains a live configured job handle; raw_handle borrows the
+        // live Child's process handle. Neither handle is closed by this call.
         unsafe {
             AssignProcessToJobObject(job as _, raw as _);
         }
@@ -801,10 +810,9 @@ impl LocalModels {
                     .extra("code", "LOCAL_UNAVAILABLE"),
             );
         }
-        response
-            .json()
+        crate::bounded_http::json(response, crate::bounded_http::JSON_LIMIT)
             .await
-            .map_err(|_| Error::new(502, "JSON local inválido."))
+            .map_err(|_| Error::new(502, "JSON local inválido ou excedeu o limite de leitura."))
     }
     pub async fn chat_json(
         &self,
@@ -947,6 +955,126 @@ mod lifecycle_tests {
             fixture_command: None,
         }
     }
+
+    #[tokio::test]
+    async fn local_json_paths_are_bounded_without_reclassifying_them_as_unavailable() {
+        use crate::bounded_http::{
+            JSON_LIMIT,
+            tests::{chunked_oversize, serve},
+        };
+        let value = json!({"data":[{"embedding":[3.0,4.0]}],"prompt":"template intacto","tokens":vec![1;8192],"choices":[{"message":{"content":"{\"ok\":true}"}}]});
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for path in [
+            "/v1/embeddings",
+            "/apply-template",
+            "/tokenize",
+            "/v1/chat/completions",
+        ] {
+            let normal = serde_json::to_vec(&value).unwrap();
+            for (headers, body, ok) in [
+                (
+                    format!("Content-Length: {}\r\n", normal.len()),
+                    normal,
+                    true,
+                ),
+                (
+                    format!("Content-Length: {}\r\n", JSON_LIMIT + 1),
+                    vec![],
+                    false,
+                ),
+                (
+                    "Transfer-Encoding: chunked\r\n".into(),
+                    chunked_oversize(JSON_LIMIT),
+                    false,
+                ),
+                (
+                    "Content-Length: 19\r\n".into(),
+                    b"SECRET_INVALID_JSON".to_vec(),
+                    false,
+                ),
+            ] {
+                let fixture = serve(&headers, body).await;
+                let local = LocalModels {
+                    chat: Arc::new(process(0, PathBuf::new())),
+                    embed: Arc::new(process(0, PathBuf::new())),
+                    mock: Some(fixture.url.clone()),
+                    client: client.clone(),
+                    chat_timeout: Duration::from_secs(2),
+                    mobile: None,
+                    embed_digest: Arc::default(),
+                };
+                let result = local
+                    .post(
+                        &local.chat,
+                        path,
+                        json!({"fixture":true}),
+                        Duration::from_secs(2),
+                    )
+                    .await;
+                if ok {
+                    assert_eq!(result.unwrap(), value, "{path}");
+                } else {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.status, 502, "{path}");
+                    assert_ne!(error.extra["code"], "LOCAL_UNAVAILABLE");
+                    assert!(!error.message.contains("SECRET"));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mobile_budget_uses_tokenized_ctx4096_instead_of_the_text_estimate() {
+        use axum::{Json, Router, routing::post};
+        let messages = vec![json!({"role":"user","content":"contexto 🚀 ".repeat(5000)})];
+        assert!(rules::estimate_messages(&messages) > 4096);
+        for (used, requested, minimum, expected) in [
+            (3008usize, 1024u64, 1024usize, Some(1024u64)),
+            (3009, 1024, 1024, None),
+            (3900, 1024, 128, Some(132)),
+            (4096, 1024, 1, None),
+        ] {
+            let expected_messages = messages.clone();
+            let app = Router::new()
+                .route("/apply-template", post(move |Json(body): Json<Value>| {
+                    let expected = expected_messages.clone();
+                    async move {
+                        assert_eq!(body["messages"], json!(expected));
+                        assert_eq!(body["add_generation_prompt"], true);
+                        Json(json!({"prompt":"TEMPLATE_🚀"}))
+                    }
+                }))
+                .route("/tokenize", post(move |Json(body): Json<Value>| async move {
+                    assert_eq!(body["content"], "TEMPLATE_🚀");
+                    assert_eq!(body["add_special"], true);
+                    Json(json!({"tokens":vec![1;used]}))
+                }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let local = LocalModels {
+                chat: Arc::new(process(0, PathBuf::new())),
+                embed: Arc::new(process(0, PathBuf::new())),
+                mock: Some(url),
+                client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                chat_timeout: Duration::from_secs(2),
+                mobile: None,
+                embed_digest: Arc::default(),
+            };
+            let result = local.mobile_budget(&messages, requested, minimum).await;
+            server.abort();
+            if let Some(budget) = expected {
+                assert_eq!(result.unwrap(), budget);
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.status, 502);
+                assert_eq!(error.extra["code"], "LOCAL_CONTEXT_TOO_LARGE");
+                assert_eq!(error.extra["promptTokens"], used);
+                assert_eq!(error.extra["remainingTokens"], 4096usize.saturating_sub(used + 64));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn occupied_port_is_not_adopted_or_stopped() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

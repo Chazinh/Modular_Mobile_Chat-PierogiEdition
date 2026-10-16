@@ -25,13 +25,21 @@ try {
 $destination=[IO.Path]::GetFullPath($OutputDirectory)
 foreach($folder in @('xml','raw')){New-Item -ItemType Directory -Path (Join-Path $destination $folder) -Force | Out-Null}
 $utf8=New-Object Text.UTF8Encoding($false)
+$hostCleartext='false'
+$hostIp=$null
+if([Net.IPAddress]::TryParse($HostName,[ref]$hostIp) -and $hostIp.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork){
+    $octets=$hostIp.GetAddressBytes()
+    if($octets[0] -in 10,127 -or ($octets[0] -eq 192 -and $octets[1] -eq 168) -or
+       ($octets[0] -eq 172 -and $octets[1] -ge 16 -and $octets[1] -le 31)){$hostCleartext='true'}
+}elseif($HostName -eq 'localhost' -or $HostName.EndsWith('.local',[StringComparison]::OrdinalIgnoreCase)){$hostCleartext='true'}
 $xml=@"
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false">
+    <!-- LAN addresses can change; the client restricts HTTP to local addresses. -->
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors><certificates src="system" /><certificates src="user" /></trust-anchors>
     </base-config>
-    <domain-config cleartextTrafficPermitted="false">
+    <domain-config cleartextTrafficPermitted="$hostCleartext">
         <domain includeSubdomains="false">$HostName</domain>
         <trust-anchors><certificates src="@raw/modularchat_host_ca" /></trust-anchors>
     </domain-config>

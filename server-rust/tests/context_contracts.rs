@@ -38,13 +38,13 @@ fn native_context_overflow_keeps_pending_mandatory() {
         vec![],
         &json!({}),
     );
-    assert_eq!(
-        context::assemble(&d, &json!({}), "send", &p, None)
-            .err()
-            .unwrap()
-            .status,
-        422
-    );
+    let built = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
+    assert!(built.raw_estimate > 0);
+    assert_eq!(built.report["overHardLimit"], true);
+    assert_eq!(built.report["overCapacity"], false);
+    assert_eq!(built.report["exceededEstimatedBudget"], true);
+    assert!(built.messages.iter().any(|m| m["content"] == d["unprocessed"][0]["assistant"]));
+    assert!(built.report["pairsIncluded"].as_u64().unwrap() >= 20);
 }
 #[test]
 fn native_context_continuation_includes_canonical_user_and_all_parts() {
@@ -267,15 +267,12 @@ fn episode_coverage_reduces_history_without_dropping_pending_or_summaries() {
         );
         assert_eq!(context::retrieval_window_start(&bad), 71);
     }
-    // If summaries no longer fit, fail closed instead of cutting the sole historical record.
+    // Exceeding the estimate must preserve the sole historical record and pending text.
     d["conv"]["settings"]["context"]["hardLimit"] = json!(3000);
-    assert_eq!(
-        context::assemble(&d, &json!({}), "send", &p, None)
-            .err()
-            .unwrap()
-            .status,
-        422
-    );
+    let built = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
+    assert_eq!(built.report["exceededEstimatedBudget"], true);
+    assert!(built.messages.iter().any(|m| m["content"] == d["unprocessed"][0]["assistant"]));
+    assert!(built.messages.last().unwrap()["content"].as_str().unwrap().contains(d["episodes"][0]["summary"].as_str().unwrap()));
 }
 
 #[test]
@@ -316,4 +313,172 @@ fn prompt_views_keep_narrative_facts_but_exclude_diagnostics_and_ids() {
     ] {
         assert!(!prompt.contains(removed), "{removed}");
     }
+}
+
+fn assembled_text(built: &context::Context) -> String {
+    built
+        .messages
+        .iter()
+        .filter_map(|m| m["content"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn raw_excludes_the_actual_recent_window_and_pending_sources_without_text_dedup() {
+    let plan = presets::request(
+        &json!({"presetId":"claude-sonnet-5-5","routeId":"cc/claude-sonnet-5-5"}),
+        vec![],
+        &json!({}),
+    );
+    for adaptive in [false, true] {
+        let mut d = data();
+        d["pairs"][49]["sources"] =
+            json!([{"id":"v100","role":"assistant","text":d["pairs"][49]["assistant"]}]);
+        if adaptive {
+            d["episodes"] = json!([(51,90),(91,92),(93,94)].map(|(from,to)| json!({
+                "id":format!("e{from}"), "fromSeq":from, "toSeq":to, "summary":format!("Resumo {from} a {to}."),
+                "interactionIds":(from..=to).map(|seq|format!("i{seq}")).collect::<Vec<_>>()
+            })));
+            assert_eq!(context::retrieval_window_start(&d), 95);
+        }
+        let repeated = d["pairs"][42]["assistant"].as_str().unwrap().to_owned();
+        let retrieval = json!({"raw":[
+            {"sourceSeq":93,"text":repeated},
+            {"sourceInteractionId":"old","text":d["unprocessed"][0]["user"]},
+            {"sourceId":"v100","text":d["pairs"][49]["assistant"]},
+            {"sourceId":"different-old-version","sourceInteractionId":"i10","sourceSeq":10,"text":repeated}
+        ]});
+        let before = serde_json::to_vec(&json!([d, retrieval])).unwrap();
+        let built = context::assemble(&d, &retrieval, "send", &plan, None).unwrap();
+        let prompt = assembled_text(&built);
+        assert_eq!(
+            built.report["pairsIncluded"],
+            if adaptive { 10 } else { 30 }
+        );
+        assert_eq!(built.report["rawIncluded"], 1);
+        assert_eq!(built.report["pendingTurnsPreserved"], 1);
+        assert_eq!(
+            prompt.matches(&repeated).count(),
+            2,
+            "same words from different interactions survive"
+        );
+        assert_eq!(prompt.matches("A pergunta antiga.").count(), 1);
+        assert_eq!(prompt.matches("Lia: Resposta integral 100.").count(), 1);
+        assert!(
+            built
+                .messages
+                .iter()
+                .any(|m| m["content"] == d["unprocessed"][0]["assistant"])
+        );
+        assert_eq!(before, serde_json::to_vec(&json!([d, retrieval])).unwrap());
+    }
+}
+
+fn old_chunk(source: &str, role: &str, full: &str, from: usize, to: usize) -> Value {
+    use modularchat_server::rules;
+    let a = full
+        .char_indices()
+        .map(|(i, _)| i)
+        .nth(from)
+        .unwrap_or(full.len());
+    let b = full
+        .char_indices()
+        .map(|(i, _)| i)
+        .nth(to)
+        .unwrap_or(full.len());
+    json!({"sourceId":source,"role":role,"sourceSeq":10,"start":rules::utf16_len(&full[..a]),"end":rules::utf16_len(&full[..b]),"text":&full[a..b]})
+}
+
+#[test]
+fn raw_merges_matching_utf16_intervals_in_priority_order_and_preserves_quotes() {
+    let d = data();
+    let plan = presets::request(&json!({"presetId":"claude-sonnet-5-5"}), vec![], &json!({}));
+    let full = "Mira: “Olá 🚀, ação e\u{301} água.”\nLia: Eu guardo a chave 🗝️.";
+    let end = full.chars().count();
+    let independent = "Nora: Uma citação diferente.";
+    let raw = json!({"raw":[
+        old_chunk("v-old","assistant",full,18,end),
+        old_chunk("v-other","assistant",independent,0,independent.chars().count()),
+        old_chunk("v-old","assistant",full,0,33),
+        old_chunk("v-old","assistant",full,20,29)
+    ]});
+    let before = raw.clone();
+    let built = context::assemble(&d, &raw, "send", &plan, None).unwrap();
+    let prompt = assembled_text(&built);
+    assert_eq!(built.report["rawIncluded"], 2);
+    assert_eq!(prompt.matches(full).count(), 1);
+    assert!(prompt.find(full).unwrap() < prompt.find(independent).unwrap());
+    assert_eq!(raw, before);
+
+    // A bridging chunk must also unite earlier disjoint intervals.
+    let bridge = json!({"raw":[
+        old_chunk("v-old","assistant",full,0,16),
+        old_chunk("v-old","assistant",full,30,end),
+        old_chunk("v-old","assistant",full,14,34)
+    ]});
+    let built = context::assemble(&d, &bridge, "send", &plan, None).unwrap();
+    assert_eq!(built.report["rawIncluded"], 1);
+    assert!(assembled_text(&built).contains(full));
+}
+
+#[test]
+fn raw_keeps_different_sources_roles_divergent_text_and_invalid_utf16_boundaries() {
+    let plan = presets::request(&json!({"presetId":"claude-sonnet-5-5"}), vec![], &json!({}));
+    let text = "Mira: A chave está na torre 🚀.";
+    let mut divergent = old_chunk("v-a", "assistant", text, 0, text.chars().count());
+    divergent["text"] = json!(text.replace("torre", "ponte"));
+    let raw = json!({"raw":[
+        old_chunk("v-a","assistant",text,0,text.chars().count()),
+        old_chunk("v-b","assistant",text,0,text.chars().count()),
+        old_chunk("v-a","user",text,0,text.chars().count()),
+        divergent
+    ]});
+    let built = context::assemble(&data(), &raw, "send", &plan, None).unwrap();
+    assert_eq!(built.report["rawIncluded"], 4);
+    let prompt = assembled_text(&built);
+    assert_eq!(prompt.matches(text).count(), 3);
+    assert!(prompt.contains("chave está na ponte 🚀"));
+
+    let raw = json!({"raw":[
+        {"sourceId":"emoji","role":"assistant","sourceSeq":10,"start":0,"end":3,"text":"😀A"},
+        {"sourceId":"emoji","role":"assistant","sourceSeq":10,"start":1,"end":3,"text":"BC"},
+        {"sourceId":"emoji","role":"assistant","sourceSeq":10,"start":0,"end":99,"text":"OUTRA_🚀"}
+    ]});
+    let built = context::assemble(&data(), &raw, "send", &plan, None).unwrap();
+    assert_eq!(built.report["rawIncluded"], 3);
+    for kept in ["😀A", "BC", "OUTRA_🚀"] {
+        assert!(assembled_text(&built).contains(kept));
+    }
+}
+
+#[test]
+fn memory_identity_is_unique_across_pinned_candidates_and_private_without_content_dedup() {
+    let mut d = data();
+    d["scene"] = json!({"present":["Lia"]});
+    let pinned = json!({"id":"p","kind":"SECRET","content":"SEGREDO_FIXADO","visibility":"private","knowledge":[{"name":"Lia","state":"knows"}]});
+    d["pinned"] = json!([pinned, pinned]);
+    let a = json!({"id":"a","type":"memory","sourceSeq":10,"kind":"EVENT","content":"CONTEUDO_IGUAL","visibility":"private","knowledge":[{"name":"Lia","state":"knows"}]});
+    let mut b = a.clone();
+    b["id"] = json!("b");
+    b["knowledge"][0]["state"] = json!("unaware");
+    let private = json!({"id":"private","sourceSeq":10,"kind":"SECRET","content":"SEGREDO_PRIVADO","visibility":"private","knowledge":[{"name":"Lia","state":"believes","belief":"A chave está perdida."}]});
+    let mut duplicate = a.clone();
+    duplicate["content"] = json!("DUPLICATA_NAO_PRIORITARIA");
+    let retrieval =
+        json!({"candidates":[pinned,a,duplicate,b],"privateMemories":[a,pinned,private,private]});
+    let before = serde_json::to_vec(&json!([d, retrieval])).unwrap();
+    let plan = presets::request(&json!({"presetId":"claude-sonnet-5-5"}), vec![], &json!({}));
+    let built = context::assemble(&d, &retrieval, "send", &plan, None).unwrap();
+    let prompt = assembled_text(&built);
+    assert_eq!(built.report["pinnedIncluded"], 1);
+    assert_eq!(built.report["memoriesIncluded"], json!(["a", "b"]));
+    assert_eq!(prompt.matches("SEGREDO_FIXADO").count(), 1);
+    assert_eq!(prompt.matches("SEGREDO_PRIVADO").count(), 1);
+    assert_eq!(prompt.matches("CONTEUDO_IGUAL").count(), 2);
+    assert!(!prompt.contains("DUPLICATA_NAO_PRIORITARIA"));
+    assert!(prompt.contains("sabe [M1], [M2]"));
+    assert!(prompt.contains("NÃO sabe e não pode agir sobre [M3]"));
+    assert!(prompt.contains("[M4] (A chave está perdida.)"));
+    assert_eq!(before, serde_json::to_vec(&json!([d, retrieval])).unwrap());
 }

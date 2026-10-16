@@ -5,6 +5,33 @@ implemented features.
 
 ## Released
 
+### ModularChat 2.1: LAN Connectivity, Paired Devices Management, and Performance & Security Consolidation — 2026-10-16
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **LAN HTTP Connectivity & Server Discovery**:
+  - Unified server address handling in `client/src/server-address.js`, supporting plain HTTP for recognized local subnet IPs (`192.168.*`, `10.*`, `172.16-31.*`, `localhost`, `*.local`) while enforcing HTTPS for internet hostnames.
+  - Enabled local cleartext traffic support in Android (`network_security_config.xml` and `AndroidManifest.xml`), allowing fluid mobile pairing with local PC servers over home Wi-Fi without TLS certificate friction.
+  - Added live latency measurement probe (`/api/health`) and real-time connectivity testing in `ServerSetup.jsx` and quick host switching in `GlobalSettings.jsx`.
+  - Added `open-firewall.ps1` for one-click persistent Windows Firewall rule creation (TCP 3000, LocalSubnet, Private & Public profiles).
+
+- **Paired Devices Management & Real-Time Sync (`PairedDevices.jsx`)**:
+  - Extracted shared `PairedDevices.jsx` component used across both `HomeDrawer` and `GlobalSettings` with 44px touch targets, optimistic immediate deletion, live device counter updates, and touch debounce.
+  - Added backend device revocation events (`devices` SSE broadcast in `server-rust/src/api.rs`) ensuring synchronized device list state across active sessions.
+  - Robust HTTP 409 conflict recovery (`PUBLIC_SETTINGS_BATCH`) in `client/src/mobile-sync.js`, safely handling divergent batches, known-baseline prioritization, and idempotent receipts.
+
+- **Context, Memory & Extraction Optimizations**:
+  - Excluded redundant raw messages already represented by recent or pending turn pairs (`context.rs`), preserving cross-speaker turn provenance.
+  - Unicode-safe overlapping interval merging in UTF-16, memory deduplication in prompts (`memory_prompt.rs`), and Jaccard similarity curation protected with `checked_sub`.
+  - Removed artificial `CONTEXT_TOO_LARGE` veto, preserving actual provider capacity limits and diagnostics.
+  - Isolated runner shutdown synchronization (`runner_stop.rs` with `send_replace`).
+
+- **Local Provider Discovery & Security Hardening**:
+  - Bounded HTTP client (`bounded_http.rs`) with payload size caps (128 KiB models, 16 KiB health), 650ms deadlines, and single-flight queries.
+  - Local discovery for loopback daemons (`local_discovery.rs`) with strict separation of native OpenCode serve vs OpenCode Zen HTTPS.
+  - AES-256-GCM cipher scratch buffer zeroizing upon sealing error branches.
+  - Scroll and reading position restoration fixes in `ChatView.jsx`, stabilizing bottom anchors across device scales and message retries.
+
 ### ModularChat 2.0: Android Keystore vault, adaptive context reduction, direct JNI, and FLAG_SECURE — 2026-10-15
 
 - **Android Keystore Hardware Vault (`NativeVaultKey.java`)**: Integrated Android Keystore-backed AES-256-GCM envelope encryption (`MCKEYKS1`). The SQLite database key is protected directly inside hardware/TEE-backed Keystore storage with authenticated associated data. Implemented automatic transparent migration from legacy software envelopes (`MCKEY001`) with cryptographic round-trip verification, atomic replacement, and strict tampering rejection.

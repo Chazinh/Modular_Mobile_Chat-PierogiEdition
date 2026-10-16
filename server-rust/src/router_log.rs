@@ -118,10 +118,17 @@ pub fn find(file: &Path, since: &str, last_user: &str, family: &str) -> Value {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         db.busy_timeout(Duration::from_millis(100))?;
+        // Subtract up to 30s from since if it's an RFC3339 timestamp to accommodate clock skew or logging latency
+        let query_since = chrono::DateTime::parse_from_rfc3339(since)
+            .map(|dt| {
+                (dt - chrono::Duration::seconds(30))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            })
+            .unwrap_or_else(|_| since.to_string());
         // Rows above 512 KiB are discarded in the query itself: they never pass through process memory, and neither
         // do the rows that do not even contain a fragment of the text (`?2`, when there is one).
         let mut query=db.prepare("SELECT timestamp,provider,model,data FROM requestDetails WHERE timestamp>=?1 AND length(CAST(data AS BLOB))<=524288 AND (?2 IS NULL OR instr(data,?2)>0) ORDER BY timestamp DESC LIMIT 20")?;
-        let mut rows = query.query(rusqlite::params![since, needle(last_user)])?;
+        let mut rows = query.query(rusqlite::params![query_since, needle(last_user)])?;
         while let Some(row) = rows.next()? {
             let raw: String = row.get(3)?;
             if raw.len() > 512 * 1024 {

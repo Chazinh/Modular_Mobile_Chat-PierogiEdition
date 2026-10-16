@@ -707,19 +707,24 @@ async fn empty_first_turn_and_new_limit() {
 }
 #[test]
 fn mandatory_context_overflow() {
-    let data = json!({"conv":{"persona":"Alex","prompt":"word ".repeat(20000),"settings":{"context":{"hardLimit":1000}}},"pairs":[],"current":{"userText":"Oi"}});
-    let plan = presets::request(
-        &json!({"presetId":"deepseek-v41-flash","routeId":"cbai/deepseek-v4.1-flash"}),
-        vec![],
-        &json!({}),
-    );
-    assert_eq!(
-        context::assemble(&data, &json!({}), "send", &plan, None)
-            .err()
-            .unwrap()
-            .status,
-        422
-    );
+    let prompt = "word ".repeat(20000);
+    for (hard, capacity) in [(1000, 128000), (128000, 1024)] {
+        let data = json!({"conv":{"persona":"Alex","prompt":prompt,"settings":{"context":{"hardLimit":hard}}},"pairs":[],"current":{"userText":"Oi"}});
+        let mut plan = presets::request(
+            &json!({"presetId":"deepseek-v41-flash","routeId":"cbai/deepseek-v4.1-flash"}),
+            vec![],
+            &json!({}),
+        );
+        plan.capacity["contextWindow"] = json!(capacity);
+        let built = context::assemble(&data, &json!({}), "send", &plan, None).unwrap();
+        assert_eq!(built.raw_estimate, rules::estimate_messages(&built.messages));
+        assert!(built.raw_estimate > 0);
+        assert_eq!(built.report["exceededEstimatedBudget"], true);
+        assert_eq!(built.report["overHardLimit"], hard == 1000);
+        assert_eq!(built.report["overCapacity"], capacity == 1024);
+        assert!(built.messages.iter().any(|m| m["content"].as_str().unwrap().contains(&prompt)));
+        assert!(built.messages.last().unwrap()["content"].as_str().unwrap().contains("Oi"));
+    }
 }
 #[tokio::test]
 async fn bounded_store_queue() {

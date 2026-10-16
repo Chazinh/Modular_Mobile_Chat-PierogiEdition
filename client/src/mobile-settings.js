@@ -1,6 +1,6 @@
 // Form contracts for the embedded host. Only an explicitly entered key belongs in a PUT.
 export const MEMORY_BUDGETS = Object.freeze({ maxTokens: 1200, maxInputTokens: 6000, timeoutSeconds: 60 });
-export const emptyProviderForm = () => ({ id: '', baseUrl: '', models: '', apiKey: '', protocol: 'openai-compatible', reasoningFormat: 'omit', contextWindow: 8192, maxOutput: 2048, makeDefault: false, clearKey: false });
+export const emptyProviderForm = () => ({ id: '', baseUrl: '', models: '', apiKey: '', allowLoopback: false, protocol: 'openai-compatible', reasoningFormat: 'omit', contextWindow: 8192, maxOutput: 2048, makeDefault: false, clearKey: false });
 export const emptyPolicyForm = () => ({ mode: 'deferred', provider: '', model: '', historyConsent: false, ...MEMORY_BUDGETS });
 const fail = message => { throw new Error(message); };
 const text = value => typeof value === 'string' ? value.trim() : '';
@@ -21,8 +21,32 @@ export function redactProviderConfig(config = {}) {
 }
 export function providerForm(provider, config) {
   return { ...emptyProviderForm(), id: provider.id, baseUrl: provider.baseUrl, models: provider.models.join('\n'),
+    allowLoopback: provider.allowLoopback === true,
     reasoningFormat: provider.reasoningFormat, contextWindow: provider.contextWindow, maxOutput: provider.maxOutput,
     makeDefault: config.default === provider.id };
+}
+// These shortcuts only prepare a draft. Models, credentials and defaults require explicit choices.
+export function providerTemplate(kind) {
+  if (kind === '9router') return { ...emptyProviderForm(), id: '9router-local', baseUrl: 'http://127.0.0.1:20128/v1' };
+  if (kind === 'zen') return { ...emptyProviderForm(), id: 'opencode-zen', baseUrl: 'https://opencode.ai/zen/v1' };
+  throw new Error('Unknown provider template');
+}
+export function redactDiscovery(value) {
+  if (!value || typeof value !== 'object') return null;
+  const statuses = ['available', 'auth_required', 'absent', 'incompatible', 'detected_native_api'];
+  const service = (raw, protocol) => ({ status: statuses.includes(raw?.status) ? raw.status : 'incompatible', protocol,
+    models: protocol === 'openai-compatible' && Array.isArray(raw?.models)
+      ? [...new Set(raw.models.filter(validModel))].slice(0, 128) : [] });
+  const checkedAt = Date.parse(value.checkedAt);
+  return { checkedAt: Number.isFinite(checkedAt) ? new Date(checkedAt).toISOString() : null, ttlSeconds: 30,
+    nineRouter: service(value.nineRouter, 'openai-compatible'), openCode: service(value.openCode, 'opencode-native') };
+}
+function literalLoopback(url, authority) {
+  const host = authority.startsWith('[') ? authority.slice(0, authority.indexOf(']') + 1) : authority.split(':')[0];
+  if (host.toLowerCase() === 'localhost') return true;
+  if (/^127(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(host)) return host.split('.').every(part => Number(part) <= 255);
+  const ipv6 = url.hostname.toLowerCase();
+  return host.startsWith('[') && (ipv6 === '[::1]' || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(ipv6));
 }
 function writableConfig(config) {
   const safe = redactProviderConfig(config);
@@ -46,12 +70,22 @@ export function validateRouteMappings(mappings, providers) {
 }
 export function buildProviderPayload(config, form, editId = null) {
   if (form.protocol !== 'openai-compatible') fail('Anthropic Messages não é suportada. Use um endpoint OpenAI-compatible, como OpenRouter.');
-  const id = text(form.id), baseUrl = text(form.baseUrl).replace(/\/+$/, '');
+  const id = text(form.id), rawUrl = typeof form.baseUrl === 'string' ? form.baseUrl : '';
+  const baseUrl = rawUrl.trim().replace(/\/+$/, '');
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) fail('Informe um ID de provedor válido (letras, números, _ ou -).');
+  const invalidUrl = () => fail('Use HTTPS ou autorize HTTP apenas em IP loopback literal ou localhost, sem credenciais, parâmetros, fragmentos, barras invertidas ou controles.');
+  if (/[\x00-\x1f\x7f-\x9f\\?#]/.test(rawUrl)) invalidUrl();
   let url;
-  try { url = new URL(baseUrl); } catch { fail('Informe uma baseURL HTTPS válida, sem credenciais, parâmetros ou fragmentos.'); }
-  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.search || url.hash) fail('Informe uma baseURL HTTPS válida, sem credenciais, parâmetros ou fragmentos.');
-  if (url.hostname.toLowerCase() === 'api.anthropic.com' || /\/messages\/?$/.test(url.pathname)) fail('Anthropic Messages não é suportada. Use um endpoint OpenAI-compatible, como OpenRouter.');
+  try { url = new URL(baseUrl); } catch { invalidUrl(); }
+  const authority = baseUrl.match(/^[a-z][a-z0-9+.-]*:\/\/([^/]+)/i)?.[1];
+  if (!authority || authority.includes('@') || !url.hostname || url.username || url.password || url.search || url.hash) invalidUrl();
+  const loopback = literalLoopback(url, authority), allowLoopback = form.allowLoopback === true;
+  if (!loopback && literalLoopback(url, url.host)) invalidUrl();
+  if (!(url.protocol === 'https:' || url.protocol === 'http:' && loopback && allowLoopback) || loopback && !allowLoopback) invalidUrl();
+  let path;
+  try { path = decodeURIComponent(url.pathname); } catch { invalidUrl(); }
+  if (url.hostname.toLowerCase().replace(/\.+$/, '') === 'api.anthropic.com' || /\/messages\/?$/.test(path)) fail('Anthropic Messages não é suportada. Use um endpoint OpenAI-compatible, como OpenRouter.');
+  if (/(?:^|\/)chat\/completions(?:\/|$)/.test(path)) fail('Informe a baseURL sem /chat/completions; o host acrescenta esse caminho.');
   const models = [...new Set(text(form.models).split(/[\n,]/).map(v => v.trim()))];
   if (!models.length || models.length > 128 || models.some(m => !validModel(m))) fail('Informe os IDs reais dos modelos, conforme o catálogo do provedor.');
   const payload = writableConfig(config);
@@ -59,7 +93,7 @@ export function buildProviderPayload(config, form, editId = null) {
   if (!editId && (payload.providers.length >= 16 || payload.providers.some(p => p.id === id))) fail('ID já utilizado ou limite de provedores atingido.');
   const contextWindow = integer(form.contextWindow, 1024, 262144), maxOutput = integer(form.maxOutput, 256, 8192);
   if (maxOutput >= contextWindow || !['omit', 'openai', 'openrouter'].includes(form.reasoningFormat)) fail('Limites inválidos. Confira os intervalos indicados.');
-  const provider = { id, baseUrl, models, reasoningFormat: form.reasoningFormat, contextWindow, maxOutput, allowLoopback: false };
+  const provider = { id, baseUrl, models, reasoningFormat: form.reasoningFormat, contextWindow, maxOutput, allowLoopback };
   const key = text(form.apiKey);
   if (key && (key.length > 4096 || /[^\x20-\x7e]/.test(key))) fail('Chave de API inválida.');
   if (form.clearKey && key) fail('Escolha entre substituir ou remover a chave.');

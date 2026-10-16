@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createMobileSync } from '../client/src/mobile-sync.js';
+import { createServerConnection } from '../client/src/server-connection.js';
 import { RustStore } from './rust-store.js';
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -19,6 +20,7 @@ function markers() {
 
 // Deterministic protocol fixtures. Only Rust (below) exercises the canonical hash and merge implementation.
 function fixture(options = {}) {
+  const pcTarget = { ...pc, server: options.pcServer || pc.server };
   const store = markers(), calls = [];
   const states = {
     pc: { serverId: randomUUID(), cursor: 0, rows: new Map(), batches: new Map(), fingerprint: options.pcFingerprint || 'same-model' },
@@ -37,7 +39,7 @@ function fixture(options = {}) {
     return row;
   };
   const send = async (url, request) => {
-    const parsed = new URL(url), kind = parsed.origin === pc.server ? 'pc' : 'mobile', state = states[kind];
+    const parsed = new URL(url), kind = parsed.origin === pcTarget.server ? 'pc' : 'mobile', state = states[kind];
     assert.equal(request.headers.Authorization, `Bearer ${kind === 'pc' ? pc.token : mobile.token}`);
     assert.equal(request.redirect, 'error');
     const body = request.body ? JSON.parse(request.body) : undefined;
@@ -86,8 +88,39 @@ function fixture(options = {}) {
     if (body.pushes?.length) state.batches.set(body.batchId, { body: clone(body), response: clone(response) });
     return Response.json(response);
   };
-  return { states, store, calls, put, sync: createMobileSync({ fetch: send, store }), options: { pc, mobile } };
+  return { states, store, calls, put, sync: createMobileSync({ fetch: send, store }), options: { pc: pcTarget, mobile } };
 }
+
+test('sync: LAN HTTP sincroniza cofres; HTTP publico e URLs com caminho são recusados antes do envio', async () => {
+  const lan = fixture({ pcServer: 'http://192.168.1.6:3000' });
+  lan.put('pc', 'lan-conversation', 'LAN sync');
+  assert.equal((await lan.sync.synchronize(lan.options)).converged, true);
+  assert.equal(lan.states.mobile.rows.get('lan-conversation').snapshot.conversation.name, 'LAN sync');
+  for (const pcServer of ['http://public.example.com:3000', 'https://pc.example.com/api', 'https://user:pass@pc.example.com']) {
+    const f = fixture({ pcServer });
+    await assert.rejects(f.sync.synchronize(f.options), { code: 'INVALID_TARGET' });
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test('sync + conexão: promoção ao PC HTTP aguarda convergência do sincronizador real', async () => {
+  const f = fixture({ pcServer: 'http://192.168.1.6:3000' });
+  f.put('pc', 'promoted-conversation', 'Promoted after sync');
+  const values = new Map();
+  const lifecycle = [];
+  const connection = createServerConnection({
+    native: () => true, mode: 'auto', token: () => pc.token,
+    storage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) },
+    embedded: { target: () => mobile, standby: async () => lifecycle.push('standby'), activate: async () => lifecycle.push('activate') },
+    fetch: async () => Response.json({ ok: true, name: 'modularchat', encrypted: true }),
+    sync: options => f.sync.synchronize(options),
+  });
+  connection.configure({ local: f.options.pc.server });
+  await connection.switchToLocal();
+  assert.equal((await connection.switchToPc()).kind, 'pc');
+  assert.equal(f.states.mobile.rows.get('promoted-conversation').snapshot.conversation.name, 'Promoted after sync');
+  assert.deepEqual(lifecycle, ['activate', 'standby']);
+});
 
 test('sync: mirror inicial PC→mobile, IDs preservados, incremental por hash e offline bidirecional', async () => {
   const f = fixture();
@@ -155,6 +188,43 @@ test('sync: fila exclusiva e replay exato de batch privado após rede voltar', a
   assert.equal(pushes[1].body.batchId, originalBatch);
   assert.deepEqual(pushes[0].body, pushes[1].body);
   assert.equal(JSON.parse([...f.store.values.values()][0]).pending, null);
+});
+
+test('sync: recupera recibo legado PUBLIC_SETTINGS_BATCH em lotes individuais, baseline primeiro', async () => {
+  const f = fixture({ onCall: ({ body, header }) => body?.pushes?.length > 1 ? Response.json({ ...header,
+    code: 'CONFLICT', ackBatch: null, accepted: [], conflicts: body.pushes.map(p => ({ convId: p.convId, reason: 'PUBLIC_SETTINGS_BATCH' })) }, { status: 409 }) : null });
+  f.put('pc', 'z-existing', 'base');
+  await f.sync.synchronize(f.options);
+  f.put('pc', 'z-existing', 'atualizada');
+  f.put('pc', 'a-new', 'nova');
+  const [key, value] = [...f.store.values][0];
+  const state = JSON.parse(value);
+  state.pending = { to: 'mobile', batchId: randomUUID(), code: 'CONFLICT', records: ['a-new', 'z-existing'].map(id => {
+    const row = f.states.pc.rows.get(id);
+    return { convId: id, hash: row.hash, contentHash: row.contentHash, baseHash: state.baselines[id]?.mobileHash ?? null };
+  }) };
+  f.store.values.set(key, JSON.stringify(state));
+  const before = f.calls.length;
+  assert.equal((await f.sync.synchronize(f.options)).converged, true);
+  const pushes = f.calls.slice(before).filter(c => c.body?.pushes);
+  assert.equal(pushes[0].body.batchId, state.pending.batchId, 'consulta idempotente do recibo antigo');
+  assert.deepEqual(pushes.slice(1).map(c => c.body.pushes.map(p => p.convId)), [['z-existing'], ['a-new']]);
+  assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
+});
+
+test('sync: não separa resposta de conflito sem confirmação de rejeição atômica', async () => {
+  for (const invalid of [
+    { status: 409, data: { ackBatch: 'unexpected', accepted: [{ convId: 'one' }] } },
+    { status: 409, data: { schemaVersion: 999 } },
+    { status: 503, data: {} },
+  ]) {
+    const f = fixture({ onCall: ({ body, header }) => body?.pushes ? Response.json({ ...header, code: 'CONFLICT', ackBatch: null,
+      accepted: [], conflicts: [{ convId: body.pushes[0].convId, reason: 'PUBLIC_SETTINGS_BATCH' }], ...invalid.data }, { status: invalid.status }) : null });
+    f.put('pc', 'one', 'um'); f.put('pc', 'two', 'dois');
+    await assert.rejects(f.sync.synchronize(f.options), { code: 'CONFLICT' });
+    assert.equal(f.calls.filter(c => c.body?.pushes).length, 1);
+    assert.equal(f.states.mobile.rows.size, 0);
+  }
 });
 
 test('sync: snapshot alterado não reutiliza batchId nem perde pendência', async () => {
@@ -237,7 +307,7 @@ test('sync Rust real: Stores criptografados, baseline, merge offline, pullback e
   const mobileStore = new RustStore(path.join(dir, 'mobile', 'fixture.sqlite'));
   if (previousEncryption === undefined) delete process.env.MC_ENCRYPTED_STORAGE; else process.env.MC_ENCRYPTED_STORAGE = previousEncryption;
   const fingerprint = 'a'.repeat(64), store = markers();
-  let dropAck = false, droppedBatch, replays = 0;
+  let dropAck = false, droppedBatch, replays = 0, settingsBatchConflicts = 0;
   const sync = createMobileSync({ store, fetch: async (url, options) => {
     const target = url.startsWith(pc.server) ? pcStore : mobileStore;
     assert.equal(options.headers.Authorization, `Bearer ${target === pcStore ? pc.token : mobile.token}`);
@@ -246,8 +316,9 @@ test('sync Rust real: Stores criptografados, baseline, merge offline, pullback e
     try {
       const data = body ? await target.call('syncDelta', body, fingerprint)
         : { ...await target.call('syncStatus', { after: Number(query.get('after')), limit: Number(query.get('limit')) }), embeddingFingerprint: fingerprint };
+      if (data.conflicts?.some(c => c.reason === 'PUBLIC_SETTINGS_BATCH')) settingsBatchConflicts++;
       if (body?.batchId && body.batchId === droppedBatch) replays++;
-      if (dropAck && target === pcStore && body?.pushes) { dropAck = false; droppedBatch = body.batchId; throw Error('ack perdido após salvar cofre'); }
+      if (dropAck && target === pcStore && body?.pushes && data.code !== 'CONFLICT') { dropAck = false; droppedBatch = body.batchId; throw Error('ack perdido após salvar cofre'); }
       return Response.json(data, { status: data.code === 'CONFLICT' ? 409 : 200 });
     } catch (error) {
       if (!error.status) throw error;
@@ -256,17 +327,23 @@ test('sync Rust real: Stores criptografados, baseline, merge offline, pullback e
   } });
   try {
     await Promise.all([pcStore.ready(), mobileStore.ready()]);
+    await pcStore.call('setGlobalSettings', await pcStore.call('getGlobalSettings'));
     const chat = await pcStore.call('createConversation', { name: 'Inicial', prompt: 'Ficha da fixture', routeId: 'fixture-route', presetId: 'generic' });
     await sync.synchronize({ pc, mobile });
     assert.equal((await mobileStore.call('getConversation', chat.id)).id, chat.id);
     await mobileStore.call('patchConversation', chat.id, { name: 'Offline' });
     await pcStore.call('patchConversation', chat.id, { temperature: 0.85 });
+    const settings = await mobileStore.call('getGlobalSettings');
+    const wantedBotChars = settings.botChars === 3000 ? 4000 : 3000;
+    await mobileStore.call('setGlobalSettings', { ...settings, botChars: wantedBotChars });
     const created = await mobileStore.call('createConversation', { name: 'Só telefone', prompt: 'Outra ficha', routeId: 'fixture-route', presetId: 'generic' });
+    const second = await mobileStore.call('createConversation', { name: 'Outra conversa móvel', prompt: 'Ficha preservada', routeId: 'fixture-route', presetId: 'generic' });
     dropAck = true;
     await assert.rejects(sync.synchronize({ pc, mobile }), /ack perdido/);
     assert.ok(JSON.parse([...store.values.values()][0]).pending);
     const result = await sync.synchronize({ pc, mobile });
     assert.equal(result.converged, true);
+    assert.ok(settingsBatchConflicts > 0, 'reproduziu PUBLIC_SETTINGS_BATCH com conversa existente e novas');
     assert.equal(replays, 1, 'Rust reproduziu o ack persistido com o mesmo batchId');
     const p = await pcStore.call('getConversation', chat.id), m = await mobileStore.call('getConversation', chat.id);
     assert.equal(p.name, 'Offline');
@@ -274,6 +351,8 @@ test('sync Rust real: Stores criptografados, baseline, merge offline, pullback e
     assert.equal(m.temperature, p.temperature);
     assert.equal(m.temperature, 0.85);
     assert.equal((await pcStore.call('getConversation', created.id)).id, created.id);
+    assert.equal((await pcStore.call('getConversation', second.id)).id, second.id);
+    assert.equal((await pcStore.call('getGlobalSettings')).botChars, wantedBotChars);
     await sync.synchronize({ pc, mobile });
   } finally {
     await Promise.allSettled([pcStore.close(), mobileStore.close()]);

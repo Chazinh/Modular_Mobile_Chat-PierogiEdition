@@ -1,7 +1,8 @@
 import { tr, useLanguage } from '../i18n.js';
 import React, { useState } from 'react';
-import { Link2, Loader2 } from 'lucide-react';
+import { Link2, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { api, config, isNative } from '../api.js';
+import { normalizeServer, testPcConnection } from '../server-connection.js';
 
 // Optional PC connection. Editing/canceling never clears the current endpoints or credential.
 export default function ServerSetup({ needsServer, onDone, onCancel }) {
@@ -12,6 +13,46 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
   const [name, setName] = useState(() => (isNative() ? tr('Celular Android') : tr('Navegador')));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [probing, setProbing] = useState(false);
+  const [probeStatus, setProbeStatus] = useState(null);
+  const [pairedPc, setPairedPc] = useState('');
+
+  async function testConnection() {
+    setProbeStatus(null);
+    setError('');
+    const target = server.trim() || remote.trim();
+    if (!target) {
+      setProbeStatus({ ok: false, message: tr('Informe o endereço do PC primeiro.') });
+      return;
+    }
+    setProbing(true);
+    try {
+      const res = await testPcConnection(target, { httpsOnly: !server.trim() });
+      setProbeStatus({
+        ok: true,
+        message: tr('Conexão com o PC confirmada em {0} ms.', [res.latencyMs])
+      });
+    } catch (err) {
+      setProbeStatus({
+        ok: false,
+        message: err.name === 'TypeError' || err.name === 'TimeoutError'
+          ? tr('Não consegui falar com o PC. Confira se o servidor está rodando, o IP e a porta (padrão 3000).')
+          : tr(err.message)
+      });
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  function appendPort() {
+    try {
+      const url = new URL(normalizeServer(server, false));
+      url.port = '3000';
+      setServer(url.origin);
+      setError('');
+    } catch (err) { setError(err.message); }
+    setProbeStatus(null);
+  }
 
   async function connect(e) {
     e.preventDefault();
@@ -20,15 +61,22 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
     let rollback;
     try {
       if (isNative()) {
-        if (!server.trim() && !remote.trim()) throw new Error('Informe pelo menos um endereço HTTPS do PC.');
+        if (!server.trim() && !remote.trim()) throw new Error('Informe pelo menos um endereço do PC.');
         rollback = config.configureConnection({ local: server, remote });
-        await api.health({ pc: server.trim() || remote.trim() });
+        await api.health({ pc: config.connection.local || config.connection.remote });
       }
-      await api.pair(code.trim(), name.trim() || tr('Aparelho'), isNative() ? config.connection.local || config.connection.remote : '');
+      const pc = isNative() ? config.connection.local || config.connection.remote : '';
+      if (!pc || pairedPc !== pc) {
+        await api.pair(code.trim(), name.trim() || tr('Aparelho'), pc);
+        if (pc) setPairedPc(pc);
+      }
+      // Pairing has committed the credential. Keep its matching endpoint if sync needs another attempt.
+      rollback = undefined;
+      if (isNative()) await api.switchToPc();
       onDone();
     } catch (err) {
       rollback?.();
-      setError(err.status === 0 ? 'Não consegui falar com o PC. Confira os endereços, o certificado e o firewall.' : err.message);
+      setError(err.status === 0 ? 'Não consegui falar com o PC. Confira os endereços, a porta e o firewall.' : err.message);
     } finally {
       setBusy(false);
     }
@@ -49,24 +97,52 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
 
         {isNative() && (
           <div className="space-y-3">
-          <label className="block text-sm">
-            <span className="text-textMuted">{tr('Endereço HTTPS na rede local')}</span>
-            <input
-              value={server}
-              onChange={(e) => setServer(e.target.value)}
-              inputMode="url"
-              autoCapitalize="none"
-              autoCorrect="off"
-              className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none"
-              placeholder="https://192.168.0.10:8443"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="text-textMuted">{tr('Endereço HTTPS pela internet (opcional)')}</span>
-            <input value={remote} onChange={(e) => setRemote(e.target.value)} inputMode="url" autoCapitalize="none" autoCorrect="off"
-              className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none" placeholder="https://chat.example.com" />
-          </label>
-          <p className="text-xs leading-relaxed text-textMuted">{tr('Os dois endereços devem levar ao mesmo PC. O app prefere a rede local e usa a internet quando necessário. Faça o primeiro pareamento pela rede local.')}</p>
+            <label className="block text-sm">
+              <span className="text-textMuted">{tr('Endereço do PC na rede local (Wi-Fi)')}</span>
+              <div className="mt-1 flex gap-2">
+                <input
+                  value={server}
+                  onChange={(e) => { setServer(e.target.value); setProbeStatus(null); }}
+                  inputMode="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  className="w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none"
+                  placeholder="http://192.168.1.100:3000"
+                />
+                <button
+                  type="button"
+                  disabled={probing || !server.trim()}
+                  onClick={testConnection}
+                  className="flex shrink-0 items-center gap-1 rounded-xl bg-composer px-3 py-2 text-xs font-medium text-accentPurpleLight disabled:opacity-40"
+                >
+                  {probing ? <Loader2 size={14} className="animate-spin" /> : tr('Testar')}
+                </button>
+              </div>
+            </label>
+
+            {server.trim() && !server.includes(':3000') && (
+              <button
+                type="button"
+                onClick={appendPort}
+                className="text-[11px] text-accentPurpleLight underline"
+              >
+                {tr('Adicionar porta padrão :3000')}
+              </button>
+            )}
+
+            {probeStatus && (
+              <div className={`flex items-start gap-2 rounded-xl px-3 py-2 text-xs leading-relaxed ${probeStatus.ok ? 'bg-green-500/10 text-green-300' : 'bg-yellow-500/10 text-yellow-300'}`}>
+                {probeStatus.ok ? <CheckCircle2 size={16} className="shrink-0 mt-0.5 text-green-400" /> : <AlertCircle size={16} className="shrink-0 mt-0.5 text-yellow-400" />}
+                <span>{probeStatus.message}</span>
+              </div>
+            )}
+
+            <label className="block text-sm">
+              <span className="text-textMuted">{tr('Endereço pela internet (opcional)')}</span>
+              <input value={remote} onChange={(e) => setRemote(e.target.value)} inputMode="url" autoCapitalize="none" autoCorrect="off"
+                className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none" placeholder="https://chat.example.com" />
+            </label>
+            <p className="text-xs leading-relaxed text-textMuted">{tr('Conecte o celular e o PC à mesma rede Wi-Fi. Use o endereço exibido pelo servidor no PC, incluindo a porta (ex: http://192.168.1.100:3000).')}</p>
           </div>
         )}
 
@@ -95,7 +171,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
         >
           {busy && <Loader2 size={18} className="animate-spin" />}{tr(" Conectar\n        ")}</button>
         {(onCancel || config.embeddedReady) && <button type="button" disabled={busy} onClick={onCancel || onDone} className="w-full py-2 text-sm text-textMuted">{tr(config.embeddedReady ? 'Continuar no aparelho' : 'Cancelar')}</button>}
-        <p className="text-xs leading-relaxed text-textMuted">{tr("\n          O código aparece na janela do servidor ao iniciar o ")}<b>start-server.bat</b>{tr(", ou no PC em ")}<b>{tr("⋯ → Configurações → Gerar código")}</b>{tr(". Ele vale por 5 minutos e só pode ser usado uma vez.\n        ")}</p>
+        <p className="text-xs leading-relaxed text-textMuted">{tr("\n          O código aparece na janela do servidor ao iniciar o ")}<b>start-server.ps1</b>{tr(", ou no PC em ")}<b>{tr("⋯ → Configurações → Gerar código")}</b>{tr(". Ele vale por 5 minutos e só pode ser usado uma vez.\n        ")}</p>
       </form>
     </div>
   );

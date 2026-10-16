@@ -42,10 +42,17 @@ try {
     $output=Join-Path $testDirectory 'resources'
     & (Join-Path $root 'scripts\configure-android-host.ps1') -HostName '192.0.2.10' -CertificatePath $publicFile -OutputDirectory $output | Out-Null
     [xml]$xml=Get-Content -LiteralPath (Join-Path $output 'xml\modularchat_host_security_config.xml') -Raw
-    if($xml.'network-security-config'.'base-config'.cleartextTrafficPermitted -ne 'false'){throw 'HTTP externo nao foi bloqueado.'}
+    if($xml.'network-security-config'.'base-config'.cleartextTrafficPermitted -ne 'true'){throw 'LAN HTTP dinamica foi bloqueada.'}
     $scoped=$xml.'network-security-config'.'domain-config' | Where-Object { $_.domain.'#text' -eq '192.0.2.10' }
+    if($scoped.cleartextTrafficPermitted -ne 'false'){throw 'HTTP do host publico nao foi bloqueado.'}
     if(-not $scoped -or $scoped.domain.includeSubdomains -ne 'false' -or $scoped.'trust-anchors'.certificates.src -ne '@raw/modularchat_host_ca'){throw 'Confianca nao ficou restrita ao host informado.'}
     if(@(Get-ChildItem -LiteralPath $output -Recurse -File).Count -ne 2){throw 'Recursos inesperados foram gerados.'}
+    foreach($lanHost in @('10.229.240.173','192.168.1.100','172.16.0.2','pc.local')){
+        & (Join-Path $root 'scripts\configure-android-host.ps1') -HostName $lanHost -CertificatePath $publicFile -OutputDirectory $output | Out-Null
+        [xml]$lanXml=Get-Content -LiteralPath (Join-Path $output 'xml\modularchat_host_security_config.xml') -Raw
+        $lanScope=$lanXml.'network-security-config'.'domain-config' | Where-Object { $_.domain.'#text' -eq $lanHost }
+        if($lanScope.cleartextTrafficPermitted -ne 'true'){throw 'HTTP do host LAN nao foi permitido.'}
+    }
     $privateFile=Join-Path $testDirectory 'private.pem'
     [IO.File]::WriteAllText($privateFile,'-----BEGIN PRIVATE KEY-----')
     Expect-Rejection { & (Join-Path $root 'scripts\configure-android-host.ps1') -HostName '192.0.2.10' -CertificatePath $privateFile -OutputDirectory (Join-Path $testDirectory 'rejected') }

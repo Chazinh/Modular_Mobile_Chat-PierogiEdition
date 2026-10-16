@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServerConnection, normalizeServer } from '../client/src/server-connection.js';
+import { createServerConnection, normalizeServer, testPcConnection } from '../client/src/server-connection.js';
 import { createLocalHost } from '../client/src/local-host.js';
 
 const local = 'https://pc.example.com:8443', remote = 'https://chat.example.com';
@@ -26,6 +26,50 @@ test('conexão: HTTPS sem credenciais ou caminhos; nenhum host pessoal embutido'
   assert.equal(f.connection.hasServer(), false);
 });
 
+test('conexão: HTTP privado explícito ou sem esquema; internet continua exigindo HTTPS', () => {
+  for (const host of ['10.229.240.173', '192.168.1.100', '172.16.0.2', '172.31.255.254', 'pc.local']) {
+    assert.equal(normalizeServer(`${host}:3000`, false), `http://${host}:3000`);
+    assert.equal(normalizeServer(`http://${host}:3000`, false), `http://${host}:3000`);
+    assert.throws(() => normalizeServer(`http://${host}:3000`));
+  }
+  assert.equal(normalizeServer('chat.example.com', false), remote);
+  assert.equal(normalizeServer('chat.example.com'), remote);
+  for (const host of ['172.15.0.1', '172.32.0.1', '10.example.com', 'example.com', '8.8.8.8']) {
+    assert.throws(() => normalizeServer(`http://${host}:3000`, false));
+  }
+  assert.throws(() => fixture().connection.configure({ local: 'http://example.com:3000' }));
+  assert.throws(() => fixture().connection.configure({ remote: 'http://192.168.1.100:3000' }));
+});
+
+test('conexão: testar candidato novo não exige cadastro e não envia credencial do PC anterior', async () => {
+  const f = fixture();
+  f.connection.configure({ local, remote });
+  const before = [...f.data];
+  let clock = 100;
+  const result = await testPcConnection('10.229.240.173:3000', { now: () => clock,
+    fetch: async (url, options) => {
+      assert.equal(url, 'http://10.229.240.173:3000/api/health');
+      assert.equal(options.headers, undefined);
+      assert.equal(options.credentials, 'omit');
+      assert.equal(options.redirect, 'error');
+      clock += 23;
+      return Response.json({ ok: true, name: 'modularchat', encrypted: true });
+    } });
+  assert.equal(result.latencyMs, 23);
+  assert.deepEqual([...f.data], before);
+  await assert.rejects(f.connection.acquireTarget({ pc: result.server }), { code: 'ORIGIN_CHANGED' });
+  assert.equal(f.calls.length, 0, 'operações normais ainda exigem o PC configurado');
+});
+
+test('conexão: teste público valida identidade/cofre e respeita cancelamento antes do envio', async () => {
+  for (const data of [{ ok: true }, { ok: true, name: 'other', encrypted: true }, { ok: true, name: 'modularchat', encrypted: false }]) {
+    await assert.rejects(testPcConnection(local, { fetch: async () => Response.json(data) }), /não é um servidor ModularChat/);
+  }
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(testPcConnection(local, { signal: controller.signal, fetch: () => assert.fail('envio cancelado') }), { name: 'AbortError' });
+});
+
 const embeddedTarget = { server: 'http://127.0.0.1:3011', token: 'keystore-only', kind: 'local' };
 function autoFixture(overrides = {}) {
   const lifecycle = [], statuses = [];
@@ -33,6 +77,25 @@ function autoFixture(overrides = {}) {
   const f = fixture({ mode: 'auto', embedded, sync: async () => ({ converged: true }), onStatus: s => statuses.push(s), ...overrides });
   return { ...f, lifecycle, statuses };
 }
+
+test('auto: LAN HTTP funciona na seleção, pareamento, recuperação, probe e troca após preferência local', async () => {
+  const lan = 'http://10.229.240.173:3000';
+  const f = autoFixture();
+  f.connection.configure({ local: '10.229.240.173:3000' });
+  assert.equal((await f.connection.resolveTarget()).server, lan);
+  for (const options of [{ pc: lan }, { pc: lan, write: true }, { origin: { server: lan, kind: 'pc' }, write: true }]) {
+    const target = await f.connection.acquireTarget(options);
+    assert.equal(target.server, lan);
+    assert.equal(target.token, 'fixture-token');
+    target.release();
+  }
+  await f.connection.switchToLocal();
+  assert.equal(await f.connection.probePc(), true);
+  assert.equal((await f.connection.switchToPc()).server, lan);
+  assert.equal(f.connection.kind(), 'pc');
+  assert.ok(f.calls.every(call => call.url === `${lan}/api/health`));
+  assert.deepEqual(f.lifecycle, ['standby', 'activate', 'standby']);
+});
 
 test('host: plugin nativo disponível, início serial/idempotente e credencial apenas em memória', async () => {
   let starts = 0, release;
@@ -282,7 +345,7 @@ test('conexão: revogação conserva o host e não provoca troca para o domínio
 test('conexão: outro PC não herda domínio; tentativa malsucedida restaura configuração legada', async () => {
   const f = fixture();
   f.data.set('mc.server', 'http://192.168.0.10:3000');
-  assert.equal(f.connection.hasServer(), false, 'HTTP antigo exige configuração HTTPS explícita');
+  assert.equal(f.connection.hasServer(), true, 'HTTP privado legado continua utilizável');
   const undo = f.connection.configure({ local, remote });
   undo();
   assert.deepEqual(f.connection.configured(), { local: 'http://192.168.0.10:3000', remote: '' });
@@ -361,3 +424,205 @@ test('conexão: switchToLocal promove host Android sem reiniciar e probePc detec
   assert.equal(f.connection.kind(), 'pc');
 });
 
+const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+const drain = async () => { for (let i = 0; i < 24; i++) await Promise.resolve(); };
+function startupFixture(overrides = {}) {
+  const native = deferred(), scheduled = new Map();
+  let starts = 0, sequence = 0;
+  const timers = { setTimeout(fn, ms) { scheduled.set(++sequence, { fn, ms }); return sequence; }, clearTimeout(id) { scheduled.delete(id); } };
+  const embedded = createLocalHost({ native: () => true, available: () => true,
+    plugin: { ensureStarted: () => { starts++; return native.promise; } }, fetch: async () => Response.json({ ok: true }) });
+  const f = autoFixture({ embedded, timers, fetch: async () => { throw Error('PC desligado'); }, ...overrides });
+  return { ...f, embedded, native, scheduled, timers, starts: () => starts,
+    ready: () => native.resolve({ baseUrl: embeddedTarget.server, status: 2, token: embeddedTarget.token }) };
+}
+
+test('lote3a: JNI tardio compartilha boot/seleção, limpa deadline e notifica sem credencial', async () => {
+  const f = startupFixture(), notifications = [];
+  const unsubscribe = f.embedded.subscribe(state => notifications.push(state));
+  const boot = f.embedded.ensureStarted();
+  const ac = new AbortController();
+  const first = f.connection.resolveTarget(ac.signal), second = f.connection.resolveTarget();
+  ac.abort();
+  await assert.rejects(first, { name: 'AbortError' });
+  f.ready();
+  assert.deepEqual(await boot, embeddedTarget);
+  assert.equal((await second).kind, 'local');
+  assert.equal(f.starts(), 1);
+  assert.equal(f.scheduled.size, 0);
+  assert.deepEqual(notifications.map(n => n.phase), ['starting', 'ready']);
+  assert.ok(notifications.every(n => !JSON.stringify(n).includes(embeddedTarget.token)));
+  assert.ok(!f.statuses.some(s => s.code === 'PC_CONNECTION_LOST'));
+  unsubscribe();
+});
+
+test('lote3a: cancelar único consumidor durante JNI não promove nem deixa timer', async () => {
+  const f = startupFixture(), ac = new AbortController();
+  const pending = f.connection.switchToLocal(ac.signal);
+  ac.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  await drain();
+  assert.equal(f.scheduled.size, 0);
+  f.ready(); await drain();
+  assert.equal(f.changes.length, 0);
+  assert.equal((await f.connection.switchToLocal()).kind, 'local');
+  assert.equal(f.starts(), 1);
+});
+
+test('lote3a: reconfigurar durante JNI descarta época antiga sem promover PC antigo', async () => {
+  const f = startupFixture();
+  f.connection.configure({ local });
+  const old = f.connection.resolveTarget();
+  f.connection.configure({ local: remote });
+  await assert.rejects(old, { code: 'STALE_CONNECTION' });
+  f.ready(); await drain();
+  assert.equal(f.changes.length, 0);
+  assert.equal((await f.connection.resolveTarget()).kind, 'local');
+  assert.ok(f.calls.every(c => !c.url.startsWith(local)));
+  assert.equal(f.scheduled.size, 0);
+});
+
+test('lote3a: timeout JNI limpa timer; readiness tardia permite retry real sem novo JNI', async () => {
+  const f = startupFixture();
+  const first = f.connection.switchToLocal();
+  const timeout = [...f.scheduled.values()].find(t => t.ms === 5000);
+  timeout.fn();
+  await assert.rejects(first, { code: 'LOCAL_HOST_TIMEOUT' });
+  assert.equal(f.scheduled.size, 0);
+  f.ready(); await drain();
+  assert.equal(f.embedded.startupState().phase, 'ready');
+  assert.equal((await f.connection.switchToLocal()).kind, 'local');
+  assert.equal(f.starts(), 1);
+});
+
+test('lote3a: JNI indisponível informa erro; retry preserva endpoints e volta a chamar plugin', async () => {
+  let calls = 0;
+  const embedded = createLocalHost({ native: () => true, available: () => true,
+    plugin: { ensureStarted: async () => { if (++calls === 1) throw Object.assign(Error('JNI indisponível'), { code: 'HOST_FAILED' });
+      return { baseUrl: embeddedTarget.server, status: 2, token: embeddedTarget.token }; } }, fetch: async () => Response.json({ ok: true }) });
+  const f = autoFixture({ embedded });
+  f.connection.configure({ local, remote });
+  const record = f.data.get('mc.connection');
+  await assert.rejects(f.connection.switchToLocal(), { code: 'HOST_FAILED' });
+  assert.equal(embedded.startupState().phase, 'error');
+  assert.equal((await f.connection.switchToLocal()).kind, 'local');
+  assert.equal(f.data.get('mc.connection'), record);
+  assert.equal(calls, 2);
+});
+
+test('lote3a: troca local nunca devolve PC quando plugin ausente; activate não é silenciado', async () => {
+  const absent = autoFixture({ embedded: { target: () => null, ensureStarted: async () => null } });
+  absent.connection.configure({ local });
+  assert.equal((await absent.connection.resolveTarget()).kind, 'pc');
+  await assert.rejects(absent.connection.switchToLocal(), { code: 'LOCAL_HOST_UNAVAILABLE' });
+  assert.equal(absent.connection.kind(), 'pc');
+  const f = autoFixture({ embedded: { target: () => embeddedTarget, standby: async () => {}, activate: async () => { throw Error('activate recusado'); } } });
+  f.connection.configure({ local });
+  await f.connection.resolveTarget();
+  await assert.rejects(f.connection.switchToLocal(), { code: 'LOCAL_ACTIVATE_FAILED' });
+  assert.equal(f.connection.kind(), 'pc');
+  assert.equal((await f.connection.resolveTarget()).kind, 'pc', 'preferência local só muda após sucesso');
+});
+
+test('lote3a: troca PC offline ou sync incompleto rejeita sem declarar PC reconectado', async () => {
+  const noHost = autoFixture({ embedded: { target: () => null, ensureStarted: async () => null } });
+  noHost.connection.configure({ local });
+  await assert.rejects(noHost.connection.switchToPc(), { code: 'LOCAL_HOST_UNAVAILABLE' });
+  for (const converged of [false, true]) {
+    const f = autoFixture({ fetch: async () => { if (converged) throw Error('offline'); return Response.json({ ok: true, name: 'modularchat', encrypted: true }); },
+      sync: async () => ({ converged }) });
+    f.connection.configure({ local });
+    await f.connection.switchToLocal();
+    await assert.rejects(f.connection.switchToPc(), { code: converged ? 'PC_UNAVAILABLE' : 'INCOMPLETE_SYNC' });
+    assert.equal(f.connection.kind(), 'local');
+    assert.ok(!f.statuses.some(s => s.code === 'SYNCED'));
+  }
+});
+
+test('lote3a: trocas manuais compartilham sync e só resolvem após convergência', async () => {
+  const gate = deferred(); let syncs = 0;
+  const f = autoFixture({ sync: () => { syncs++; return gate.promise; } });
+  f.connection.configure({ local });
+  await f.connection.switchToLocal();
+  const first = f.connection.switchToPc(), second = f.connection.switchToPc();
+  await drain();
+  assert.equal(syncs, 1); assert.equal(f.connection.kind(), 'local');
+  gate.resolve({ converged: true });
+  assert.ok((await Promise.all([first, second])).every(t => t.kind === 'pc'));
+});
+
+test('lote3a: cancelar promoção PC aborta sync e resposta tardia não promove', async () => {
+  const gate = deferred(); let syncSignal;
+  const f = autoFixture({ sync: options => { syncSignal = options.signal; return gate.promise; } });
+  f.connection.configure({ local }); await f.connection.switchToLocal();
+  const ac = new AbortController(), promotion = f.connection.switchToPc(ac.signal);
+  await drain(); ac.abort();
+  await assert.rejects(promotion, { name: 'AbortError' });
+  assert.equal(syncSignal.aborted, true);
+  gate.resolve({ converged: true }); await drain();
+  assert.equal(f.connection.kind(), 'local');
+  assert.ok(!f.statuses.some(s => s.code === 'SYNCED'));
+});
+
+test('lote3a: leases POST/SSE inclusive origem fixa bloqueiam trocas manuais e sync', async () => {
+  const f = autoFixture();
+  f.connection.configure({ local }); await f.connection.switchToLocal();
+  for (const options of [{ write: true }, { generation: true }, { write: true, origin: { server: local, kind: 'pc' } }]) {
+    const lease = await f.connection.acquireTarget(options);
+    const before = f.lifecycle.length;
+    await assert.rejects(f.connection.switchToPc(), { code: 'ORIGIN_BUSY' });
+    await assert.rejects(f.connection.switchToLocal(), { code: 'ORIGIN_BUSY' });
+    assert.equal(f.lifecycle.length, before);
+    assert.equal((await f.connection.resolveTarget(undefined, { fresh: true })).kind, 'local');
+    lease.release();
+  }
+  assert.equal((await f.connection.switchToPc()).kind, 'pc');
+});
+
+test('lote3a: preferência local reativa após standby/resume sem sondar PC', async () => {
+  let posts = 0;
+  const embedded = createLocalHost({ native: () => true, available: () => true,
+    plugin: { ensureStarted: async () => ({ baseUrl: embeddedTarget.server, status: 2, token: embeddedTarget.token }) },
+    fetch: async () => { posts++; return Response.json({ ok: true }); } });
+  const f = autoFixture({ embedded });
+  await f.connection.switchToLocal();
+  await embedded.standby(); embedded.invalidateLifecycle(); f.connection.invalidate();
+  assert.equal((await f.connection.resolveTarget()).kind, 'local');
+  assert.equal(posts, 3); assert.equal(f.calls.length, 0);
+});
+
+test('lote3a: probePc cancelado limpa deadline e não tenta outro endpoint', async () => {
+  const scheduled = new Map(); let sequence = 0;
+  const f = autoFixture({ timers: { setTimeout(fn, ms) { scheduled.set(++sequence, { fn, ms }); return sequence; }, clearTimeout(id) { scheduled.delete(id); } },
+    fetch: () => new Promise(() => {}) });
+  f.connection.configure({ local, remote });
+  const ac = new AbortController(), probe = f.connection.probePc(ac.signal);
+  ac.abort(); await assert.rejects(probe, { name: 'AbortError' });
+  assert.equal(scheduled.size, 0); assert.equal(f.calls.length, 1);
+});
+
+test('lote3a: watcher distingue falha de activate para UI oferecer retry', async () => {
+  const scheduled = new Map(); let sequence = 0;
+  const f = autoFixture({ timers: { setTimeout(fn, ms) { scheduled.set(++sequence, { fn, ms }); return sequence; }, clearTimeout(id) { scheduled.delete(id); } },
+    embedded: { target: () => embeddedTarget, activate: async () => { throw Object.assign(Error('Activate recusado'), { code: 'ACTIVATE_FAILED' }); } } });
+  const document = new EventTarget(); document.visibilityState = 'visible';
+  const stop = f.connection.start({ document, window: new EventTarget() });
+  const [id, tick] = [...scheduled].find(([, timer]) => timer.ms === 0); scheduled.delete(id); await tick.fn();
+  assert.equal(f.statuses.at(-1).selectionFailed, true); assert.equal(f.statuses.at(-1).code, 'ACTIVATE_FAILED');
+  stop(); assert.equal(scheduled.size, 0);
+});
+
+test('lote3a: activate confirmado após cancelamento não promove nem repete POST no retry', async () => {
+  const gate = deferred(); let posts = 0;
+  const embedded = createLocalHost({ native: () => true, available: () => true,
+    plugin: { ensureStarted: async () => ({ baseUrl: embeddedTarget.server, status: 2, token: embeddedTarget.token }) },
+    fetch: async () => { posts++; return posts === 1 ? gate.promise : Response.json({ ok: true }); } });
+  await embedded.ensureStarted();
+  const f = autoFixture({ embedded }), ac = new AbortController();
+  const activating = f.connection.switchToLocal(ac.signal); await drain();
+  ac.abort(); await assert.rejects(activating, { name: 'AbortError' });
+  gate.resolve(Response.json({ ok: true })); await drain();
+  assert.equal(f.changes.length, 0);
+  await f.connection.switchToLocal();
+  assert.equal(posts, 1, 'resposta confirmada preserva lifecycle sem repetir o POST aceito');
+});

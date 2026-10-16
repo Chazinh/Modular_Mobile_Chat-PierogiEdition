@@ -9,6 +9,7 @@ import { Screen } from './Sheet.jsx';
 import ChoiceField from './ChoiceField.jsx';
 import ColorField from './ColorField.jsx';
 import { useConfirm } from './ConfirmProvider.jsx';
+import PairedDevices from './PairedDevices.jsx';
 
 const LocalHostSettings = lazy(() => import('./LocalHostSettings.jsx'));
 
@@ -17,7 +18,7 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
   const language = useLanguage();
   const confirm = useConfirm();
   const [code, setCode] = useState(null);
-  const [devices, setDevices] = useState(null);
+  const [deviceError, setDeviceError] = useState('');
   const [trash, setTrash] = useState(null); // null = loading (or failed: see trashError)
   const [trashError, setTrashError] = useState('');
   const [eye, setEye] = useState(loadEyeCare);
@@ -46,7 +47,6 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
   }
 
   async function load() {
-    api.devices().then((r) => setDevices(r.devices)).catch(() => setDevices(null));
     loadTrash();
     api.status().then(setStatus).catch(() => setStatus(null));
   }
@@ -101,7 +101,7 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
       <div className="space-y-5 px-4 py-4 text-[15px]">
         <Section title={tr('Idioma')} icon={<Languages size={16} />}>
           <p className="text-sm text-textMuted">{tr('Idioma da interface')}</p>
-          <ChoiceField label={tr('Idioma da interface')} value={language} onChange={setLanguage}
+          <ChoiceField variant="dropdown" label={tr('Idioma da interface')} value={language} onChange={setLanguage}
             options={[{ value: 'pt-BR', label: 'Português (Brasil)', lang: 'pt-BR' }, { value: 'en', label: 'English', lang: 'en' }]} />
           <p className="text-xs text-textMuted">{tr('A escolha fica salva neste aparelho ou navegador. Não muda o idioma das conversas nem das respostas do modelo.')}</p>
         </Section>
@@ -196,14 +196,22 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
           <button type="button" onClick={() => setLocalHostOpen(true)} className="rounded-full bg-composer px-4 py-2.5 text-sm">{tr('Configurar host Android')}</button>
         </Section>}
 
-        <Section title={tr("Pareamento")} icon={<Smartphone size={16} />}>
+        <Section title={tr("Pareamento e Conexão")} icon={<Smartphone size={16} />}>
           {isNative() ? (
             <>
-              <p className="text-sm text-textMuted">{tr("Servidor ativo: ")}{config.kind === 'local' ? tr('Aparelho Android') : config.server || '—'}</p>
+              <p className="text-sm text-textMuted">{tr("Servidor ativo: ")}{config.kind === 'local' ? tr('Aparelho Android (Local)') : tr('PC ({0})', [config.server || '—'])}</p>
               <p className="text-sm text-textMuted">{tr('Rede local:')} {config.connection.local || tr('não configurada')}</p>
               <p className="text-sm text-textMuted">{tr('Internet:')} {config.connection.remote || tr('não configurada')}</p>
               <p className="text-xs text-textMuted">{tr('O app prefere a rede local e reavalia a conexão ao voltar ou quando a rede muda.')}</p>
-              <button onClick={onResetServer} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><Link2Off size={16} />{tr("Conectar PC / trocar pareamento")}</button>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button onClick={onResetServer} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm font-medium"><Link2Off size={16} />{tr("Configurar endereço do PC e pareamento")}</button>
+                {config.embeddedReady && config.kind === 'pc' && (
+                  <button onClick={async () => { try { await api.switchToLocal(); onChanged?.(); } catch (e) { setDeviceError(e.message); } }} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2 text-xs"><Smartphone size={14} />{tr("Alternar para host Android")}</button>
+                )}
+                {config.embeddedReady && config.kind === 'local' && (config.connection.local || config.connection.remote) && (
+                  <button onClick={async () => { try { await api.switchToPc(); onChanged?.(); } catch (e) { setDeviceError(e.message); } }} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2 text-xs"><Smartphone size={14} />{tr("Alternar para PC")}</button>
+                )}
+              </div>
             </>
           ) : (
             <>
@@ -211,12 +219,8 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
               {code && <p className="rounded-xl bg-composer p-3 text-center font-mono text-[28px] tracking-[0.3em]">{code.code}</p>}
             </>
           )}
-          {devices?.filter((d) => !d.revoked_at).map((d) => (
-            <div key={d.id} className="flex items-center justify-between rounded-xl bg-composer px-3 py-2 text-sm">
-              <span>{d.name}<span className="block text-[11px] text-textMuted">{tr("visto ")}{d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : tr("nunca")}</span></span>
-              <button onClick={() => run(() => api.revokeDevice(d.id), tr("Aparelho removido."))} aria-label={tr("Remover aparelho")}><Trash2 size={16} className="text-red-300" /></button>
-            </div>
-          ))}
+          {deviceError && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-300">{tr(deviceError)}</p>}
+          <PairedDevices />
           <p className="text-xs text-textMuted">{tr('As credenciais dos provedores ficam no host em que foram configuradas (PC ou aparelho). O pareamento não replica essas chaves.')}</p>
         </Section>
 

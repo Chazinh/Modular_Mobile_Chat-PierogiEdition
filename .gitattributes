@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# GitHub Linguist: ignora dependências rastreadas e a casca nativa móvel
+client/node_modules/** linguist-vendored
+client/android/** linguist-vendored
+

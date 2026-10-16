@@ -1,9 +1,14 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { createRevisionWriter } from './storage-writes.js';
 
 const native = Capacitor.isNativePlatform();
 const NativeStorage = registerPlugin('PrivateStorage');
 const AAD = new TextEncoder().encode('ModularChat.PrivateCache.v1');
-let enabled = false, waitingForPair = false, browserKey = null, state = {}, saving = Promise.resolve();
+let enabled = false, waitingForPair = false, browserKey = null, state = {}, staged = false;
+const writes = createRevisionWriter(async () => {
+  const protectedState = await encodePrivate(JSON.stringify(state));
+  localStorage.setItem('mc.private.v1', JSON.stringify(protectedState));
+});
 const privateKey = k => k === 'mc.token' || k.startsWith('mc.draft.') || k.startsWith('mc.pending.') || k.startsWith('mc.sync.');
 const b64 = bytes => {
   let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(text);
@@ -13,14 +18,21 @@ const bytes = text => Uint8Array.from(atob(text),c=>c.charCodeAt(0));
 export const privacyEnabled = () => enabled;
 export const privacyNeedsPairing = () => waitingForPair;
 export function privateGet(key) { return enabled || waitingForPair ? state[key] ?? null : localStorage.getItem(key); }
-export function privateSet(key,value) {
+export async function privateSet(key,value) {
   if(key.startsWith('mc.sync.')&&!enabled) return Promise.reject(Error('A sincronização exige armazenamento protegido.'));
-  if(!enabled&&!waitingForPair) { if(value==null)localStorage.removeItem(key);else localStorage.setItem(key,value);return Promise.resolve(); }
+  if(!enabled&&!waitingForPair) {
+    if(localStorage.getItem(key)!==(value??null)) {
+      if(value==null)localStorage.removeItem(key);else localStorage.setItem(key,value);
+    }
+    return;
+  }
+  const changed = value == null ? Object.hasOwn(state,key) : state[key] !== value;
   if(value==null)delete state[key];else state[key]=value;
-  if(waitingForPair)return Promise.resolve();
-  const snapshot=JSON.stringify(state);
-  const task=saving.catch(()=>{}).then(async()=>localStorage.setItem('mc.private.v1',JSON.stringify(await encodePrivate(snapshot))));
-  saving=task;return task;
+  if(waitingForPair) {
+    staged ||= changed;
+    throw Error('Conecte o servidor para proteger os dados antes de continuar.');
+  }
+  return writes.save(changed);
 }
 
 export async function encodePrivate(value) {
@@ -39,10 +51,10 @@ export async function decodePrivate(value, json = true) {
   return json?JSON.parse(text):text;
 }
 
-export async function initializePrivacy(server = '') {
+export async function initializePrivacy(server = '', pairingToken) {
   if(native) { await NativeStorage.ready(); enabled=true; }
   else {
-    const token=state['mc.token']||localStorage.getItem('mc.token');
+    const token=pairingToken||state['mc.token']||localStorage.getItem('mc.token');
     const response=await fetch(`${server}/api/privacy/cache-key`,{signal:AbortSignal.timeout(10000),credentials:'include',headers:token?{Authorization:`Bearer ${token}`}:{}});
     if(response.status===404)return; // fixtures e backend legado
     if(response.status===401){waitingForPair=true;return;}
@@ -56,8 +68,10 @@ export async function initializePrivacy(server = '') {
   if(existing)state={...await decodePrivate(JSON.parse(existing)),...state};
   const legacy=[];
   for(let i=0;i<localStorage.length;i++) {const k=localStorage.key(i);if(privateKey(k)){state[k]=localStorage.getItem(k);legacy.push(k);}}
-  if(legacy.length) {
-    await privateSet('mc.migrated','1');
+  if(legacy.length || staged) {
+    if(legacy.length)state['mc.migrated']='1';
+    await writes.save();
+    staged=false;
     for(const k of legacy)localStorage.removeItem(k);
   }
 }

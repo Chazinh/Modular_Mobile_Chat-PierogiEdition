@@ -207,7 +207,6 @@ pub struct Manager {
     pub jobs: Arc<Notify>,
     pub locks: Locks,
     active: Arc<Mutex<HashMap<String, Arc<Generation>>>>,
-    recent: Arc<Mutex<HashMap<String, Arc<Generation>>>>,
     start_gate: Arc<Mutex<()>>,
     slots: Arc<Semaphore>,
     validation: Arc<Mutex<ValidationCache>>,
@@ -240,7 +239,6 @@ impl Manager {
             jobs,
             locks: Locks::default(),
             active: Arc::default(),
-            recent: Arc::default(),
             start_gate: Arc::default(),
             slots,
             validation: Arc::default(),
@@ -256,11 +254,7 @@ impl Manager {
         let mut cache = self.validation.lock().await;
         if !cache.loaded || cache.modified != modified {
             cache.value = Arc::new(
-                tokio::fs::read(&file)
-                    .await
-                    .ok()
-                    .filter(|v| v.len() < 2 * 1024 * 1024)
-                    .and_then(|v| serde_json::from_slice(&v).ok())
+                read_validation(&file).await
                     .unwrap_or(json!({"routes":{}})),
             );
             cache.modified = modified;
@@ -284,16 +278,7 @@ impl Manager {
         {
             return Some(g.clone());
         }
-        self.recent
-            .lock()
-            .await
-            .values()
-            .find(|g| {
-                g.conv == conv
-                    && gid.is_some_and(|id| g.id == id)
-                    && g.created.elapsed() < Duration::from_secs(600)
-            })
-            .cloned()
+        None
     }
     pub async fn sync_character(&self, conv: &str) -> Result<()> {
         if crate::api::sync_character(&self.store, &self.config, conv).await? {
@@ -429,17 +414,7 @@ impl Manager {
             .call(Request::Calibration(s(&conv, "routeId")))
             .await?["ratio"]
             .as_f64();
-        let mut ctx = match context::assemble(&data, &json!({}), &mode, &plan, calibration) {
-            Ok(ctx) => ctx,
-            Err(e) if matches!(backend, crate::providers::SelectedBackend::Local) => {
-                context::Context {
-                    messages: vec![],
-                    raw_estimate: 0,
-                    report: json!({"localPreparationError":e.message,"code":e.extra["code"],"report":e.extra["report"]}),
-                }
-            }
-            Err(e) => return Err(e),
-        };
+        let mut ctx = context::assemble(&data, &json!({}), &mode, &plan, calibration)?;
         if self.config.is_android() {
             ctx.report["routing"] = backend.diagnostic(&requested_route);
         }
@@ -474,7 +449,7 @@ impl Manager {
         });
         self.active.lock().await.insert(g.conv.clone(), g.clone());
         let _=self.events.send(json!({"convId":g.conv,"type":"generation","generating":true,"revision":begin["revision"]}));
-        plan.body["messages"] = json!(ctx.messages);
+        plan.body["messages"] = Value::Array(std::mem::take(&mut ctx.messages));
         let this = self.clone();
         let task = g.clone();
         tokio::spawn(async move {
@@ -486,14 +461,13 @@ impl Manager {
     async fn run(
         &self,
         g: Arc<Generation>,
-        data: Value,
+        mut data: Value,
         mut plan: presets::Plan,
         calibration: Option<f64>,
         mut ctx: context::Context,
         _permit: OwnedSemaphorePermit,
         backend: crate::providers::SelectedBackend,
     ) {
-        let conv = data["conv"].clone();
         let query = s(&data["current"], "userText");
         let enrich = async {
             let vector = if !matches!(backend, crate::providers::SelectedBackend::Local)
@@ -512,8 +486,12 @@ impl Manager {
         let enriched = tokio::select! {_=g.cancelled()=>None,v=tokio::time::timeout(Duration::from_secs(6),enrich)=>Some(v)};
         if let Some(Ok(Ok(full))) = enriched {
             ctx = full;
-            plan.body["messages"] = json!(ctx.messages);
+            plan.body["messages"] = Value::Array(std::mem::take(&mut ctx.messages));
         }
+        let conv = data["conv"].take();
+        let global_settings = data["globalSettings"].take();
+        drop(data);
+        drop(query);
         if self.config.is_android() {
             ctx.report["routing"] = backend.diagnostic(&s(&conv, "routeId"));
         }
@@ -565,9 +543,6 @@ impl Manager {
         };
         let mut error_code = Value::Null;
         let consume = async {
-            if let Some(message) = ctx.report["localPreparationError"].as_str() {
-                return Err(Error::new(422, message).extra("code", "LOCAL_CONTEXT_TOO_LARGE"));
-            }
             let response = match &backend {
                 crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
                     Ok(session) => session.send(&plan.body, Duration::from_secs(900)).await?,
@@ -619,12 +594,7 @@ impl Manager {
                 let Some(chunk) = chunk else {
                     break;
                 };
-                let chunk = chunk.map_err(|e| {
-                    Error::new(
-                        502,
-                        format!("Fluxo interrompido: {}", clipped(&e.to_string())),
-                    )
-                })?;
+                let chunk = chunk.map_err(|_| Error::new(502, "Fluxo do provedor interrompido."))?;
                 idle_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
                 buffer.extend_from_slice(&chunk);
                 // Every individual event/line is bounded, including hidden reasoning.
@@ -658,14 +628,7 @@ impl Manager {
                     let value: Value = serde_json::from_str(&payload)
                         .map_err(|_| Error::new(502, "JSON SSE upstream inválido."))?;
                     if !value["error"].is_null() {
-                        return Err(Error::new(
-                            502,
-                            clipped(
-                                value["error"]["message"]
-                                    .as_str()
-                                    .unwrap_or("Erro do provedor."),
-                            ),
-                        ));
+                        return Err(Error::new(502, "Erro no fluxo do provedor."));
                     }
                     if !value["usage"].is_null() {
                         measured = value["usage"].clone();
@@ -731,14 +694,14 @@ impl Manager {
                 g.output.lock().await.replace(visible.clone());
             }
         }
-        let size = rules::reply_size(&data["globalSettings"]);
+        let size = rules::reply_size(&global_settings);
         if visible.trim().is_empty() && error.is_none() && !stopped {
             error = Some("O modelo retornou uma resposta vazia.".into());
         }
-        let pct = data["globalSettings"]["dialoguePct"]
+        let pct = global_settings["dialoguePct"]
             .as_f64()
             .unwrap_or(65.0);
-        let before = style_policy::assess_settings(&visible, size, pct, &data["globalSettings"]);
+        let before = style_policy::assess_settings(&visible, size, pct, &global_settings);
         let mut style_report = json!({"attempted":false,"before":before,"after":before});
         if !visible.trim().is_empty()
             && !stopped
@@ -748,7 +711,7 @@ impl Manager {
             && before["ok"] != true
         {
             let repair_body = style_policy::repair_body(&plan.body, &visible,
-                &style_policy::instruction_settings(&before,pct,&data["globalSettings"]));
+                &style_policy::instruction_settings(&before,pct,&global_settings));
             style_report["inputEstimate"] = json!(rules::estimate_messages(repair_body["messages"].as_array().unwrap()));
             let repair = async {
                 let response = match &backend {
@@ -764,10 +727,10 @@ impl Manager {
                         .await
                         .map_err(|_| Error::new(502, "Revisão de estilo indisponível."))?,
                 };
-                response
+                let response = response
                     .error_for_status()
-                    .map_err(|_| Error::new(502, "Revisão de estilo recusada."))?
-                    .json::<Value>()
+                    .map_err(|_| Error::new(502, "Revisão de estilo recusada."))?;
+                crate::bounded_http::json(response, crate::bounded_http::STYLE_LIMIT)
                     .await
                     .map_err(|_| Error::new(502, "Revisão de estilo inválida."))
             };
@@ -781,7 +744,7 @@ impl Manager {
                 let mut filter = rules::ThinkFilter::default();
                 let candidate = (filter.push(raw) + &filter.flush()).trim().to_owned();
                 let after =
-                    style_policy::assess_settings(&candidate, size, pct, &data["globalSettings"]);
+                    style_policy::assess_settings(&candidate, size, pct, &global_settings);
                 let accept = !candidate.is_empty()
                     && after["sizeOk"] == true
                     && after["monologueOk"] == true
@@ -867,18 +830,6 @@ impl Manager {
         let _ = g.wake.send(());
         g.ended.notify_waiters();
         let _=self.events.send(json!({"convId":g.conv,"type":"message","revision":final_event["revision"],"generating":false}));
-        let mut recent = self.recent.lock().await;
-        recent.retain(|_, v| v.created.elapsed() < Duration::from_secs(600));
-        if recent.len() >= 128
-            && let Some(old) = recent
-                .iter()
-                .min_by_key(|(_, v)| v.created)
-                .map(|(k, _)| k.clone())
-        {
-            recent.remove(&old);
-        }
-        recent.insert(g.id.clone(), g.clone());
-        drop(recent);
         self.jobs.notify_one();
         let request_log = match &backend {
             crate::providers::SelectedBackend::Cloud { provider, .. } => {
@@ -886,15 +837,37 @@ impl Manager {
             }
             _ => None,
         };
-        if let Some(file) = request_log {
-            let last = plan.body["messages"]
+        let last = if request_log.is_some() {
+            plan.body["messages"]
                 .as_array()
                 .and_then(|m| m.iter().rev().find(|m| m["role"] == "user"))
                 .map(|m| s(m, "content"))
-                .unwrap_or_default();
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let (family, omit_off) = {
             let preset = presets::by_id(&s(&conv, "presetId"));
-            let family = s(&preset, "family");
-            let omit_off = preset["thinkingOffShape"] == "omit";
+            (s(&preset, "family"), preset["thinkingOffShape"] == "omit")
+        };
+        let thinking_off = plan.controls["thinkingEnabled"] == false;
+        let expected_effort = conv["effort"].clone();
+        let generation_id = g.id.clone();
+        // Read-only log retries need only this match key and these controls. Release
+        // prompt/history/memory payloads and the task's output owner before waiting.
+        drop(plan);
+        drop(conv);
+        drop(global_settings);
+        drop(ctx);
+        drop(visible);
+        drop(measured);
+        drop(style_report);
+        drop(usage);
+        drop(final_event);
+        drop(filter);
+        drop(backend);
+        drop(g);
+        if let Some(file) = request_log {
             let mut check = json!({"found":false,"verification":"unverified"});
             // The router writes/fills its log asynchronously. A missing/busy row
             // is provisional; bounded retries never write to or assume its DB.
@@ -919,7 +892,6 @@ impl Manager {
                 }
             }
             let value = if check["found"] == true {
-                let thinking_off = plan.controls["thinkingEnabled"] == false;
                 let off_confirmed = matches!(
                     check["thinking"]["type"].as_str(),
                     Some("disabled" | "between_tools")
@@ -933,19 +905,19 @@ impl Manager {
                 } else {
                     Value::Null
                 };
-                json!({"checkedAt":crate::now(),"provider":check["provider"],"model":check["model"],"effortExpected":conv["effort"],"effortSent":check["effort"],"effortOk":if thinking_off {off_check.clone()}else{json!(conv["effort"]==check["effort"])},"thinkingEnabled":!thinking_off,"thinkingOk":if thinking_off {off_check}else{Value::Null},"thinkingMode":check["thinking"],"maxTokens":check["maxTokens"],"usage":check["usage"]})
+                json!({"checkedAt":crate::now(),"provider":check["provider"],"model":check["model"],"effortExpected":expected_effort,"effortSent":check["effort"],"effortOk":if thinking_off {off_check.clone()}else{json!(expected_effort==check["effort"])},"thinkingEnabled":!thinking_off,"thinkingOk":if thinking_off {off_check}else{Value::Null},"thinkingMode":check["thinking"],"maxTokens":check["maxTokens"],"usage":check["usage"]})
             } else {
                 json!({"checkedAt":crate::now(),"notFound":true,"verification":"unverified","reason":check["reason"]})
             };
             let _ = self
                 .store
                 .call(Request::ProviderCheck {
-                    generation_id: g.id.clone(),
+                    generation_id: generation_id.clone(),
                     value,
                 })
                 .await;
         } else if self.config.is_android() {
-            let _ = self.store.call(Request::ProviderCheck { generation_id: g.id.clone(),
+            let _ = self.store.call(Request::ProviderCheck { generation_id,
                 value: json!({"verification":"unverified","availability":"not_available","effortOk":null,"thinkingOk":null,"reason":"requestLog não disponível no mobile"}) }).await;
         }
     }
@@ -964,10 +936,19 @@ impl Manager {
         capped
     }
     pub async fn stop(&self, conv: &str, id: &str) -> Result<Value> {
-        let g = self
-            .get(conv, Some(id))
-            .await
-            .ok_or_else(|| Error::new(404, "Nenhuma geração em andamento."))?;
+        let g = if let Some(g) = self.get(conv, Some(id)).await {
+            g
+        } else {
+            // A finalized generation is no longer retained by the supervisor. Stop
+            // remains idempotent for persisted turns, as it was for the recent cache.
+            self.persisted(conv, id).await.map_err(|e| {
+                if e.status == 404 {
+                    Error::new(404, "Nenhuma geração em andamento.")
+                } else {
+                    e
+                }
+            })?
+        };
         let _ = g.cancel.send(true);
         let deadline = Instant::now() + Duration::from_secs(35);
         loop {
@@ -1091,6 +1072,34 @@ impl Manager {
             .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15))))
     }
 }
+async fn read_validation(path: &std::path::Path) -> Option<Value> {
+    use tokio::io::AsyncReadExt;
+    const LIMIT: usize = 2 * 1024 * 1024;
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    if file.metadata().await.ok()?.len() >= LIMIT as u64 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        // At the boundary, read at most one byte to detect a concurrently grown file.
+        let left = LIMIT - bytes.len();
+        let n = file.read(&mut chunk[..left.min(8192)]).await.ok()?;
+        if n == 0 {
+            return serde_json::from_slice(&bytes).ok();
+        }
+        let len = bytes.len().checked_add(n)?;
+        if len >= LIMIT {
+            return None;
+        }
+        if len > bytes.capacity() {
+            let capacity = bytes.capacity().saturating_mul(2).max(len).min(LIMIT);
+            bytes.reserve_exact(capacity - bytes.len());
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+}
+
 pub async fn write_character(file: &std::path::Path, text: &str) -> Result<()> {
     tokio::fs::create_dir_all(file.parent().unwrap()).await?;
     let tmp = file.with_extension(format!("{}.tmp", crate::id()));

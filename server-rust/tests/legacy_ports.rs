@@ -292,7 +292,8 @@ async fn budget_reduces_optional_parts_before_pairs_and_never_cuts_messages() {
         "nenhuma mensagem foi cortada"
     );
     assert_eq!(data["totalPairs"], 34);
-    // does not fit even at the minimum: an explained error and nothing sent
+    // Above the estimated budget even at the minimum: keep complete messages
+    // and report the overflow; the provider enforces its actual context window.
     let tight = conv(
         s,
         json!({"settings":{"context":{"targetTokens":5000,"softLimit":6000,"hardLimit":20000}}}),
@@ -307,12 +308,22 @@ async fn budget_reduces_optional_parts_before_pairs_and_never_cuts_messages() {
         )
         .await;
     }
-    let err = build(s, &tight, "continuo", "send").await.2.err().unwrap();
-    assert_eq!(err.status, 422);
+    let tight_ctx = build(s, &tight, "continuo", "send").await.2.unwrap();
+    assert_eq!(tight_ctx.report["pairsIncluded"], 20);
+    assert_eq!(tight_ctx.report["limits"]["hard"], 20000);
     assert!(
-        err.message.contains("excede o orçamento"),
-        "{}",
-        err.message
+        tight_ctx.report["tokens"]["total"].as_u64().unwrap()
+            > tight_ctx.report["limits"]["hard"].as_u64().unwrap()
+    );
+    assert_eq!(tight_ctx.report["overHardLimit"], true);
+    assert_eq!(tight_ctx.report["exceededEstimatedBudget"], true);
+    assert!(
+        tight_ctx
+            .messages
+            .iter()
+            .filter(|m| m["role"] == "assistant")
+            .all(|m| m["content"].as_str().unwrap().len() >= big.len()),
+        "over budget messages must also remain complete"
     );
 }
 

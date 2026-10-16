@@ -10,6 +10,18 @@ import { mockRouter } from './helpers.js';
 import { startRust } from './rust-http.js';
 import { mira as f, previousBot, currentUser, falseBot, noFlags, attributionReview, extractionFixture, contaminatedExtraction, validExtraction, legacyExtraction, reviewAttributionContract, normalizeReviewSchema } from './provenance-fixture.js';
 
+// The prompt projects provenance as text; IDs, roles and full evidence stay in the raw sources.
+// This quote starts on a new line, so the projection must not invent a citing speaker.
+const quoteProvenance = [
+  '[PROVENIÊNCIA DE CITAÇÕES RECENTES — correspondência exata]',
+  `- “${f.quote}” foi dita originalmente por Mira.`,
+  'Citar/imitar não cria declaração nova. Comentários fora das aspas são separados; referentes não explicitados permanecem desconhecidos.',
+].join('\n');
+const originalSource = sourceId => `[INÍCIO DA FONTE id=${sourceId} role=assistant; interlocutores definidos SOMENTE pelo texto, não pelo role]\n${previousBot}\n[FIM DA FONTE id=${sourceId}]`;
+const hasReviewProvenance = (text,sourceId) => typeof sourceId==='string'
+  &&text.includes(originalSource(sourceId))&&text.includes(quoteProvenance)
+  &&text.includes(currentUser)&&text.includes(falseBot);
+
 const suiteDir = fs.mkdtempSync(path.join(os.tmpdir(),'mc-provenance-runtime-'));
 const upstream = await mockRouter();
 after(async()=>{await upstream.close();fs.rmSync(suiteDir,{recursive:true,force:true});});
@@ -31,6 +43,7 @@ async function fixture(t,mode,{extraction=extractionFixture,review=mode==='flag'
   const dir=fs.mkdtempSync(path.join(suiteDir,'fixture-'));
   const requests=[];
   const ctl={extraction,review};
+  let sourceId;
   const model=http.createServer(async(req,res)=>{
     let raw='';for await(const chunk of req)raw+=chunk;
     const body=JSON.parse(raw||'{}');requests.push(body);
@@ -41,8 +54,7 @@ async function fixture(t,mode,{extraction=extractionFixture,review=mode==='flag'
     else {
       if(schema?.properties?.agency){
         // Simulated reviewer only flags the documented exact original + exact target.
-        result=mode.startsWith('flag')&&text.includes(previousBot)&&text.includes(currentUser)&&text.includes(falseBot)
-          &&text.includes('[INÍCIO DA FONTE id=')&&text.includes('"originalSpeaker":"Mira"')
+        result=mode.startsWith('flag')&&hasReviewProvenance(text,sourceId)
           ? ctl.review():noFlags();
       }else if(schema?.properties?.facts){
         result=text.includes(currentUser)?ctl.extraction():{...extractionFixture(),summary:'Mira fala com Alex na Diretoria.',facts:[],scene:null};
@@ -76,7 +88,8 @@ async function fixture(t,mode,{extraction=extractionFixture,review=mode==='flag'
     throw new Error(error.message+' '+JSON.stringify({sync:diagnostics.sync,jobs:diagnostics.jobs,requests:requests.length}));
   }
   await wait(()=>requests.some(b=>b.response_format?.json_schema?.schema?.properties?.cast&&!b.response_format.json_schema.schema.properties.facts));
-  const actual=(await j('GET',`/api/chats/${cid}/export`)).conversations[0],sourceId=actual.parts[0].selected_version_id;
+  const actual=(await j('GET',`/api/chats/${cid}/export`)).conversations[0];
+  sourceId=actual.parts[0].selected_version_id;
   upstream.set({chunks:[falseBot]});
   const reply=await fetch(`${runtime.base}/api/chats/${cid}/message`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'send',content:currentUser,opId:`mira-${mode}`}),signal:AbortSignal.timeout(30000)});
   assert.equal(reply.status,200);const sse=await reply.text();assert.ok(sse.includes('"done":true'));
@@ -118,10 +131,8 @@ function assertRequests(requests,sourceId){
   assert.ok(currentReview,'real local review request');
   const text=currentReview.messages.at(-1).content;
   assert.ok(text.includes(previousBot)&&text.includes(currentUser)&&text.includes(falseBot));
-  assert.ok(text.includes(`id=${sourceId} role=assistant`)&&text.includes(`[FIM DA FONTE id=${sourceId}]`));
-  const provenance=JSON.parse(text.split('\n').find(line=>line.startsWith('[{')&&line.includes('"originalSpeaker"')));
-  assert.equal(provenance[0].sourceId,sourceId);assert.equal(provenance[0].originalSpeaker,'Mira');assert.equal(provenance[0].citingSpeaker,null);
-  assert.equal(provenance[0].quote,f.quote);assert.equal(provenance[0].originalEvidence,previousBot);
+  assert.ok(text.includes(originalSource(sourceId)),'exact source ID, assistant role and complete Unicode original evidence');
+  assert.ok(text.includes(quoteProvenance),'exact quote attributed to Mira, no invented citing speaker, comments kept separate');
   assert.ok(currentReview.response_format.json_schema.schema.properties.attribution);
   // The same schema fragment in the real request and in the Rust contract (fixture shared with provenance_contracts.rs).
   assert.deepEqual(normalizeReviewSchema(currentReview.response_format.json_schema.schema),{topLevelRequired:reviewAttributionContract.topLevelRequired,attribution:reviewAttributionContract.attribution});
@@ -215,15 +226,34 @@ test('runtime Mira/Alex: lote válido sem metadado attribution não bloqueia (se
   assert.doesNotMatch((await fxt.j('GET','/api/status')).jobs.lastError||'',/conflito de autoria/);
 });
 
-// An incomplete/forged authorship review from the model never becomes a flag: the turn moves on to extraction.
-for(const [name,review] of [
-  ['previousQuote ausente',()=>{const r=attributionReview();delete r.attribution[0].previousQuote;return r;}],
+// Unsupported authorship never becomes a flag. A schema-invalid review fails recoverably before
+// extraction; only a valid review on retry lets that turn proceed.
+for(const [name,review,invalidSchema=false] of [
+  ['previousQuote ausente',()=>{const r=attributionReview();delete r.attribution[0].previousQuote;return r;},true],
   ['claimedSpeaker em branco',()=>{const r=attributionReview();r.attribution[0].claimedSpeaker='   ';return r;}],
-  ['previousQuote como array coagível',()=>{const r=attributionReview();r.attribution[0].previousQuote=[r.attribution[0].previousQuote];return r;}],
+  ['previousQuote como array coagível',()=>{const r=attributionReview();r.attribution[0].previousQuote=[r.attribution[0].previousQuote];return r;},true],
   ['originalSpeaker forjado',()=>{const r=attributionReview();r.attribution[0].originalSpeaker='Nora';return r;}],
 ])test(`runtime Mira/Alex: revisão de autoria com ${name} não bloqueia o turno`,async t=>{
-  const fxt=await fixture(t,'flag-incompleta',{review,extraction:validExtraction});
-  await wait(()=>fxt.requests.some(b=>b.response_format?.json_schema?.schema?.properties?.agency&&b.messages.at(-1).content.includes('"originalSpeaker":"Mira"')));
+  const originalFlag=structuredClone(f.attributionFlag);
+  const expectedReview=review();
+  assert.deepEqual(f.attributionFlag,originalFlag,'invalid review does not mutate the shared fixture');
+  let reviewCalls=0;
+  const fxt=await fixture(t,'flag-incompleta',{review:()=>{reviewCalls++;return expectedReview;},extraction:validExtraction});
+  await wait(()=>fxt.requests.some(b=>b.response_format?.json_schema?.schema?.properties?.agency&&hasReviewProvenance(b.messages.at(-1).content,fxt.sourceId)));
+  assertRequests(fxt.requests,fxt.sourceId);
+  if(invalidSchema){
+    const failed=await wait(async()=>{const m=await memoryOf(fxt);return m.jobs?.failed===1&&!m.jobs.pending&&!m.jobs.running?m:null;});
+    assert.equal(failed.flags.length,0);assert.equal(failed.jobs.blocked||0,0);
+    assert.ok(reviewCalls>=3,'schema-invalid review exhausts the normal attempts');
+    assert.equal(extractionCalls(fxt.requests).length,0,'schema-invalid review never reaches extraction');
+    await assertNothingPromoted(fxt,failed);
+    assert.match((await fxt.j('GET','/api/status')).jobs.lastError,/incompatível com o schema; retry necessário/);
+    fxt.ctl.review=noFlags;
+    assert.equal(await retry(fxt),1);
+  }
   const {memory}=await assertRecovered(fxt);
   assert.equal(memory.flags.length,0);assert.equal(memory.jobs.blocked||0,0);
+  assert.equal(extractionCalls(fxt.requests).length,1,'valid batch applies exactly once');
+  if(!invalidSchema)assert.equal(reviewCalls,1,'unsupported authorship is ignored on the first review');
+  await evidence(`invalid-review-${invalidSchema?'schema':'authorship'}-${name}`,{memory,reviewCalls,sourceId:fxt.sourceId});
 });

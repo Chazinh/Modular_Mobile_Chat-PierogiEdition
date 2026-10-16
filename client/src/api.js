@@ -2,9 +2,11 @@
 import { kv } from './kv.js';
 import { privateGet, privateSet, initializePrivacy, privacyNeedsPairing } from './private-storage.js';
 import { DEFAULT_PRESETS } from './default-presets.js';
+import { createCacheWriter } from './storage-writes.js';
+import { createLatestRequest } from './connection-lifetime.js';
 import { currentServer, configuredConnection, configureConnection, setConfiguredServer, hasConfiguredServer,
   acquireTarget, selectedKind, hasEmbeddedServer, invalidateConnection, connectionFailed,
-  switchToLocal, switchToPc, probePc } from './server-connection.js';
+  switchToLocal, switchToPc, probePc, connectionSnapshot, resolveTarget } from './server-connection.js';
 
 const LS_TOKEN = 'mc.token';
 
@@ -23,8 +25,12 @@ export const config = {
     return privateGet(LS_TOKEN) || '';
   },
   set token(v) {
-    privateSet(LS_TOKEN, v || null).catch(()=>{});
+    this.setToken(v);
+  },
+  setToken(v) {
+    const persisted = privateSet(LS_TOKEN, v || null);
     invalidateConnection();
+    return persisted;
   },
   get kind() { return selectedKind(); },
   get embeddedReady() { return hasEmbeddedServer(); },
@@ -115,7 +121,7 @@ export function createApiTransport({ acquire = acquireTarget, fetch: send = (...
       }
       await readSSE(res, event => onEvent(event, target), !!options.generation);
     } catch (error) {
-      if (!signal?.aborted) failed(target);
+      if (!signal?.aborted && target && !(error instanceof ApiError) && !error.code) failed(target);
       if (signal?.aborted || error instanceof ApiError || error.code) throw error;
       throw networkError(target);
     } finally {
@@ -166,34 +172,17 @@ export async function readSSE(res, onEvent, requireDone = false) {
 
 // Cache writes stay off the critical path: the latest version of each key waits for the browser to be idle
 // (or the page to be hidden) and only then is encrypted and written. The PC remains the source of truth.
-const pendingCache = new Map();
-let cacheTimer = 0;
-let cacheWrite = Promise.resolve();
-function flushCache() {
-  cacheTimer = 0;
-  const entries = [...pendingCache];
-  pendingCache.clear();
-  if (!entries.length) return cacheWrite;
-  cacheWrite = cacheWrite.then(async () => {
-    for (const [key, value] of entries) await kv.set(key, value);
-  }).catch(() => {});
-  return cacheWrite;
-}
-function queueCache(key, value) {
-  pendingCache.set(key, value);
-  if (cacheTimer) return;
-  cacheTimer = typeof requestIdleCallback === 'function' ? requestIdleCallback(flushCache, { timeout: 2500 }) : setTimeout(flushCache, 400);
-}
-async function cacheGet(key, fallback) {
-  return pendingCache.has(key) ? pendingCache.get(key) : kv.get(key, fallback);
-}
+const cache = createCacheWriter(kv);
+const flushCache = cache.flush, queueCache = cache.queue, cacheGet = cache.get;
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushCache(); });
   window.addEventListener('pagehide', flushCache);
 }
 
 const GLOBAL_SETTINGS_TTL = 60000;
-let globalSettingsCache = null; // { at, value }
+let globalSettingsCache = null; // { at, value, origin }
+const settingsReads = createLatestRequest(connectionSnapshot);
+function invalidateSettings() { globalSettingsCache = null; settingsReads.cancel(); }
 const CACHE_LIST = 'chats';
 const CACHE_CHAT = (id) => `chat.${id}`;
 const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'kimi-k3', 'muse-spark-13', 'step-5-preview', 'glm-52', 'mobile-local', 'mobile-api']);
@@ -217,7 +206,7 @@ export const api = {
     if (config.kind !== 'pc' && cached?.presets?.some(p => p.id === 'mobile-local' || p.id === 'mobile-api')) return cached;
     const gemini = cached?.presets?.find((p) => p.id === 'gemini-38-flash');
     if (!cached || !gemini || !gemini.efforts || gemini.efforts.length < 3 || !gemini.routes || gemini.routes.length < 3) {
-      await kv.set('presets', DEFAULT_PRESETS);
+      await kv.set('presets', DEFAULT_PRESETS).catch(() => {});
       return DEFAULT_PRESETS;
     }
     return cached;
@@ -225,34 +214,42 @@ export const api = {
 
   // ----- per-conversation drafts -----
   getDraft: (id) => privateGet(`mc.draft.${id}`) || '',
-  setDraft: (id, text) => privateSet(`mc.draft.${id}`, text || null).catch(()=>{}),
+  setDraft: (id, text) => privateSet(`mc.draft.${id}`, text || null),
   getPending: (id) => { try { return JSON.parse(privateGet(`mc.pending.${id}`) || 'null'); } catch { return null; } },
-  setPending: (id, operation) => privateSet(`mc.pending.${id}`, operation ? JSON.stringify(operation) : null),
+  setPending: async (id, operation) => {
+    try { await privateSet(`mc.pending.${id}`, operation ? JSON.stringify(operation) : null); }
+    catch (error) { throw new ApiError('Não foi possível proteger a pendência do envio.', 0, { code: 'PRIVATE_CACHE_FAILED', cause: error.message }); }
+  },
 
   // ----- pareamento / status -----
   health: (options) => request('GET', '/api/health', undefined, options),
   pairInfo: (pc) => request('GET', '/api/pair/info', undefined, { pc: pc ?? (config.connection.local || config.connection.remote || '') }),
   async pair(code, deviceName, pc = config.connection.local || config.connection.remote || '') {
     const r = await request('POST', '/api/pair', { code, deviceName }, { pc });
+    const needsPairing = privacyNeedsPairing();
+    if(needsPairing) await initializePrivacy(pc,r.token);
     await privateSet(LS_TOKEN,r.token);
-    if(privacyNeedsPairing()) {await initializePrivacy(pc);await kv.migratePrivacy();await privateSet(LS_TOKEN,r.token);}
+    if(needsPairing) await kv.migratePrivacy();
     invalidateConnection();
     return r;
   },
   startPairing: () => request('POST', '/api/pair/start', undefined, { pc: config.connection.local || config.connection.remote || '' }),
   status: () => request('GET', '/api/status'),
-  devices: () => request('GET', '/api/devices'),
-  revokeDevice: (id) => request('DELETE', `/api/devices/${id}`),
+  devices: (options) => request('GET', '/api/devices', undefined, options),
+  revokeDevice: (id, options) => request('DELETE', `/api/devices/${id}`, undefined, options),
   localStatus: (options) => request('GET', '/api/local/status', undefined, embeddedOptions(options)),
   localProviders: (options) => request('GET', '/api/local/providers', undefined, embeddedOptions(options)),
+  localDiscovery: (options) => request('GET', '/api/local/discovery', undefined, embeddedOptions(options)),
   saveLocalProviders: (body, options) => request('PUT', '/api/local/providers', body, embeddedOptions(options)),
   localPolicy: (options) => request('GET', '/api/local/policy', undefined, embeddedOptions(options)),
   saveLocalPolicy: (body, options) => request('PUT', '/api/local/policy', body, embeddedOptions(options)),
   localActivate: (options) => request('POST', '/api/local/activate', undefined, { ...embeddedOptions(options), localOnly: true }),
 
   // ----- conversas -----
-  async listChats(archived = false, q = '') {
-    const { chats } = await request('GET', `/api/chats?archived=${archived ? 1 : 0}&q=${encodeURIComponent(q)}`);
+  async listChats(archived = false, q = '', options = {}) {
+    const { chats } = await request('GET', `/api/chats?archived=${archived ? 1 : 0}&q=${encodeURIComponent(q)}`, undefined, options);
+    options.signal?.throwIfAborted();
+    if (options.isCurrent && !options.isCurrent()) throw Object.assign(Error('A lista pertence a uma conexão anterior.'), { code: 'STALE_CONNECTION' });
     if (!archived && !q) queueCache(CACHE_LIST, chats);
     return chats;
   },
@@ -278,9 +275,7 @@ export const api = {
   duplicateChat: (id) => request('POST', `/api/chats/${id}/duplicate`),
   deleteChat: async (id) => {
     const r = await request('DELETE', `/api/chats/${id}`);
-    pendingCache.delete(CACHE_CHAT(id));
-    await cacheWrite;
-    await kv.del(CACHE_CHAT(id));
+    await cache.remove(CACHE_CHAT(id));
     return r;
   },
   clearHistory: (id) => request('DELETE', `/api/chats/${id}/history`),
@@ -290,19 +285,30 @@ export const api = {
   globalSettings: () => request('GET', '/api/settings/global'),
   // Summary shown by the side menu: the menu is opened over and over, and each open used to hit the PC (TLS, JSON,
   // radio) just to print "75% falas · 2.000 car.". Kept for a minute and dropped by any save of the settings.
-  peekGlobalSettings: () => (globalSettingsCache && Date.now() - globalSettingsCache.at < GLOBAL_SETTINGS_TTL ? globalSettingsCache.value : null),
+  peekGlobalSettings: () => {
+    if (globalSettingsCache?.origin !== connectionSnapshot()) globalSettingsCache = null;
+    return globalSettingsCache && Date.now() - globalSettingsCache.at < GLOBAL_SETTINGS_TTL ? globalSettingsCache.value : null;
+  },
   globalSettingsCached: async () => {
     const hit = api.peekGlobalSettings();
     if (hit) return { settings: hit };
-    const r = await request('GET', '/api/settings/global');
-    globalSettingsCache = { at: Date.now(), value: r.settings };
-    return r;
+    // Initial endpoint selection can itself change kind/address without changing the epoch.
+    // Capture the cache origin after that shared selection, before starting the settings GET.
+    await resolveTarget(AbortSignal.timeout(15000));
+    const selectedHit = api.peekGlobalSettings();
+    if (selectedHit) return { settings: selectedHit };
+    return settingsReads.run('global', async (signal, isCurrent) => {
+      const origin = connectionSnapshot();
+      const r = await request('GET', '/api/settings/global', undefined, { signal });
+      if (!isCurrent()) throw new ApiError('As configurações pertencem a uma conexão anterior.', 0, { code: 'STALE_CONNECTION' });
+      globalSettingsCache = { at: Date.now(), value: r.settings, origin };
+      return r;
+    });
   },
   saveGlobalSettings: async (patch) => {
-    globalSettingsCache = null;
-    const r = await request('PUT', '/api/settings/global', patch);
-    globalSettingsCache = null;
-    return r;
+    invalidateSettings();
+    try { return await request('PUT', '/api/settings/global', patch); }
+    finally { invalidateSettings(); }
   },
   purgeTrash: (item) => request('POST', '/api/trash/purge', item),
   purgeAllTrash: () => request('POST', '/api/trash/purge', { all: true }),
@@ -348,9 +354,11 @@ export const api = {
   source: (id, iid) => request('GET', `/api/chats/${id}/interactions/${iid}/source`),
 
   // ----- modelos / presets -----
-  async presets() {
-    const data = publicPresets(await request('GET', '/api/presets'));
-    await kv.set('presets', data);
+  async presets(options = {}) {
+    const data = publicPresets(await request('GET', '/api/presets', undefined, options));
+    options.signal?.throwIfAborted();
+    if (options.isCurrent && !options.isCurrent()) throw Object.assign(Error('Catálogo de uma conexão anterior.'), { code: 'STALE_CONNECTION' });
+    await kv.set('presets', data).catch(() => {});
     return data;
   },
 
@@ -385,14 +393,16 @@ export const api = {
   },
   async attachGeneration(chatId, genId, from, onEvent, signal) {
     const pending = api.getPending(chatId);
-    await transport.stream('GET', `/api/chats/${chatId}/generations/${genId}/stream?from=${from}`, undefined, (event, target) => {
+    let persisted = Promise.resolve();
+    try { await transport.stream('GET', `/api/chats/${chatId}/generations/${genId}/stream?from=${from}`, undefined, (event, target) => {
       if (event.ack && pending?.opId && pending.opId !== event.ack.opId) throw new ApiError('A geração encontrada pertence a outro envio; a pendência foi preservada.', 409, { code: 'OPERATION_MISMATCH' });
-      if (event.ack) api.setPending(chatId, { ...api.getPending(chatId), ...originGuard(target), opId: event.ack.opId,
-        generationId: event.ack.generationId, mode: event.ack.mode, partId: event.ack.partId }).catch(() => {});
+      if (event.ack) persisted = api.setPending(chatId, { ...api.getPending(chatId), ...originGuard(target), opId: event.ack.opId,
+        generationId: event.ack.generationId, mode: event.ack.mode, partId: event.ack.partId });
+      persisted.catch(() => {}); // Observed below, after the stream, just like sendMessage.
       onEvent(event);
     }, signal, { generation: true, origin: originTarget(pending), beforeSend: target => api.setPending(chatId, {
       ...pending, ...originGuard(target), generationId: genId,
-    }) });
+    }) }); } finally { await persisted; }
   },
 
   // ----- cross-device sync events -----
@@ -413,9 +423,9 @@ export const api = {
     }
   },
 
-  switchToLocal: () => switchToLocal(),
-  switchToPc: () => switchToPc(),
-  probePc: () => probePc(),
+  switchToLocal: signal => switchToLocal(signal),
+  switchToPc: signal => switchToPc(signal),
+  probePc: signal => probePc(signal),
 };
 
 export { switchToLocal, switchToPc, probePc };

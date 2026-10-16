@@ -29,10 +29,8 @@ await initializePrivacy(config.server);
     await syncNativeLanguage();
     if (localHost.supported()) {
       try {
-        await Promise.race([
-          localHost.ensureStarted(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
-        ]);
+        // App observes readiness even if JNI finishes after its first render.
+        void localHost.ensureStarted().catch(error => console.warn('[boot] Host Android:', error.code || error.message));
       } catch (error) {
         console.warn('[boot] Host local não iniciado na inicialização:', error);
       }

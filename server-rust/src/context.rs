@@ -1,5 +1,5 @@
 //! Context assembly with coverage-checked history compression and explicit token estimates.
-use crate::{Error, Result, n, presets::Plan, rules, s, style_policy};
+use crate::{Result, n, presets::Plan, rules, s, style_policy};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -223,9 +223,12 @@ pub fn assemble(
     // Size, ratio, examples and turn pacing are already in the stable system prefix.
     let tail =
         format!("[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}.]");
-    let pinned = array(&data["pinned"]);
-    let pinned = &pinned[..pinned.len().min(12)];
-    let pinned_ids: HashSet<&str> = pinned.iter().map(id_of).collect();
+    let mut pinned_ids = HashSet::new();
+    let pinned = array(&data["pinned"])
+        .iter()
+        .filter(|m| unique_id(m, &mut pinned_ids))
+        .take(12)
+        .collect::<Vec<_>>();
     let (mut quota, mut secondary, mut timeline_mode, mut level) = (8usize, true, 0usize, 0usize);
     let mut compression = Vec::<String>::new();
     if ladder[0] < minimum {
@@ -242,23 +245,28 @@ pub fn assemble(
             .first()
             .map(|p| n(p, "seq"))
             .unwrap_or(n(current, "seq"));
+        let uncovered = array(&data["unprocessed"])
+            .iter()
+            .filter(|p| n(p, "seq") < window)
+            .collect::<Vec<&Value>>();
+        let mut knowledge_ids = pinned_ids.clone();
         let memories = array(&retrieval["candidates"])
             .iter()
-            .filter(|m| n(m, "sourceSeq") < window && !pinned_ids.contains(id_of(m)))
+            .filter(|m| n(m, "sourceSeq") < window)
             .filter(|m| m["type"] == "memory")
+            .filter(|m| unique_id(m, &mut knowledge_ids))
             .take(quota)
             .collect::<Vec<&Value>>();
-        let mut knowledge: Vec<&Value> = pinned.iter().collect();
+        let mut knowledge = pinned.clone();
         knowledge.extend(memories.iter().copied());
         if secondary && !present.is_empty() {
             for m in array(&retrieval["privateMemories"])
                 .iter()
                 .filter(|m| n(m, "sourceSeq") < window)
+                .filter(|m| unique_id(m, &mut knowledge_ids))
                 .take(4)
             {
-                if !knowledge.iter().any(|k| k["id"] == m["id"]) {
-                    knowledge.push(m);
-                }
+                knowledge.push(m);
             }
         }
         let mut live = Vec::new();
@@ -427,17 +435,19 @@ pub fn assemble(
                     .join("\n")
             ));
         }
-        if secondary {
-            let raw = array(&retrieval["raw"]);
-            if !raw.is_empty() {
-                live.push(format!(
-                    "[TRECHOS ORIGINAIS ANTIGOS CITADOS]\n{}",
-                    raw.iter()
-                        .map(|r| s(r, "text"))
-                        .collect::<Vec<_>>()
-                        .join("\n\n")
-                ));
-            }
+        let raw = if secondary {
+            raw_excerpts(array(&retrieval["raw"]), selected, &uncovered, window)
+        } else {
+            Vec::new()
+        };
+        if !raw.is_empty() {
+            live.push(format!(
+                "[TRECHOS ORIGINAIS ANTIGOS CITADOS]\n{}",
+                raw.iter()
+                    .map(|r| r.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            ));
         }
         let live = if live.is_empty() {
             String::new()
@@ -455,10 +465,6 @@ pub fn assemble(
         } else {
             vec![json!({"role":"system","content":system})]
         };
-        let uncovered = array(&data["unprocessed"])
-            .iter()
-            .filter(|p| n(p, "seq") < window)
-            .collect::<Vec<&Value>>();
         for pair in uncovered.iter().copied().chain(selected) {
             if !pair["user"].is_null() {
                 messages.push(json!({"role":"user","content":pair["user"]}));
@@ -545,12 +551,16 @@ pub fn assemble(
             ));
             continue;
         }
-        let report = json!({"tokens":{"total":total,"system":rules::budget(&system,calibration),"live":rules::budget(&live,calibration),"history":total.saturating_sub(rules::budget(&system,calibration)+rules::budget(&live,calibration)),"method":if calibration.is_some(){"calibrated_estimate"}else{"estimated"},"calibrated":calibration.is_some()},"limits":{"target":target,"soft":soft,"hard":hard},"pairsIncluded":take,"pairsAvailable":data["totalPairs"],"memoriesIncluded":memories.iter().map(|m|m["id"].clone()).collect::<Vec<_>>(),"episodesIncluded":episodes.iter().map(|e|e["id"].clone()).collect::<Vec<_>>(),"timelineItems":timeline_total,"pinnedIncluded":pinned.len(),"rawIncluded":if secondary{retrieval["raw"].as_array().map(Vec::len).unwrap_or(0)}else{0},"compression":compression,"pendingTurnsPreserved":uncovered.len(),"retrievalMethod":retrieval["method"].as_str().unwrap_or("none"),"embeddingModel":retrieval["embeddingModel"],"sync":data["sync"]});
+        let report = json!({"tokens":{"total":total,"system":rules::budget(&system,calibration),"live":rules::budget(&live,calibration),"history":total.saturating_sub(rules::budget(&system,calibration)+rules::budget(&live,calibration)),"method":if calibration.is_some(){"calibrated_estimate"}else{"estimated"},"calibrated":calibration.is_some()},"limits":{"target":target,"soft":soft,"hard":hard},"pairsIncluded":take,"pairsAvailable":data["totalPairs"],"memoriesIncluded":memories.iter().map(|m|m["id"].clone()).collect::<Vec<_>>(),"episodesIncluded":episodes.iter().map(|e|e["id"].clone()).collect::<Vec<_>>(),"timelineItems":timeline_total,"pinnedIncluded":pinned.len(),"rawIncluded":raw.len(),"compression":compression,"pendingTurnsPreserved":uncovered.len(),"retrievalMethod":retrieval["method"].as_str().unwrap_or("none"),"embeddingModel":retrieval["embeddingModel"],"sync":data["sync"]});
         let reserve = plan.body["max_tokens"].as_u64().unwrap_or(0) as usize;
         let capacity = plan.capacity["contextWindow"].as_u64().unwrap_or(128000) as usize;
-        if total > hard || total + reserve > capacity {
-            return Err(Error::new(422,format!("O contexto obrigatório estimado em {total} tokens excede o orçamento. Nada foi enviado ou gravado. Aguarde a memória pendente ou reduza a personalização.")).extra("code","CONTEXT_TOO_LARGE").extra("report",report));
-        }
+        // Heuristic budgets describe the prompt; the provider enforces its actual window.
+        let mut report = report;
+        report["overHardLimit"] = json!(total > hard);
+        report["overCapacity"] = json!(total.saturating_add(reserve) > capacity);
+        report["exceededEstimatedBudget"] = json!(report["overHardLimit"] == true || report["overCapacity"] == true);
+        report["limits"]["capacity"] = json!(capacity);
+        report["limits"]["responseReserve"] = json!(reserve);
         return Ok(Context {
             messages: merged,
             report,
@@ -566,6 +576,124 @@ fn array(v: &Value) -> &[Value] {
 /// `id` as text (empty when absent), the way `s(m, "id")` reads it, without allocating.
 fn id_of(m: &Value) -> &str {
     m["id"].as_str().unwrap_or_default()
+}
+
+fn unique_id<'a>(m: &'a Value, seen: &mut HashSet<&'a str>) -> bool {
+    let id = id_of(m);
+    id.is_empty() || seen.insert(id)
+}
+
+struct RawExcerpt<'a> {
+    source: &'a Value,
+    range: Option<(usize, usize)>,
+    text: String,
+}
+
+fn raw_excerpts<'a>(
+    raw: &'a [Value],
+    selected: &[Value],
+    pending: &[&Value],
+    window: i64,
+) -> Vec<RawExcerpt<'a>> {
+    let mut interactions = HashSet::new();
+    let mut sources = HashSet::new();
+    for pair in pending.iter().copied().chain(selected) {
+        if !id_of(pair).is_empty() {
+            interactions.insert(id_of(pair));
+            sources.insert(id_of(pair)); // The user source is the interaction itself.
+        }
+        sources.extend(
+            array(&pair["sources"])
+                .iter()
+                .map(id_of)
+                .filter(|id| !id.is_empty()),
+        );
+        sources.extend(array(&pair["versions"]).iter().filter_map(Value::as_str));
+    }
+    let mut out: Vec<RawExcerpt<'a>> = Vec::new();
+    for r in raw {
+        if r["sourceSeq"]
+            .as_i64()
+            .or(r["seq"].as_i64())
+            .is_some_and(|seq| seq >= window)
+            || ["sourceInteractionId", "interactionId"]
+                .iter()
+                .any(|key| r[key].as_str().is_some_and(|id| interactions.contains(id)))
+            || r["sourceId"]
+                .as_str()
+                .is_some_and(|id| sources.contains(id))
+        {
+            continue;
+        }
+        let text = s(r, "text");
+        if text.is_empty() {
+            continue;
+        }
+        let range = r["start"]
+            .as_u64()
+            .zip(r["end"].as_u64())
+            .and_then(|(a, b)| {
+                let (a, b) = (usize::try_from(a).ok()?, usize::try_from(b).ok()?);
+                (b.checked_sub(a)? == rules::utf16_len(&text)).then_some((a, b))
+            });
+        out.push(RawExcerpt {
+            source: r,
+            range,
+            text,
+        });
+    }
+    // Retrieval order is priority order. A merged interval keeps its first slot;
+    // repeated passes also join a third chunk bridging two earlier intervals.
+    let mut i = 0;
+    while i < out.len() {
+        let mut j = i + 1;
+        while j < out.len() {
+            if let Some((range, text)) = merge_raw(&out[i], &out[j]) {
+                out[i].range = Some(range);
+                out[i].text = text;
+                out.remove(j);
+                j = i + 1;
+            } else {
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn merge_raw(a: &RawExcerpt<'_>, b: &RawExcerpt<'_>) -> Option<((usize, usize), String)> {
+    let source = a.source["sourceId"].as_str().filter(|s| !s.is_empty())?;
+    let role = a.source["role"].as_str().filter(|s| !s.is_empty())?;
+    if b.source["sourceId"] != source
+        || b.source["role"] != role
+        || a.source["canonicalSpeaker"] != b.source["canonicalSpeaker"]
+    {
+        return None;
+    }
+    let (mut left, mut right) = (a, b);
+    let ((mut start, mut end), (mut other_start, mut other_end)) = (a.range?, b.range?);
+    if other_start < start {
+        std::mem::swap(&mut left, &mut right);
+        std::mem::swap(&mut start, &mut other_start);
+        std::mem::swap(&mut end, &mut other_end);
+    }
+    let overlap_end = end.min(other_end);
+    if other_start >= overlap_end {
+        return None;
+    }
+    // suffix rejects offsets in the middle of a UTF-16 surrogate pair.
+    let overlap = rules::suffix(&left.text, other_start - start)?;
+    let tail = rules::suffix(&left.text, overlap_end - start)?;
+    let other_tail = rules::suffix(&right.text, overlap_end - other_start)?;
+    if overlap[..overlap.len() - tail.len()] != right.text[..right.text.len() - other_tail.len()] {
+        return None;
+    }
+    let mut text = left.text.clone();
+    if other_end > end {
+        text.push_str(rules::suffix(&right.text, end - other_start)?);
+    }
+    Some(((start, end.max(other_end)), text))
 }
 
 /// A smaller window is eligible only if every omitted pair has a nonempty,

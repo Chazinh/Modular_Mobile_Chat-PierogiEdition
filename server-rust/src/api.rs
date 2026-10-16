@@ -28,6 +28,30 @@ use tower_http::services::{ServeDir, ServeFile};
 
 /// Route ids and when they were fetched.
 type ModelsCache = Arc<std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>>>;
+
+async fn bootstrap_validation(path: &std::path::Path) -> Option<Value> {
+    use tokio::io::AsyncReadExt;
+    const LIMIT: usize = 1024 * 1024;
+    let file = tokio::fs::File::open(path).await.ok()?;
+    if file.metadata().await.ok()?.len() >= LIMIT as u64 {
+        return None;
+    }
+    // Bound the read too: the file may grow after metadata, and invalid files stay optional.
+    let mut reader = file.take(LIMIT as u64);
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return serde_json::from_slice(&bytes).ok();
+        }
+        if bytes.len() + n >= LIMIT {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
@@ -43,6 +67,7 @@ pub struct AppState {
     pub policy: crate::memory_backend::PolicySnapshot,
     mobile_providers: Arc<tokio::sync::Mutex<crate::providers::MobileProviders>>,
     configuration_gate: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) discovery: Option<Arc<crate::local_discovery::Discovery>>,
     /// Route list as last fetched from the providers (see `models`).
     models_cache: ModelsCache,
     client: reqwest::Client,
@@ -62,11 +87,7 @@ impl AppState {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90))
-            .redirect(if config.is_android() {
-                reqwest::redirect::Policy::none()
-            } else {
-                reqwest::redirect::Policy::limited(10)
-            })
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| Error::new(500, "Cliente HTTP não iniciou."))?;
         let local = LocalModels::new(&config, client.clone())?;
@@ -81,11 +102,7 @@ impl AppState {
             crate::providers::MobileProviders::default()
         };
         let providers = crate::providers::RuntimeProviders::new(if config.is_android() {
-            if let Some(p) = mobile_providers.runtime()? {
-                Some(p)
-            } else {
-                config.providers.clone()
-            }
+            mobile_providers.runtime()?
         } else {
             config.providers.clone()
         });
@@ -110,11 +127,8 @@ impl AppState {
         let (events, _) = broadcast::channel(64);
         let jobs = Arc::new(Notify::new());
         let locks = Locks::default();
-        let validation = tokio::fs::read(config.data_dir.join("route-validation.json"))
+        let validation = bootstrap_validation(&config.data_dir.join("route-validation.json"))
             .await
-            .ok()
-            .filter(|v| v.len() < 1024 * 1024)
-            .and_then(|v| serde_json::from_slice(&v).ok())
             .unwrap_or(json!({"routes":{}}));
         let mut generation = Manager::new(
             store.clone(),
@@ -136,6 +150,7 @@ impl AppState {
         runner.set_backends(providers.clone(), policy.clone(), client.clone());
         let auth = Auth::new(store.clone(), config.require_pairing || store.encrypted);
         let worker = Arc::new(tokio::sync::Mutex::new(Some(runner.start())));
+        let discovery = config.is_android().then(|| Arc::new(crate::local_discovery::Discovery::new()));
         let state = Self {
             store,
             config,
@@ -150,6 +165,7 @@ impl AppState {
             policy,
             mobile_providers: Arc::new(tokio::sync::Mutex::new(mobile_providers)),
             configuration_gate: Arc::new(tokio::sync::Mutex::new(())),
+            discovery,
             models_cache: Arc::default(),
             client,
             worker,
@@ -173,6 +189,7 @@ impl AppState {
     }
     /// Routes for `/presets` and `/models`: the providers are asked at most once per minute.
     async fn models(&self) -> Result<Vec<String>> {
+        self.refresh_discovery().await?;
         const TTL: Duration = Duration::from_secs(60);
         if let Some((at, ids)) = self.models_cache.lock().unwrap().as_ref()
             && at.elapsed() < TTL
@@ -183,9 +200,14 @@ impl AppState {
     }
     /// Always asks the providers (`/status` reports whether they answer right now) and refreshes the cache.
     async fn fresh_models(&self) -> Result<Vec<String>> {
+        self.refresh_discovery().await?;
         let snapshot = self.providers.snapshot();
         let mut ids: Vec<String> = match snapshot {
-            Some(providers) => providers.models(&self.client).await?,
+            Some(providers) => match providers.models(&self.client).await {
+                Ok(ids) => ids,
+                Err(_) if self.config.is_android() => Vec::new(),
+                Err(e) => return Err(e),
+            },
             None => Vec::new(),
         }
         .into_iter()
@@ -197,13 +219,43 @@ impl AppState {
         *self.models_cache.lock().unwrap() = Some((std::time::Instant::now(), ids.clone()));
         Ok(ids)
     }
-    async fn local_status(&self) -> Value {
+    async fn local_status(&self) -> Result<Value> {
+        let discovery = self.refresh_discovery().await?;
         let mut status = self.local.status().await;
+        if let Some(discovery) = discovery {
+            status["discovery"] = json!(discovery);
+        }
         status["memoryPolicy"] = json!(self.policy.read().unwrap().clone());
         status["memoryConcurrency"] = json!(1);
         status["localRoute"] = json!("mobile-local");
         status["providerCount"] = json!(self.mobile_providers.lock().await.providers.len());
-        status
+        Ok(status)
+    }
+    /// Demand-driven only. Serialize publication with saved edits so neither can overwrite the other.
+    async fn refresh_discovery(&self) -> Result<Option<crate::local_discovery::Snapshot>> {
+        if !self.config.is_android() {
+            return Ok(None);
+        }
+        let Some(discovery) = &self.discovery else {
+            return Ok(None);
+        };
+        let _gate = self.configuration_gate.lock().await;
+        let (snapshot, changed) = discovery.snapshot().await;
+        if changed {
+            let saved = self.mobile_providers.lock().await;
+            self.providers.set(saved.runtime_with_discovered(snapshot.provider())?);
+            *self.models_cache.lock().unwrap() = None;
+        }
+        Ok(Some(snapshot))
+    }
+    async fn default_mobile_model(&self) -> String {
+        let saved = self.mobile_providers.lock().await;
+        // Discovery is never the default or consent for an old/bare route.
+        saved.providers.iter()
+            .find(|p| saved.default.as_ref() == Some(&p.id))
+            .or_else(|| saved.providers.first())
+            .and_then(|p| p.models.first().map(|m| format!("mobile-api:{}:{m}", p.id)))
+            .unwrap_or_else(|| "mobile-local".into())
     }
     fn require_mobile(&self) -> Result<()> {
         if self.config.is_android() {
@@ -237,7 +289,11 @@ impl AppState {
                 p.api_key = previous.api_key.clone();
             }
         }
-        let runtime = next.runtime()?;
+        let discovered = match &self.discovery {
+            Some(discovery) => discovery.cached_provider().await,
+            None => None,
+        };
+        let runtime = next.runtime_with_discovered(discovered)?;
         self.store
             .call(Request::SaveMobileProviders(next.clone()))
             .await?;
@@ -581,10 +637,17 @@ async fn dispatch(
             let models = state.fresh_models().await;
             json!({"db":state.store.call(Request::Status).await?,"local":state.local.status().await,"jobs":state.runner.state().await,"router":match models{Ok(m)=>json!({"ok":true,"models":m.len()}),Err(e)=>json!({"ok":false,"error":e.message})},"generating":state.generation.busy_ids().await,"time":crate::now()})
         }
-        ["local", "status"] if get => state.local_status().await,
+        ["local", "status"] if get => state.local_status().await?,
+        ["local", "discovery"] if get => {
+            state.require_mobile()?;
+            json!(state.refresh_discovery().await?)
+        }
         ["local", "providers"] if get => {
             state.require_mobile()?;
-            state.mobile_providers.lock().await.redacted()
+            let discovery = state.refresh_discovery().await?;
+            let mut out = state.mobile_providers.lock().await.redacted();
+            out["discovery"] = json!(discovery);
+            out
         }
         ["local", "providers"] if put => state.update_providers(&b).await?,
         ["local", "policy"] if get => {
@@ -605,7 +668,9 @@ async fn dispatch(
         ["pair", "start"] if post => state.auth.start().await,
         ["pair"] if post => {
             status = 201;
-            state.auth.pair(&b, peer.ip()).await?
+            let paired = state.auth.pair(&b, peer.ip()).await?;
+            let _ = state.events.send(json!({"type":"devices"}));
+            paired
         }
         ["privacy", "cache-key"] if get => state.store.call(Request::PrivacyKey).await?,
         ["devices"] if get => json!({"devices":state.store.call(Request::Devices).await?}),
@@ -614,7 +679,9 @@ async fn dispatch(
                 .store
                 .call(Request::RevokeDevice((*id).into()))
                 .await?;
-            json!({"ok":true})
+            let devices = state.store.call(Request::Devices).await?;
+            let _ = state.events.send(json!({"type":"devices"}));
+            json!({"ok":true,"devices":devices})
         }
         ["presets"] if get => {
             let ids = state.models().await.unwrap_or_default();
@@ -622,7 +689,8 @@ async fn dispatch(
         }
         ["models"] if get => {
             let ids = state.models().await?;
-            json!({"models":ids,"default":if state.config.is_android() { ids.first().map(String::as_str).unwrap_or("mobile-local") } else { "cbai/deepseek-v4.1-flash" },"presets":presets::public(&ids,&state.validation),"routes":ids.iter().map(|id|json!({"id":id,"presetId":presets::for_route(id)["id"]})).collect::<Vec<_>>()})
+            let default = if state.config.is_android() { state.default_mobile_model().await } else { "cbai/deepseek-v4.1-flash".into() };
+            json!({"models":ids,"default":default,"presets":presets::public(&ids,&state.validation),"routes":ids.iter().map(|id|json!({"id":id,"presetId":presets::for_route(id)["id"]})).collect::<Vec<_>>()})
         }
         ["validation"] if get => state.validation.clone(),
         ["events"] if get => {
@@ -1136,4 +1204,260 @@ fn message_result(mut out: Value) -> Value {
         out["revision"] = revision;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request as HttpRequest};
+    use http_body_util::BodyExt;
+    use std::{io::Write, path::Path};
+    use tower::ServiceExt;
+
+    fn isolated_config(dir: &Path) -> Config {
+        Config {
+            data_dir: dir.into(),
+            dist: dir.join("absent"),
+            address: "127.0.0.1:0".parse().unwrap(),
+            require_pairing: false,
+            providers: None,
+            max_generations: 1,
+            production: false,
+            native_lib_dir: None,
+            review: false,
+        }
+    }
+
+    async fn boot_validation(dir: &Path) -> Value {
+        let state = AppState::new(isolated_config(dir)).await.unwrap();
+        let validation = state.validation.clone();
+        state.shutdown().await;
+        validation
+    }
+
+    fn sparse_fixture(path: &Path, len: u64) {
+        let file = std::fs::File::create(path).unwrap();
+        #[cfg(windows)]
+        {
+            use std::{ffi::c_void, os::windows::io::AsRawHandle};
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn DeviceIoControl(
+                    file: *mut c_void,
+                    code: u32,
+                    input: *mut c_void,
+                    input_len: u32,
+                    output: *mut c_void,
+                    output_len: u32,
+                    returned: *mut u32,
+                    overlapped: *mut c_void,
+                ) -> i32;
+            }
+            let mut returned = 0;
+            // SAFETY: the file owns the live handle, FSCTL_SET_SPARSE needs no buffers,
+            // and this synchronous call only writes the live DWORD `returned`.
+            let ok = unsafe {
+                DeviceIoControl(
+                    file.as_raw_handle(),
+                    0x0009_00c4,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+        }
+        file.set_len(len).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bootstrap_route_validation_preserves_the_strict_limit_and_ignores_sparse_files() {
+        const LIMIT: usize = 1024 * 1024;
+        let routes = json!({"routes":{"fixture":{"maxOutput":8192}}});
+        for len in [64, LIMIT - 1, LIMIT] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("route-validation.json");
+            let mut file = std::fs::File::create(path).unwrap();
+            let content = routes.to_string();
+            file.write_all(content.as_bytes()).unwrap();
+            file.write_all(&vec![b' '; len - content.len()]).unwrap();
+            drop(file);
+            assert_eq!(
+                boot_validation(dir.path()).await,
+                if len < LIMIT {
+                    routes.clone()
+                } else {
+                    json!({"routes":{}})
+                },
+                "file length: {len}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("route-validation.json");
+        sparse_fixture(&path, 128 * 1024 * 1024);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+        assert_eq!(boot_validation(dir.path()).await, json!({"routes":{}}));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(boot_validation(dir.path()).await, json!({"routes":{}}));
+        std::fs::write(&path, b"{invalid JSON").unwrap();
+        assert_eq!(boot_validation(dir.path()).await, json!({"routes":{}}));
+    }
+
+    const TOKEN: &str = "lote7_fixture_0123456789abcdef0123456789abcdef0123456789abcdef";
+    #[tokio::test]
+    async fn device_pair_and_revocation_publish_updates_and_return_the_updated_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(isolated_config(dir.path())).await.unwrap();
+        state.runner.stop();
+        let mut events = state.events.subscribe();
+        let code = state.auth.start().await;
+        let request = HttpRequest::builder().method("POST").uri("/api/pair")
+            .extension(ConnectInfo("127.0.0.1:0".parse::<SocketAddr>().unwrap()))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"code":code["code"],"deviceName":"Pairing fixture"}).to_string())).unwrap();
+        let response = router(state.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let auth: Value = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
+        assert_eq!(event, json!({"type":"devices"}), "the update contains no credentials");
+        let request = HttpRequest::builder().method("DELETE").uri(format!("/api/devices/{}", s(&auth,"deviceId")))
+            .extension(ConnectInfo("127.0.0.1:0".parse::<SocketAddr>().unwrap()))
+            .header("authorization", format!("Bearer {}", s(&auth,"token")))
+            .body(Body::empty()).unwrap();
+        let response = router(state.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: Value = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(result["ok"], true);
+        let device = result["devices"].as_array().unwrap().iter().find(|row| row["id"] == auth["deviceId"]).unwrap();
+        assert!(!device["revoked_at"].is_null());
+        assert!(state.auth.verify(&s(&auth,"token")).await.unwrap().is_null());
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
+        assert_eq!(event, json!({"type":"devices"}));
+        state.shutdown().await;
+    }
+
+    fn mobile_input(raw: &str, flag: Value) -> Value {
+        json!({"default":"fixture","providers":[{
+            "id":"fixture", "baseUrl":raw, "apiKey":"KEY_SECRET",
+            "models":["org/model"], "allowLoopback":flag
+        }]})
+    }
+    async fn put_providers(state: &AppState, body: Value) -> (u16, Value) {
+        let request = HttpRequest::builder()
+            .method("PUT")
+            .uri("/api/local/providers")
+            .extension(ConnectInfo("127.0.0.1:0".parse::<SocketAddr>().unwrap()))
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router(state.clone()).oneshot(request).await.unwrap();
+        let code = response.status().as_u16();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (code, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn mobile_provider_put_validates_raw_urls_and_boolean_flags_before_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = tempfile::tempdir().unwrap();
+        let mut config = Config::for_android(dir.path(), native.path()).unwrap();
+        config.address = "127.0.0.1:0".parse().unwrap();
+        let mut state = AppState::new(config).await.unwrap();
+        state.runner.stop();
+        // This test sends only PUTs. Disable discovery even if a later handler starts refreshing it.
+        state.discovery = None;
+        state
+            .store
+            .call(Request::AddDevice {
+                name: "Lote7 isolated fixture".into(),
+                token_hash: rules::hash(TOKEN),
+            })
+            .await
+            .unwrap();
+        let (code, public) = put_providers(
+            &state,
+            mobile_input("https://openrouter.ai/api/v1", json!(false)),
+        )
+        .await;
+        assert_eq!(code, 200);
+        assert_eq!(public["providers"][0]["hasApiKey"], true);
+        assert!(!public.to_string().contains("SECRET"));
+        let saved = state
+            .store
+            .call(Request::LoadMobileProviders)
+            .await
+            .unwrap();
+        for raw in [
+            " https://provider.example/v1",
+            "https://provider.example/v1 ",
+            "https://provider.\texample/v1",
+            "https://provider.example/\nSECRET",
+            "https:provider.example/v1",
+            "https://@provider.example/v1",
+            "https://user:SECRET@provider.example/v1",
+            "https://provider.example\\@evil/v1",
+            "https://provider.example/v1?",
+            "https://provider.example/v1#",
+            "http://localhost.evil/v1",
+            "http://127.0.0.1.evil/v1",
+            "http://[::ffff:8.8.8.8]/v1",
+            "http://192.168.1.2/v1",
+            "https://provider.example/chat/completions/v1/",
+            "https://provider.example/v1/messages/v1/",
+            "https://api.anthropic.com/v1",
+        ] {
+            let (code, error) = put_providers(&state, mobile_input(raw, json!(true))).await;
+            assert_eq!(code, 400, "{raw:?}");
+            assert!(!error.to_string().contains("SECRET"));
+        }
+        for raw in [
+            "http://localhost/v1",
+            "https://127.0.0.1/v1",
+            "http://[::ffff:127.0.0.1]/v1",
+        ] {
+            for flag in [
+                json!(false),
+                json!("true"),
+                json!("false"),
+                json!(1),
+                json!(0),
+                Value::Null,
+            ] {
+                let (code, _) = put_providers(&state, mobile_input(raw, flag)).await;
+                assert_eq!(code, 400, "{raw}");
+            }
+            let mut omitted = mobile_input(raw, json!(true));
+            omitted["providers"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("allowLoopback");
+            assert_eq!(put_providers(&state, omitted).await.0, 400);
+        }
+        assert_eq!(
+            state
+                .store
+                .call(Request::LoadMobileProviders)
+                .await
+                .unwrap(),
+            saved
+        );
+        assert_eq!(state.mobile_providers.lock().await.redacted(), public);
+        for raw in [
+            "http://localhost/v1",
+            "http://[::1]/v1",
+            "http://[::ffff:127.0.0.1]/v1",
+        ] {
+            assert_eq!(
+                put_providers(&state, mobile_input(raw, json!(true)))
+                    .await
+                    .0,
+                200
+            );
+        }
+        state.shutdown().await;
+    }
 }

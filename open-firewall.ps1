@@ -1,11 +1,16 @@
-# Allows the ModularChat port ONLY on Private networks (home Wi-Fi) and only from the local subnet.
+# Allows only the ModularChat TCP port from the local subnet, including Wi-Fi marked Public.
 # Run once, as Administrator.
-param([int]$Port = 3000)
+param([ValidateRange(1, 65535)][int]$Port = 3000)
+$ErrorActionPreference = 'Stop'
+$ruleName = "ModularChat-LAN-TCP-$Port"
 
-New-NetFirewallRule -DisplayName "ModularChat (LAN)" -Direction Inbound -Protocol TCP `
-  -LocalPort $Port -Action Allow -Profile Private -RemoteAddress LocalSubnet | Out-Null
+if (Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue) {
+  Set-NetFirewallRule -Name $ruleName -Enabled True -Direction Inbound -Protocol TCP `
+    -LocalPort $Port -Action Allow -Profile Private,Public -RemoteAddress LocalSubnet | Out-Null
+} else {
+  New-NetFirewallRule -Name $ruleName -DisplayName "ModularChat (LAN TCP $Port)" -Direction Inbound -Protocol TCP `
+    -LocalPort $Port -Action Allow -Profile Private,Public -RemoteAddress LocalSubnet | Out-Null
+}
 
-Write-Host "Rule created for port $Port (Private profile, local subnet only)."
+Write-Host "Port $Port allowed from the local subnet (Private and Public profiles)."
 Get-NetConnectionProfile | Select-Object InterfaceAlias, Name, NetworkCategory | Format-Table
-Write-Host "If the network above is 'Public', switch it to 'Private':"
-Write-Host "  Set-NetConnectionProfile -InterfaceAlias 'Ethernet' -NetworkCategory Private"

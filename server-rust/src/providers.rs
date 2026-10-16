@@ -19,6 +19,10 @@
 //! without a known provider prefix goes to the default provider, so existing routes such as
 //! `cbai/deepseek-v4.1-flash` keep working. Without a file, a single provider is built from the environment
 //! (`MC_UPSTREAM_URL`/`NINEROUTER_URL` and `MC_UPSTREAM_API_KEY`/`NINEROUTER_API_KEY`).
+//!
+//! Desktop HTTP is accepted only for literal loopback IPs or exactly `localhost`.
+//! Existing non-loopback HTTP configurations must use HTTPS; configurations are never rewritten.
+//! Redirects are disabled, so the configured base must be the final OpenAI-compatible API base.
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -141,18 +145,50 @@ fn loopback_url(url: &reqwest::Url) -> bool {
         h == "localhost"
             || h.trim_matches(['[', ']'])
                 .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
+                .is_ok_and(|ip| match ip {
+                    std::net::IpAddr::V4(ip) => ip.is_loopback(),
+                    std::net::IpAddr::V6(ip) => ip.is_loopback()
+                        || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()),
+                })
     })
 }
+fn desktop_url(raw: &str) -> Result<reqwest::Url> {
+    // Check the original spelling too: URL parsing normalizes backslashes and strips controls.
+    let invalid = || {
+        Error::new(
+            400,
+            "baseUrl inválida: use HTTPS ou HTTP somente em loopback, sem credenciais, query ou fragmento.",
+        )
+    };
+    let url = reqwest::Url::parse(raw).map_err(|_| invalid())?;
+    let authority = raw
+        .split_once("://")
+        .map(|(_, rest)| rest.split('/').next().unwrap_or_default());
+    let path: Vec<_> = url.path().split('/').collect();
+    if raw.trim() != raw
+        || raw.contains('\\')
+        || raw.chars().any(char::is_control)
+        || authority.is_none_or(|host| host.is_empty() || host.contains('@'))
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !(url.scheme() == "https" || url.scheme() == "http" && loopback_url(&url))
+        || path.windows(2).any(|pair| pair == ["chat", "completions"])
+    {
+        return Err(invalid());
+    }
+    Ok(url)
+}
+
 fn mobile_url(raw: &str, allow_loopback: bool) -> Result<reqwest::Url> {
-    let url = reqwest::Url::parse(raw).map_err(|_| config_error())?;
-    if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some()
-        || url.query().is_some() || url.fragment().is_some()
-        || !(url.scheme() == "https" || url.scheme() == "http" && allow_loopback && loopback_url(&url))
-        || loopback_url(&url) && !allow_loopback
+    // Reuse the raw checks before URL normalization, including duplicate chat/completions paths.
+    let url = desktop_url(raw).map_err(|_| config_error())?;
+    if loopback_url(&url) && !allow_loopback
         // Anthropic's native Messages API is not an OpenAI chat-completions API.
-        || url.host_str() == Some("api.anthropic.com") || url.path().trim_end_matches('/').ends_with("/messages")
-        || url.path().trim_end_matches('/').ends_with("/chat/completions") || raw.contains('\\')
+        || url.host_str() == Some("api.anthropic.com")
+        || url.path().split('/').any(|part| part == "messages")
     {
         return Err(config_error());
     }
@@ -256,11 +292,23 @@ impl MobileProviders {
             aliases: self.aliases.clone(),
             fallbacks: self.fallbacks.clone(),
             mobile: true,
+            discovered: None,
         }
     }
     pub fn runtime(&self) -> Result<Option<Arc<Providers>>> {
+        self.runtime_with_discovered(None)
+    }
+    /// Ephemeral discovery never changes saved defaults, aliases, keys or providers.
+    pub(crate) fn runtime_with_discovered(&self, discovered: Option<Provider>) -> Result<Option<Arc<Providers>>> {
         self.validate()?;
-        Ok((!self.providers.is_empty()).then(|| Arc::new(self.runtime_unchecked())))
+        let mut runtime = self.runtime_unchecked();
+        if let Some(provider) = discovered
+            && !runtime.list.iter().any(|p| p.id == provider.id)
+        {
+            runtime.discovered = Some(provider.id.clone());
+            runtime.list.push(provider);
+        }
+        Ok((!runtime.list.is_empty()).then(|| Arc::new(runtime)))
     }
     pub fn redacted(&self) -> Value {
         serde_json::json!({"default":self.default,"providers":self.providers.iter().map(|p| serde_json::json!({
@@ -319,6 +367,8 @@ pub struct Providers {
     aliases: BTreeMap<String, RouteTarget>,
     fallbacks: BTreeMap<String, RouteTarget>,
     mobile: bool,
+    /// This provider requires a full mobile-api route; legacy names never opt in.
+    discovered: Option<String>,
 }
 
 fn env(name: &str) -> Option<String> {
@@ -349,6 +399,7 @@ impl Providers {
         else {
             return Ok(None);
         };
+        desktop_url(&url)?;
         Ok(Some(Self {
             list: vec![Provider {
                 id: "default".into(),
@@ -366,6 +417,7 @@ impl Providers {
             aliases: BTreeMap::new(),
             fallbacks: BTreeMap::new(),
             mobile: false,
+            discovered: None,
         }))
     }
 
@@ -376,19 +428,14 @@ impl Providers {
             if id.is_empty() || id.contains(':') || list.iter().any(|x: &Provider| x.id == id) {
                 return Err(Error::new(
                     400,
-                    format!("Invalid or duplicated provider id: {id:?}"),
+                    "Invalid or duplicated provider id.",
                 ));
             }
             let base_url = p["baseUrl"]
                 .as_str()
                 .unwrap_or_default()
                 .trim_end_matches('/');
-            if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
-                return Err(Error::new(
-                    400,
-                    format!("Provider {id}: baseUrl must be http(s)"),
-                ));
-            }
+            desktop_url(base_url)?;
             let api_key = p["apiKey"]
                 .as_str()
                 .map(str::to_owned)
@@ -416,7 +463,7 @@ impl Providers {
             Some(id) => list
                 .iter()
                 .position(|p| p.id == id)
-                .ok_or_else(|| Error::new(400, format!("Unknown default provider: {id}")))?,
+                .ok_or_else(|| Error::new(400, "Unknown default provider."))?,
             None => 0,
         };
         let aliases = serde_json::from_value(
@@ -439,6 +486,7 @@ impl Providers {
             aliases,
             fallbacks,
             mobile: false,
+            discovered: None,
         };
         if providers
             .aliases
@@ -521,8 +569,11 @@ impl Providers {
         if let Some(target) = self.aliases.get(route) {
             return self.target(target).ok();
         }
-        let explicit = route.strip_prefix("mobile-api:").unwrap_or(route);
-        if let Some((provider, model)) = explicit.split_once(':') {
+        let explicit = route.strip_prefix("mobile-api:");
+        if let Some((provider, model)) = explicit.unwrap_or(route).split_once(':') {
+            if explicit.is_none() && self.discovered.as_deref() == Some(provider) {
+                return None;
+            }
             return self
                 .target(&RouteTarget {
                     provider: provider.into(),
@@ -534,6 +585,9 @@ impl Providers {
             return None;
         }
         let provider = self.default_provider();
+        if self.discovered.as_deref() == Some(provider.id.as_str()) {
+            return None;
+        }
         provider
             .models
             .iter()
@@ -578,6 +632,9 @@ impl Provider {
         reqwest::Url::parse(&self.base_url).is_ok_and(|u| loopback_url(&u))
     }
     pub async fn preflight(&self, model: &str) -> bool {
+        if desktop_url(&self.base_url).is_err() {
+            return false;
+        }
         // A listening port is not proof of an OpenAI-compatible service. This GET is
         // read-only, never follows redirects, and includes body validation in its deadline.
         static CLIENT: std::sync::LazyLock<Option<reqwest::Client>> =
@@ -631,19 +688,23 @@ impl Provider {
         body: &Value,
         timeout: Duration,
     ) -> reqwest::RequestBuilder {
+        let base = desktop_url(&self.base_url).ok();
         let mut body = body.clone();
         body["model"] = Value::String(model.to_owned());
         // Explicit breakpoints are an OpenRouter extension. Other compatible
         // endpoints (including 9Router) retain their existing wire contract.
-        if reqwest::Url::parse(&self.base_url).ok().is_some_and(|url| url.host_str() == Some("openrouter.ai"))
+        if base.as_ref().is_some_and(|url| url.host_str() == Some("openrouter.ai"))
             && let Some(system) = body["messages"].as_array_mut().and_then(|messages| messages.first_mut())
             && system["role"] == "system"
             && let Some(text) = system["content"].as_str()
         {
             system["content"] = serde_json::json!([{"type":"text","text":text,"cache_control":{"type":"ephemeral"}}]);
         }
+        // Preserve the RequestBuilder API: an invalid base produces a sanitized build
+        // error (empty URL) before send, including for directly constructed Providers.
+        let endpoint = base.map(|_| format!("{}/chat/completions", self.base_url.trim_end_matches('/'))).unwrap_or_default();
         let mut request = client
-            .post(format!("{}/chat/completions", self.base_url))
+            .post(endpoint)
             .json(&body)
             .timeout(timeout);
         if let Some(key) = &self.api_key {
@@ -693,6 +754,7 @@ impl Provider {
 }
 
 async fn fetch_models(client: &reqwest::Client, p: &Provider) -> Result<Vec<String>> {
+    desktop_url(&p.base_url)?;
     let mut request = client
         .get(format!("{}/models", p.base_url))
         .timeout(Duration::from_secs(10));
@@ -709,8 +771,7 @@ async fn fetch_models(client: &reqwest::Client, p: &Provider) -> Result<Vec<Stri
             format!("Provider {} HTTP {}", p.id, response.status()),
         ));
     }
-    let data: Value = response
-        .json()
+    let data = crate::bounded_http::json(response, crate::bounded_http::JSON_LIMIT)
         .await
         .map_err(|_| Error::new(502, format!("Provider {}: invalid model list.", p.id)))?;
     Ok(data["data"]
@@ -729,16 +790,7 @@ pub fn chat_request(
     timeout: Duration,
 ) -> reqwest::RequestBuilder {
     let (provider, model) = providers.resolve(body["model"].as_str().unwrap_or_default());
-    let mut body = body.clone();
-    body["model"] = Value::String(model);
-    let mut request = client
-        .post(format!("{}/chat/completions", provider.base_url))
-        .json(&body)
-        .timeout(timeout);
-    if let Some(key) = &provider.api_key {
-        request = request.bearer_auth(key);
-    }
-    request
+    provider.chat_request(client, &model, body, timeout)
 }
 
 #[cfg(test)]
@@ -777,9 +829,267 @@ mod tests {
         );
         assert!(
             Providers::from_json(
-                &json!({"default":"zz","providers":[{"id":"a","baseUrl":"http://x"}]})
+                &json!({"default":"zz","providers":[{"id":"a","baseUrl":"https://x"}]})
             )
             .is_err()
         );
     }
+
+    #[test]
+    fn mobile_urls_reject_raw_normalization_credentials_spoofs_and_native_endpoints() {
+        for raw in [
+            " https://provider.example/v1",
+            "https://provider.example/v1 ",
+            "https://provider.example/\nSECRET",
+            "https://provider.\texample/v1",
+            "https://provider.example/\0v1",
+            "https:provider.example/v1",
+            "https:///v1",
+            "https://",
+            "https://@provider.example/v1",
+            "https://user@provider.example/v1",
+            "https://user:SECRET@provider.example/v1",
+            "https://provider.example\\@evil.example/v1",
+            "https://provider.example/v1?",
+            "https://provider.example/v1#",
+            "https://provider.example/v1?key=SECRET",
+            "https://provider.example/v1#SECRET",
+            "http://localhost.evil/v1",
+            "http://127.0.0.1.evil/v1",
+            "http://[::ffff:192.168.1.2]/v1",
+            "http://[::ffff:8.8.8.8]/v1",
+            "http://192.168.1.2/v1",
+            "http://provider.example/v1",
+            "ftp://provider.example/v1",
+            "https://provider.example/v1/chat/completions",
+            "https://provider.example/chat/completions/v1/",
+            "https://api.anthropic.com/v1",
+            "https://provider.example/v1/messages/",
+            "https://provider.example/v1/messages/v1/",
+        ] {
+            let error = MobileProviders::parse(&json!({"providers":[{
+                "id":"fixture", "baseUrl":raw, "apiKey":"KEY_SECRET",
+                "models":["org/model"], "allowLoopback":true
+            }]}))
+            .unwrap_err();
+            assert_eq!(error.status, 400, "{raw:?}");
+            assert!(!format!("{error:?}").contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn mobile_urls_keep_https_and_require_a_boolean_loopback_opt_in() {
+        for raw in [
+            "https://openrouter.ai/api/v1",
+            "https://api.openai.com/v1",
+            "https://provider.example/api/v1/",
+            "https://localhost.evil/v1",
+            "https://192.168.1.2/v1",
+            "https://[2001:db8::1]/v1",
+            "http://localhost:12345/v1",
+            "http://127.12.34.56/v1/",
+            "http://[::1]:12345/v1",
+            "http://[::ffff:127.0.0.1]:12345/v1",
+            "https://localhost/v1",
+            "https://[::ffff:127.0.0.1]/v1",
+        ] {
+            let mut value = json!({"providers":[{
+                "id":"fixture", "baseUrl":raw, "models":["org/model"], "allowLoopback":true
+            }]});
+            assert!(MobileProviders::parse(&value).is_ok(), "{raw}");
+            let is_loopback = loopback_url(&reqwest::Url::parse(raw).unwrap());
+            value["providers"][0]["allowLoopback"] = json!(false);
+            assert_eq!(
+                MobileProviders::parse(&value).is_ok(),
+                !is_loopback,
+                "{raw}"
+            );
+            value["providers"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("allowLoopback");
+            assert_eq!(
+                MobileProviders::parse(&value).is_ok(),
+                !is_loopback,
+                "{raw}"
+            );
+        }
+        for flag in [
+            json!("true"),
+            json!("false"),
+            json!(1),
+            json!(0),
+            Value::Null,
+            json!([]),
+        ] {
+            let value = json!({"providers":[{
+                "id":"fixture", "baseUrl":"http://127.0.0.1/v1", "models":["org/model"],
+                "allowLoopback":flag
+            }]});
+            assert!(MobileProviders::parse(&value).is_err());
+        }
+    }
+
+    #[test]
+    fn desktop_urls_reject_credentials_remote_http_spoofs_and_duplicate_endpoints() {
+        for raw in [
+            "http://example.com/v1",
+            "http://localhost.evil/v1",
+            "http://127.0.0.1.evil/v1",
+            "http://[::ffff:192.168.1.2]/v1",
+            "http://[::ffff:8.8.8.8]/v1",
+            "https://user:SECRET@host.example/v1",
+            "https://user@host.example/v1",
+            "https://@host.example/v1",
+            "https://host.example/v1?key=SECRET",
+            "https://host.example/v1#SECRET",
+            "https://host.example\\@evil/v1",
+            "https://host.example/\nSECRET",
+            " https://host.example/v1",
+            "https:host.example/v1",
+            "https:///v1",
+            "https://",
+            "ftp://host.example/v1",
+            "https://host.example/v1/chat/completions",
+            "https://host.example/chat/completions/v1/",
+        ] {
+            let error = Providers::from_json(
+                &json!({"providers":[{"id":"fixture","baseUrl":raw,"apiKey":"KEY_SECRET"}]}),
+            )
+            .unwrap_err();
+            assert_eq!(error.status, 400, "{raw}");
+            assert!(!format!("{error:?}").contains("SECRET"));
+        }
+        for raw in [
+            "http://localhost:12345/v1",
+            "http://127.0.0.1/v1/",
+            "http://127.12.34.56/v1",
+            "http://[::1]:12345/v1",
+            "http://[::ffff:127.0.0.1]:12345/v1",
+            "https://provider.example/api/v1",
+            "https://192.168.1.2/v1",
+            "https://[2001:db8::1]/v1",
+        ] {
+            let providers =
+                Providers::from_json(&json!({"providers":[{"id":"fixture","baseUrl":raw}]})).unwrap();
+            assert_eq!(
+                providers.resolve("org/model").0.base_url,
+                raw.trim_end_matches('/')
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_direct_provider_never_builds_a_request_with_credentials() {
+        let providers = Providers::from_json(
+            &json!({"providers":[{"id":"fixture","baseUrl":"https://safe.example/v1"}]}),
+        )
+        .unwrap();
+        let mut provider = providers.resolve("model").0.clone();
+        provider.base_url = "https://user:SECRET@127.0.0.1:1/v1".into();
+        let error = provider
+            .chat_request(
+                &reqwest::Client::new(),
+                "model",
+                &json!({}),
+                Duration::from_secs(1),
+            )
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_builder());
+        assert!(!error.to_string().contains("SECRET"));
+        assert!(!provider.preflight("model").await);
+    }
+
+    #[tokio::test]
+    async fn model_list_accepts_json_and_bounds_declared_and_chunked_bodies() {
+        use crate::bounded_http::{
+            JSON_LIMIT,
+            tests::{chunked_oversize, serve},
+        };
+        let normal = br#"{"data":[{"id":"org/model"}]}"#.to_vec();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for (headers, body, ok) in [
+            (
+                format!("Content-Length: {}\r\n", normal.len()),
+                normal,
+                true,
+            ),
+            (
+                format!("Content-Length: {}\r\n", JSON_LIMIT + 1),
+                vec![],
+                false,
+            ),
+            (
+                "Transfer-Encoding: chunked\r\n".into(),
+                chunked_oversize(JSON_LIMIT),
+                false,
+            ),
+        ] {
+            let fixture = serve(&headers, body).await;
+            let providers =
+                Providers::from_json(&json!({"providers":[{"id":"fixture","baseUrl":fixture.url}]}))
+                    .unwrap();
+            let (provider, _) = providers.resolve("org/model");
+            let result = tokio::time::timeout(Duration::from_secs(2), fetch_models(&client, &provider))
+                .await
+                .unwrap();
+            if ok {
+                assert_eq!(result.unwrap(), ["org/model"]);
+            } else {
+                assert_eq!(result.unwrap_err().status, 502);
+            }
+        }
+    }
+
+    #[test]
+    fn environment_loading_validates_urls_in_an_isolated_process() {
+        let dir = tempfile::tempdir().unwrap();
+        for (raw, expected) in [
+            ("http://remote.example/v1", "invalid"),
+            ("https://u:SECRET@remote.example/v1", "invalid"),
+            ("http://[::ffff:127.0.0.1]:12345/v1", "valid"),
+        ] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "providers::tests::environment_url_fixture",
+                    "--ignored",
+                ])
+                .env_clear()
+                .env("MC_UPSTREAM_URL", raw)
+                .env("MC_UPSTREAM_API_KEY", "KEY_SECRET")
+                .env("MC_TEST_DATA_DIR", dir.path())
+                .env("MC_TEST_EXPECTED", expected);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                child.creation_flags(0x08000000);
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "isolated environment subprocess fixture only"]
+    fn environment_url_fixture() {
+        let dir = std::env::var_os("MC_TEST_DATA_DIR").unwrap();
+        let loaded = Providers::load(Path::new(&dir), None);
+        if std::env::var("MC_TEST_EXPECTED").unwrap() == "valid" {
+            assert!(loaded.unwrap().is_some());
+        } else {
+            let error = loaded.unwrap_err();
+            assert_eq!(error.status, 400);
+            assert!(!format!("{error:?}").contains("SECRET"));
+        }
+    }
+
+
 }

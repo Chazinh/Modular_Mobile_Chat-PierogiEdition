@@ -20,7 +20,7 @@ pub struct Config {
 impl Config {
     /// Explicit mobile bootstrap: no environment overrides, desktop credentials or build-time paths.
     /// The bridge supplies the app's private files directory and ApplicationInfo.nativeLibraryDir.
-    /// AppState loads providers only from this sandbox's vault; native models start on explicit activation.
+    /// AppState uses only this sandbox's vault and fixed local discovery; native models start on explicit activation.
     pub fn for_android(
         data_dir: &std::path::Path,
         native_lib_dir: &std::path::Path,
@@ -46,13 +46,12 @@ impl Config {
         }
         crate::privacy::private_dir(data_dir)?;
         let data_dir = data_dir.canonicalize()?;
-        let providers = crate::providers::Providers::load(&data_dir, None).ok().flatten().map(std::sync::Arc::new);
         Ok(Self {
             dist: data_dir.join("client-dist"),
             data_dir,
             address: "127.0.0.1:3011".parse().expect("fixed loopback address"),
             require_pairing: true,
-            providers,
+            providers: None,
             max_generations: 1,
             production: true,
             native_lib_dir: Some(native_lib_dir.canonicalize()?),

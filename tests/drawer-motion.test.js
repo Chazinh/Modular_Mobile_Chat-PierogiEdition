@@ -68,8 +68,8 @@ test('velocidade pelas últimas amostras', () => {
   assert.equal(t.velocity(), 0);
 });
 
-test('faixa de ativação rente à borda é estreita (alça do painel Edge)', () => {
-  assert.ok(EDGE_PX >= 12 && EDGE_PX <= 28);
+test('faixa de ativação preserva a alça de 36 px do painel Edge', () => {
+  assert.equal(EDGE_PX, 36);
 });
 
 test('gaveta: evento atrasado não bloqueia o botão; gesto iniciado continua anexando', () => {

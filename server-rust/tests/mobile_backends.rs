@@ -29,6 +29,7 @@ const MODEL: &str = "org/exact-model:revision";
 enum Reply {
     Ok,
     Error,
+    ContextWindow,
     Partial,
     Required,
     Extra,
@@ -90,6 +91,7 @@ async fn fixture(reply: Reply) -> Fixture {
             async move {
                 calls.lock().unwrap().push(("POST".into(), auth(&headers), body.clone()));
                 if matches!(reply, Reply::Error) { return (StatusCode::BAD_GATEWAY, "fixture error").into_response(); }
+                if matches!(reply, Reply::ContextWindow) { return (StatusCode::BAD_REQUEST, "physical context window exceeded").into_response(); }
                 if matches!(reply, Reply::Partial) {
                     let event = format!("data: {}\n\n", json!({"choices":[{"delta":{"content":"Resposta parcial preservada."}}]}));
                     use futures_util::StreamExt;
@@ -558,7 +560,7 @@ async fn generation_finishes(
     let conv = state
         .store
         .call(Request::CreateConversation(
-            json!({"routeId":route,"presetId":"glm-52","name":"Lote3R fixture"}),
+            json!({"routeId":route,"presetId":"glm-52","name":"Lote3R fixture","settings":{"context":{"hardLimit":1}}}),
         ))
         .await
         .unwrap();
@@ -581,7 +583,7 @@ async fn generation_finishes(
 
 #[tokio::test]
 async fn generation_post_error_and_partial_stream_never_send_to_fallback() {
-    for reply in [Reply::Error, Reply::Partial] {
+    for reply in [Reply::Error, Reply::ContextWindow, Reply::Partial] {
         let primary = fixture(reply).await;
         let backup = fixture(Reply::Ok).await;
         let dir = tempfile::tempdir().unwrap();
@@ -604,6 +606,29 @@ async fn generation_post_error_and_partial_stream_never_send_to_fallback() {
         let generation = generation_finishes(&state, "cbai/glm-5.2").await;
         assert_eq!(primary.posts(), 1);
         assert_eq!(backup.posts(), 0);
+        assert_eq!(generation.ack["context"]["exceededEstimatedBudget"], true);
+        if matches!(reply, Reply::ContextWindow) {
+            let output = generation.output.lock().await;
+            let done = output.final_event.as_ref().unwrap();
+            assert_eq!(done["status"], "error");
+            assert!(done["error"].as_str().unwrap().contains("HTTP 400"));
+            drop(output);
+            let conv = state.store.call(Request::GetConversation(generation.conv.clone())).await.unwrap();
+            assert_eq!(conv["history"].as_array().unwrap().len(), 1);
+            assert_eq!(conv["history"][0]["content"], "Olá, personagem.");
+            assert!(primary.calls.lock().unwrap().iter().find(|c| c.0 == "POST").unwrap().2["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().contains("Olá, personagem."));
+            let request: TurnRequest = serde_json::from_value(json!({
+                "convId":generation.conv,"mode":"send","content":"Olá, personagem.",
+                "opId":generation.ack["opId"]
+            })).unwrap();
+            let (replayed, replay) = state.generation.start(request).await.unwrap();
+            assert!(replay);
+            assert_eq!(replayed.id, generation.id);
+            assert_eq!(replayed.ack["opId"], generation.ack["opId"]);
+            assert_eq!(replayed.output.lock().await.final_event.as_ref().unwrap()["status"], "error");
+            assert_eq!(primary.posts(), 1);
+            assert_eq!(backup.posts(), 0);
+        }
         if matches!(reply, Reply::Partial) {
             assert_eq!(
                 generation.output.lock().await.buffer,

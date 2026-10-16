@@ -111,9 +111,22 @@
 }
 .mc-sheet.mc-sheet-full { height: 92%; max-height: 92%; }
 /* Compact control sheets need a denser glass body so controls behind them cannot bleed through. */
-.mc-sheet.mc-control-sheet {
+.mc-sheet.mc-control-sheet, .mc-choice-listbox {
   background: radial-gradient(130% 120% at 50% 45%, transparent 58%, var(--gl-lens) 100%),
     linear-gradient(180deg, rgb(calc(33 * var(--mc-tr, 1)) calc(32 * var(--mc-tg, 1)) calc(45 * var(--mc-tb, 1)) / .98), rgb(calc(26 * var(--mc-tr, 1)) calc(25 * var(--mc-tg, 1)) calc(35 * var(--mc-tb, 1)) / .98));
+}
+.mc-choice-listbox {
+  position: fixed;
+  z-index: 60;
+  visibility: hidden;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 8px;
+  border-radius: 22px;
+  /* Computed pixel insets also constrain the portal to the visual viewport. */
+  scroll-padding: max(8px, var(--sat)) max(8px, env(safe-area-inset-right, 0px)) max(8px, var(--sab)) max(8px, env(safe-area-inset-left, 0px));
 }
 .mc-sheet-grab { flex: none; touch-action: none; cursor: grab; padding: 10px 8px 4px; }
 .mc-grabber { display: block; width: 38px; height: 5px; margin: 0 auto 8px; border-radius: 3px; background: rgba(var(--mc-white-rgb, 255, 255, 255), .3); }

@@ -269,6 +269,8 @@ const HEADER: usize = TAG_AT + 16; // MAGIC | nonce | tag
 /// Builds MAGIC|nonce|tag|ciphertext directly in `out` (reusing its capacity): a single copy of the plain
 /// text, encrypted in place, with no `to_vec` or `concat`.
 fn seal_into(data: &[u8], key: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    // A rejected key must never put plaintext into the reusable ciphertext buffer.
+    let cipher = cipher(key)?;
     let mut nonce = [0; 12];
     SystemRandom::new()
         .fill(&mut nonce)
@@ -279,16 +281,22 @@ fn seal_into(data: &[u8], key: &[u8], out: &mut Vec<u8>) -> Result<()> {
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&[0; 16]);
     out.extend_from_slice(data);
-    let tag = cipher(key)?
-        .seal_in_place_separate_tag(
-            aead::Nonce::assume_unique_for_key(nonce),
-            aead::Aad::from(AAD),
-            &mut out[HEADER..],
-        )
-        .map_err(|_| invalid())?;
+    let tag = match cipher.seal_in_place_separate_tag(
+        aead::Nonce::assume_unique_for_key(nonce),
+        aead::Aad::from(AAD),
+        &mut out[HEADER..],
+    ) {
+        Ok(tag) => tag,
+        Err(_) => {
+            out[HEADER..].zeroize();
+            out.clear();
+            return Err(invalid());
+        }
+    };
     out[TAG_AT..HEADER].copy_from_slice(tag.as_ref());
     Ok(())
 }
+
 pub fn seal(data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     seal_into(data, key, &mut out)?;
@@ -774,17 +782,41 @@ impl Vault {
 mod tests {
     use super::*;
     #[test]
+    fn invalid_seal_key_preserves_the_ciphertext_buffer_sentinel() {
+        let sentinel = b"CIPHERTEXT_BUFFER_SENTINEL";
+        let plaintext = b"PLAINTEXT_MUST_NOT_ENTER_SCRATCH";
+        let mut out = Vec::with_capacity(256);
+        out.extend_from_slice(sentinel);
+        let capacity = out.capacity();
+        for key in [&[][..], &[7; 16][..], &[7; 31][..], &[7; 33][..]] {
+            assert!(seal_into(plaintext, key, &mut out).is_err());
+            assert_eq!(out, sentinel);
+            assert_eq!(out.capacity(), capacity);
+        }
+        seal_into(plaintext, &[7; 32], &mut out).unwrap();
+        assert_eq!(out.capacity(), capacity);
+        assert_eq!(&out[..NONCE_AT], MAGIC);
+        assert_eq!(out.len(), HEADER + plaintext.len());
+        assert_eq!(&**unseal(&out, &[7; 32]).unwrap(), plaintext);
+        assert!(!out.windows(plaintext.len()).any(|v| v == plaintext));
+    }
+
+    #[test]
     fn authenticated_cipher_rejects_changes_and_wrong_key() {
         let key = [7; 32];
         let clear = b"**segredo de teste**";
-        let mut a = seal(clear, &key).unwrap();
+        let a = seal(clear, &key).unwrap();
         let b = seal(clear, &key).unwrap();
         assert_ne!(a, b);
         assert_eq!(&**unseal(&a, &key).unwrap(), clear);
         assert!(unseal(&a, &[8; 32]).is_err());
-        a[37] ^= 1;
-        assert!(unseal(&a, &key).is_err());
+        for offset in [0, NONCE_AT, TAG_AT, HEADER] {
+            let mut tampered = a.clone();
+            tampered[offset] ^= 1;
+            assert!(unseal(&tampered, &key).is_err());
+        }
     }
+
     #[test]
     fn native_vault_reopens_private_sqlite_and_refuses_live_lock() {
         let dir = tempfile::tempdir().unwrap();

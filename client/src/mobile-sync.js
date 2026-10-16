@@ -1,4 +1,5 @@
 import { privateGet, privateSet, privacyEnabled } from './private-storage.js';
+import { normalizeServer } from './server-address.js';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const hashValid = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
@@ -24,8 +25,9 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       if (!isCurrent()) fail('STALE_CONNECTION', 'A configuração mudou durante a sincronização.');
     };
     for (const target of [pc, mobile]) {
-      const url = new URL(target.server);
-      if (!target.token || (target.kind === 'local' ? target.server !== 'http://127.0.0.1:3011' : url.protocol !== 'https:')) {
+      let validServer = false;
+      try { validServer = normalizeServer(target.server, false) === target.server; } catch { /* Refuse an invalid/public HTTP target before sending its credential. */ }
+      if (!target.token || !validServer || (target.kind === 'local' && target.server !== 'http://127.0.0.1:3011')) {
         fail('INVALID_TARGET', 'A sincronização exige destinos fixos e credenciais independentes.');
       }
     }
@@ -44,7 +46,8 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       if (bytes(text) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'A resposta de sincronização excede 8 MiB.');
       let data;
       try { data = JSON.parse(text); } catch { fail('INVALID_SYNC', 'O servidor retornou uma resposta de sincronização inválida.'); }
-      if (!response.ok) throw new SyncError(data.code || (response.status === 401 ? 'UNPAIRED' : 'SYNC_HTTP'), data.error || `Sincronização: HTTP ${response.status}`, data, response.status);
+      if (!response.ok) throw new SyncError(data.code || (response.status === 401 ? 'UNPAIRED' : 'SYNC_HTTP'), data.error ||
+        (data.code === 'CONFLICT' ? 'A sincronização encontrou alterações conflitantes. As duas versões foram preservadas.' : `Sincronização: HTTP ${response.status}`), data, response.status);
       if (data.format !== 'modularchat-sync' || data.version !== 1 || !uuidValid(data.serverId)
           || data.schemaVersion !== 4 || data.maxBytes !== MAX_BYTES || data.maxConversations !== 4) {
         fail('INVALID_SYNC', 'O contrato de sincronização do servidor é incompatível.');
@@ -138,6 +141,43 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       }
       skippedVectors += ack.ignoredEmbeddings?.length || 0;
     }
+
+    async function commit(dest, sourceId, destId, records, entries, to, batchId = uuid()) {
+      // Verify recovery before replacing any private receipt.
+      for (const record of records) {
+        if (entries.get(record.convId)?.hash !== record.hash) fail('PENDING_BATCH_CHANGED', 'O snapshot de um lote pendente mudou. Preserve a pendência para recuperação.');
+      }
+      state.pending = { to, batchId, records };
+      await persist();
+      try { await applyBatch(dest, sourceId, destId, records, entries, batchId); }
+      catch (error) {
+        const data = error.data;
+        const separate = records.length > 1 && error.status === 409 && error.code === 'CONFLICT' && data?.serverId === destId
+          && data.format === 'modularchat-sync' && data.version === 1 && data.schemaVersion === 4
+          && data.maxBytes === MAX_BYTES && data.maxConversations === 4 && data.ackBatch === null
+          && Array.isArray(data.accepted) && data.accepted.length === 0
+          && Array.isArray(data.conflicts) && data.conflicts.length > 0
+          && data.conflicts.every(c => c.reason === 'PUBLIC_SETTINGS_BATCH' && records.some(r => r.convId === c.convId));
+        if (separate) {
+          // This specific response confirms the whole batch was rejected atomically.
+          // Single-conversation batches let the server reconcile global defaults in order.
+          state.pending = null;
+          await persist();
+          // Reconcile an existing baseline first; new conversations then inherit those defaults.
+          const ordered = [...records].sort((a, b) => Number(a.baseHash == null) - Number(b.baseHash == null));
+          for (const record of ordered) await commit(dest, sourceId, destId, [record], entries, to);
+          return;
+        }
+        if (error.code === 'CONFLICT') {
+          state.pending.code = 'CONFLICT';
+          state.pending.conflicts = (data?.conflicts || []).map(c => ({ convId: c.convId, reason: c.reason }));
+          await persist();
+        }
+        throw error;
+      }
+      state.pending = null;
+      await persist();
+    }
     // Only metadata is persisted. Recover exact source snapshots from the encrypted Store.
     if (state.pending) {
       const pending = state.pending;
@@ -159,15 +199,13 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         state.pending = null;
         await persist();
       } else {
-        if (pending.code === 'CONFLICT') throw new SyncError('CONFLICT', 'Um lote conflitante foi preservado; resolva o conflito antes de promover o PC.');
-        const entries = await offer(source, sourceId, destId, pending.records.map(r => r.convId));
-        try { await applyBatch(dest, sourceId, destId, pending.records, entries, pending.batchId); }
-        catch (error) {
-          if (error.code === 'CONFLICT') { state.pending.code = 'CONFLICT'; await persist(); }
-          throw error;
+        if (pending.code === 'CONFLICT' && (pending.records.length < 2 || pending.conflicts !== undefined)) {
+          throw new SyncError('CONFLICT', 'Um lote conflitante foi preservado; resolva o conflito antes de promover o PC.');
         }
-        state.pending = null;
-        await persist();
+        const entries = await offer(source, sourceId, destId, pending.records.map(r => r.convId));
+        // Legacy multi-conversation conflicts did not save reasons. An exact idempotent replay
+        // retrieves the recorded rejection so only PUBLIC_SETTINGS_BATCH can be separated.
+        await commit(dest, sourceId, destId, pending.records, entries, pending.to, pending.batchId);
       }
       pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
     }
@@ -180,15 +218,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         let records = [];
         const flush = async () => {
           if (!records.length) return;
-          state.pending = { to, batchId: uuid(), records };
-          await persist();
-          try { await applyBatch(dest, sourceId, destId, records, entries, state.pending.batchId); }
-          catch (error) {
-            if (error.code === 'CONFLICT') { state.pending.code = 'CONFLICT'; await persist(); }
-            throw error;
-          }
-          state.pending = null;
-          await persist();
+          await commit(dest, sourceId, destId, records, entries, to);
           records = [];
         };
         for (const id of group) {

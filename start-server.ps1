@@ -39,6 +39,16 @@ if (-not $targetDir) {
 if (-not $targetDir) { $targetDir = Join-Path $PSScriptRoot 'server-rust\target' }
 $build = Join-Path $targetDir 'release\modularchat-server.exe'
 if ($Exe) { $server = (Resolve-Path -LiteralPath $Exe).Path } else {
+  if (-not (Test-Path -LiteralPath $build)) {
+    Write-Host "Binary not found at $build. Building server in release mode..."
+    Push-Location $PSScriptRoot
+    try {
+      & cargo build --release --manifest-path (Join-Path $PSScriptRoot 'server-rust\Cargo.toml')
+      if ($LASTEXITCODE -ne 0) { throw "Cargo build failed with exit code $LASTEXITCODE" }
+    } finally {
+      Pop-Location
+    }
+  }
   if (-not (Test-Path -LiteralPath $build)) { throw 'Build the server first: cargo build --release --manifest-path server-rust/Cargo.toml' }
   $hash = (Get-FileSha256 $build).Substring(0, 16)
   $stage = Join-Path $appHome ('server\' + $hash)

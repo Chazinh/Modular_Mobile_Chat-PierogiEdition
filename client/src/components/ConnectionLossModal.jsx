@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { tr, useLanguage } from '../i18n.js';
 import { useLayer } from '../nav.js';
+import { startReconnectionWait } from '../connection-lifetime.js';
 import { WifiOff, Wifi, Smartphone, Clock, CheckCircle, Loader2 } from 'lucide-react';
 import '../drawer.css';
 
@@ -13,10 +14,19 @@ export default function ConnectionLossModal({ isOpen, onClose, onSwitchToLocal, 
   const [reconnected, setReconnected] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState('');
+  const [waitVersion, setWaitVersion] = useState(0);
+  const waiter = useRef(null), action = useRef(null), alive = useRef(false);
+  const callbacks = useRef(null);
+  callbacks.current = { onClose, onSwitchToLocal, onReconnected };
 
-  useLayer(isOpen, onClose);
+  function close() {
+    waiter.current?.stop(); action.current?.abort();
+    callbacks.current.onClose?.();
+  }
+  useLayer(isOpen, close);
 
   useEffect(() => {
+    alive.current = isOpen;
     if (isOpen) {
       setPhase('prompt');
       setTimeLeft(300);
@@ -25,73 +35,62 @@ export default function ConnectionLossModal({ isOpen, onClose, onSwitchToLocal, 
       setSwitching(false);
       setError('');
     }
-  }, [isOpen]);
-
-  // Countdown & periodic PC probing during waiting phase
-  useEffect(() => {
-    if (!isOpen || phase !== 'waiting' || reconnected) return;
-
-    let probeTimeout = null;
-    let probingActive = false;
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => Math.max(0, prev - 1));
-    }, 1000);
-
-    const checkPc = async () => {
-      if (probingActive || reconnected) return;
-      probingActive = true;
-      setProbing(true);
-      try {
-        const online = await api.probePc();
-        if (online) {
-          setReconnected(true);
-          setTimeout(() => {
-            onReconnected?.();
-            onClose?.();
-          }, 800);
-          return;
-        }
-      } catch {
-        // PC still unreachable
-      } finally {
-        probingActive = false;
-        setProbing(false);
-        if (!reconnected) {
-          probeTimeout = setTimeout(checkPc, 5000);
-        }
+    const hidden = () => {
+      if (document.visibilityState === 'hidden' && action.current) {
+        action.current.abort(); action.current = null;
+        setSwitching(false); setPhase('prompt');
       }
     };
-
-    // First check after 1.5s, then every 5s
-    probeTimeout = setTimeout(checkPc, 1500);
-
+    document.addEventListener('visibilitychange', hidden);
     return () => {
-      clearInterval(timer);
-      clearTimeout(probeTimeout);
+      alive.current = false; waiter.current?.stop(); action.current?.abort(); action.current = null;
+      document.removeEventListener('visibilitychange', hidden);
     };
-  }, [isOpen, phase, reconnected, onReconnected, onClose]);
+  }, [isOpen]);
+
+  // One bounded wait owns its probes, promotion, countdown and delayed close.
+  useEffect(() => {
+    if (!isOpen || phase !== 'waiting') return undefined;
+    const watcher = startReconnectionWait({ document, window, probe: signal => api.probePc(signal),
+      reconnect: signal => callbacks.current.onReconnected?.(signal), onClose: close,
+      onError: failure => setError(failure.message || tr('Falha ao reconectar ao PC. Tente novamente.')),
+      onProgress: state => {
+        if ('timeLeft' in state) setTimeLeft(state.timeLeft);
+        if ('probing' in state) setProbing(state.probing);
+        if ('reconnected' in state) setReconnected(state.reconnected);
+      } });
+    waiter.current = watcher;
+    return () => { watcher.stop(); if (waiter.current === watcher) waiter.current = null; };
+  }, [isOpen, phase, waitVersion]);
 
   if (!isOpen) return null;
 
   async function handleSwitch() {
-    if (switching) return;
+    if (switching || action.current || document.visibilityState === 'hidden') return;
+    waiter.current?.stop();
+    const ac = action.current = new AbortController();
     setSwitching(true);
     setPhase('switching');
     setError('');
     try {
-      await onSwitchToLocal();
-      onClose();
+      const target = await callbacks.current.onSwitchToLocal(ac.signal);
+      if (!alive.current || ac.signal.aborted) return;
+      if (target?.kind !== 'local') throw Error(tr('O host Android não foi selecionado. Tente novamente.'));
+      close();
     } catch (err) {
+      if (!alive.current || ac.signal.aborted) return;
       setError(err?.message || tr('Falha ao ativar a Auto-Hospedagem.'));
       setPhase('prompt');
     } finally {
-      setSwitching(false);
+      if (action.current === ac) { action.current = null; if (alive.current) setSwitching(false); }
     }
   }
 
   function handleStartWait() {
+    waiter.current?.stop();
+    setError(''); setReconnected(false);
     setTimeLeft(300);
+    setWaitVersion(version => version + 1);
     setPhase('waiting');
   }
 
@@ -102,7 +101,7 @@ export default function ConnectionLossModal({ isOpen, onClose, onSwitchToLocal, 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-md mc-modal-backdrop"
-      onClick={onClose}
+      onClick={close}
     >
       <div
         className="mc-glass-pill w-full max-w-sm rounded-[28px] p-6 shadow-2xl mc-modal-card border border-white/15 text-center bg-cardDark/95 backdrop-blur-xl"
@@ -174,10 +173,13 @@ export default function ConnectionLossModal({ isOpen, onClose, onSwitchToLocal, 
                     {formattedTime}
                   </div>
                   <p className="mt-2 text-xs text-textMuted flex items-center justify-center gap-1.5">
-                    <Loader2 size={12} className="animate-spin text-purple-400" />
-                    {tr("Tentando reconectar ao PC em segundo plano…")}
+                    {timeLeft > 0 && !error && <Loader2 size={12} className="animate-spin text-purple-400" />}
+                    {tr(timeLeft > 0 && !error ? 'Tentando reconectar ao PC em segundo plano…' : 'Reconexão pausada.')}
                   </p>
                 </div>
+
+                {error && <p role="alert" className="mb-4 text-xs text-red-300">{error}</p>}
+                {(timeLeft === 0 || error) && <button type="button" onClick={handleStartWait} className="mb-3 rounded-xl bg-white/10 px-4 py-2 text-sm">{tr('Tentar reconexão novamente')}</button>}
 
                 {timeLeft === 0 && (
                   <p className="text-xs text-amber-300 mb-4 bg-amber-500/10 p-2.5 rounded-xl border border-amber-500/20">
@@ -197,7 +199,7 @@ export default function ConnectionLossModal({ isOpen, onClose, onSwitchToLocal, 
 
                   <button
                     type="button"
-                    onClick={onClose}
+                    onClick={close}
                     className="w-full rounded-2xl bg-transparent py-2.5 text-xs text-textMuted hover:text-white transition-colors"
                   >
                     {tr("Minimizar")}

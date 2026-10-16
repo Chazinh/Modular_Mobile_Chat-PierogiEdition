@@ -24,37 +24,52 @@ fn text(m: &Value, key: &str) -> String {
 /// Groups of near-duplicate memories of the same type and subject (at most 6 groups of up to 5 memories).
 pub fn build_clusters(memories: &[Value]) -> Vec<Vec<Value>> {
     let (max, max_size) = (6, 5);
-    let mut used: HashSet<String> = HashSet::new();
+    let prepared = memories
+        .iter()
+        .map(|m| {
+            (
+                m["id"].as_str().unwrap_or_default(),
+                m["kind"].as_str().unwrap_or_default(),
+                rules::key(m["subject"].as_str().unwrap_or_default()),
+                rules::tokens(m["content"].as_str().unwrap_or_default()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut used = HashSet::new();
     let mut out = Vec::new();
-    for (i, a) in memories.iter().enumerate() {
+    for (i, a) in prepared.iter().enumerate() {
         if out.len() >= max {
             break;
         }
-        if used.contains(&text(a, "id")) {
+        if used.contains(a.0) {
             continue;
         }
-        let mut group = vec![a.clone()];
-        for b in memories.iter().skip(i + 1) {
+        let mut group = vec![i];
+        for (j, b) in prepared.iter().enumerate().skip(i + 1) {
             if group.len() >= max_size {
                 break;
             }
-            if used.contains(&text(b, "id"))
-                || text(b, "kind") != text(a, "kind")
-                || rules::key(&text(b, "subject")) != rules::key(&text(a, "subject"))
-            {
+            if used.contains(b.0) || b.1 != a.1 || b.2 != a.2 {
                 continue;
             }
-            if group.iter().all(|g| {
-                rules::jaccard(&text(g, "content"), &text(b, "content")) >= CLUSTER_MIN_SIMILARITY
+            if group.iter().all(|&g| {
+                let tokens = &prepared[g].3;
+                let union = tokens.union(&b.3).count();
+                let similarity = if union == 0 {
+                    0.0
+                } else {
+                    tokens.intersection(&b.3).count() as f64 / union as f64
+                };
+                similarity >= CLUSTER_MIN_SIMILARITY
             }) {
-                group.push(b.clone());
+                group.push(j);
             }
         }
         if group.len() > 1 {
-            for g in &group {
-                used.insert(text(g, "id"));
+            for &g in &group {
+                used.insert(prepared[g].0);
             }
-            out.push(group);
+            out.push(group.into_iter().map(|g| memories[g].clone()).collect());
         }
     }
     out
@@ -90,7 +105,8 @@ pub fn sanitize(raw: &Value, clusters: &[Vec<Value>]) -> Vec<Value> {
     for d in raw["decisions"].as_array().into_iter().flatten() {
         let Some(idx) = d["group"]
             .as_i64()
-            .and_then(|g| usize::try_from(g - 1).ok())
+            .and_then(|g| g.checked_sub(1))
+            .and_then(|g| usize::try_from(g).ok())
         else {
             continue;
         };

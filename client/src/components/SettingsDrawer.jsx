@@ -237,7 +237,7 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
                   onChange={(e) => save({ settings: { rulesPlacement: e.target.checked ? 'first_turn' : null } })}
                 />
               </label>
-              <p>{tr("Alvo 96 mil tokens, limite suave 110 mil, teto 128 mil. Sob pressão, primeiro reduzo memórias e episódios; só depois os pares recentes (mínimo 20), sem cortar mensagens.")}</p>
+              <p>{tr("Orçamento orientativo: alvo de 96 mil tokens, redução gradual a partir de 110 mil e referência de 128 mil. Primeiro reduzo memórias e episódios; depois os pares recentes (mínimo 20), sem cortar mensagens. Conteúdo obrigatório não é bloqueado por esse orçamento; o limite real é o da janela de contexto do provedor.")}</p>
             </div>
           </SubPage>
         )}

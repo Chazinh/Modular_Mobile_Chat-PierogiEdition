@@ -9,7 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 const env = process.env;
-const adb = env.ADB || path.join(os.homedir(), 'RoleplayChat-local', 'android-sdk', 'platform-tools', 'adb.exe');
+const adb = env.ADB || path.join(os.homedir(), 'ModularChat-local', 'android-sdk', 'platform-tools', 'adb.exe');
 const pkg = env.MC_PERF_PACKAGE || 'io.github.modularchat.pierogiedition.perf';
 const port = Number(env.MC_TRACE_PORT || 9333);
 const top = Number(env.MC_TRACE_TOP || 14);

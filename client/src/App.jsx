@@ -1,7 +1,9 @@
 import { tr, useLanguage } from './i18n.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, config, ApiError, isNative } from './api.js';
-import { invalidateConnection, startConnection } from './server-connection.js';
+import { connectionSnapshot, invalidateConnection, startConnection } from './server-connection.js';
+import { createLatestRequest } from './connection-lifetime.js';
+import { localHost } from './local-host.js';
 import { useLayer, installNativeBack, closeTopLayer } from './nav.js';
 import ChatList from './components/ChatList.jsx';
 import ChatView from './components/ChatView.jsx';
@@ -65,11 +67,18 @@ export default function App() {
   const [manualServerSetup, setManualServerSetup] = useState(false);
   const [kind, setKind] = useState(() => config.kind);
   const [connectionLossOpen, setConnectionLossOpen] = useState(false);
+  const [hostStartup, setHostStartup] = useState(() => localHost.startupState());
+  const [retryingHost, setRetryingHost] = useState(false);
+  const retryHostController = useRef(null);
   const wasOnPcRef = useRef(config.kind === 'pc');
   const [fontSize, setFontSize] = useFontSize();
   const refreshTimer = useRef(null);
   const listViewRef = useRef(null);
   listViewRef.current = { archivedView, query };
+  const listRequests = useRef(null);
+  const hasListed = useRef(false);
+  if (!listRequests.current) listRequests.current = createLatestRequest(connectionSnapshot);
+  const visibleOrigin = useRef(`${config.kind}:${config.server}`);
 
   useEffect(() => {
     if (config.kind === 'pc') wasOnPcRef.current = true;
@@ -82,55 +91,59 @@ export default function App() {
     setNeedsServer(config.needsServer);
     setUnpaired(!config.embeddedReady && privacyNeedsPairing());
   });
-  useEffect(() => {
-    installNativeBack();
-  }, []);
+  useEffect(() => installNativeBack(), []);
   useEffect(() => startConnection(), []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(() => listRequests.current.run(JSON.stringify([archivedView, query]), async (signal, current) => {
+    const isCurrent = () => current() && listViewRef.current.archivedView === archivedView && listViewRef.current.query === query;
     try {
-      const list = await api.listChats(archivedView, query);
-      if (listViewRef.current.archivedView !== archivedView || listViewRef.current.query !== query) return;
+      const list = await api.listChats(archivedView, query, { signal, isCurrent });
+      if (!isCurrent()) return;
+      hasListed.current = true;
       setChats((prev) => shareItems(prev, list));
       setOffline(false);
       setStatus('online');
       setError(''); setConnectionError('');
     } catch (e) {
-      if (listViewRef.current.archivedView !== archivedView || listViewRef.current.query !== query) return;
+      if (!isCurrent() || signal.aborted || e.code === 'STALE_CONNECTION') return;
       setOffline(true);
       setStatus('offline');
-      if (e.status && e.status !== 401) setError(e.message);
+      if (e.status !== 401) setError(e.message);
       if (!archivedView && !query) setChats((prev) => (prev.length ? prev : []));
-      if (isNative() && (config.kind === 'pc' || wasOnPcRef.current) && config.embeddedReady) {
+      if (isNative() && wasOnPcRef.current && config.embeddedReady) {
         setConnectionLossOpen(true);
       }
+    } finally {
+      if (isCurrent()) { switchingRef.current = false; setSwitchingArchived(false); }
     }
-  }, [archivedView, query]);
+  }), [archivedView, query]);
 
-  const handleSwitchToLocal = useCallback(async () => {
-    await api.switchToLocal();
+  const handleSwitchToLocal = useCallback(async signal => {
+    const target = await api.switchToLocal(signal);
+    signal?.throwIfAborted();
     wasOnPcRef.current = false;
-    setConnectionLossOpen(false);
-    setOffline(false);
-    setStatus('online');
     setError('');
     setConnectionError('');
-    await refresh();
-  }, [refresh]);
+    return target;
+  }, []);
 
-  const handleReconnected = useCallback(async () => {
-    await api.switchToPc();
-    setConnectionLossOpen(false);
-    setOffline(false);
-    setStatus('online');
-    setError('');
-    setConnectionError('');
-    await refresh();
-  }, [refresh]);
+  const handleReconnected = useCallback(signal => api.switchToPc(signal), []);
+
+  async function retryLocalHost() {
+    if (retryHostController.current) return;
+    const ac = retryHostController.current = new AbortController();
+    setRetryingHost(true); setStatus('checking'); setError(''); setConnectionError('');
+    try { await handleSwitchToLocal(ac.signal); }
+    catch (failure) {
+      if (!ac.signal.aborted) { setError(failure.message); setOffline(true); setStatus('offline'); }
+    } finally {
+      if (retryHostController.current === ac) { retryHostController.current = null; setRetryingHost(false); }
+    }
+  }
 
   useEffect(() => {
     const onLoss = () => {
-      if (isNative() && (config.kind === 'pc' || wasOnPcRef.current) && config.embeddedReady) {
+      if (isNative() && wasOnPcRef.current && config.embeddedReady) {
         setConnectionLossOpen(true);
       }
     };
@@ -140,15 +153,47 @@ export default function App() {
 
   // first paint from the local cache; then the server
   useEffect(() => {
-    api.cachedChats().then((c) => c?.length && setChats((prev) => (prev.length ? prev : c)));
+    // The legacy cache has no host identity; never label a PC list as Android history.
+    if (isNative()) return undefined;
+    let alive = true;
+    const destination = connectionSnapshot();
+    api.cachedChats().then((c) => alive && !hasListed.current && destination === connectionSnapshot()
+      && !listViewRef.current.archivedView && !listViewRef.current.query && c?.length
+      && setChats((prev) => (prev.length ? prev : c))).catch(() => {});
+    return () => { alive = false; };
   }, []);
 
   useEffect(() => {
-    if (needsServer) return undefined;
+    if (needsServer && !isNative()) return undefined;
     refresh();
   }, [refresh, needsServer]);
   const resumeList = useCallback(() => { if (!needsServer) refresh(); }, [needsServer, refresh]);
   useResume(resumeList);
+
+  useEffect(() => {
+    const hidden = () => {
+      if (document.visibilityState !== 'hidden') return;
+      listRequests.current.cancel();
+      retryHostController.current?.abort(); retryHostController.current = null;
+      setRetryingHost(false);
+      clearTimeout(refreshTimer.current);
+    };
+    document.addEventListener('visibilitychange', hidden);
+    return () => {
+      document.removeEventListener('visibilitychange', hidden);
+      listRequests.current.cancel(); retryHostController.current?.abort(); retryHostController.current = null;
+      clearTimeout(refreshTimer.current);
+    };
+  }, []);
+
+  useEffect(() => localHost.subscribe(state => {
+    setHostStartup(state);
+    setNeedsServer(config.needsServer); setKind(config.kind);
+    if (state.phase === 'ready') {
+      setUnpaired(false);
+      if (document.visibilityState !== 'hidden') refresh();
+    }
+  }), [refresh]);
 
   useEffect(() => {
     const on = e => {
@@ -162,6 +207,7 @@ export default function App() {
     const health = e => {
       if (e.detail.message) setConnectionError(e.detail.message);
       else if (e.detail.code === 'SYNCED') setConnectionError('');
+      if (e.detail.selectionFailed) { setOffline(true); setStatus('offline'); setError(e.detail.message); }
     };
     window.addEventListener('mc:unpaired', on);
     window.addEventListener('mc:connection-health', health);
@@ -174,12 +220,19 @@ export default function App() {
   // TOP-LEVEL CONNECTION LISTENER: always listen to mc:connection-change regardless of needsServer/unpaired
   useEffect(() => {
     const connectionChanged = () => {
+      const origin = `${config.kind}:${config.server}`;
+      const changedHost = visibleOrigin.current !== origin;
+      visibleOrigin.current = origin;
+      listRequests.current.cancel();
+      if (changedHost) { setChats([]); setOpenId(null); setCreatedChat(null); }
+      if (config.kind === 'pc') wasOnPcRef.current = true;
       setKind(config.kind);
       setNeedsServer(config.needsServer);
       if (config.embeddedReady) setUnpaired(false);
       setConnectionError('');
-      refresh();
-      window.dispatchEvent(new CustomEvent('mc:event', { detail: { type: 'connection' } }));
+      setStatus('checking');
+      if (document.visibilityState !== 'hidden') refresh();
+      if (!changedHost) window.dispatchEvent(new CustomEvent('mc:event', { detail: { type: 'connection' } }));
     };
     window.addEventListener('mc:connection-change', connectionChanged);
     return () => window.removeEventListener('mc:connection-change', connectionChanged);
@@ -187,10 +240,11 @@ export default function App() {
 
   // server events: sync the list and notify the open chat
   useEffect(() => {
-    if (needsServer || unpaired) return undefined;
+    if (needsServer || unpaired || (isNative() && !config.embeddedReady && kind !== 'pc')) return undefined;
     let ac;
     const subscribe = () => {
       ac?.abort();
+      if (document.visibilityState === 'hidden') return;
       ac = new AbortController();
       api.subscribeEvents((ev) => {
         if (ev.type === 'hello') return;
@@ -199,19 +253,21 @@ export default function App() {
         refreshTimer.current = setTimeout(refresh, 400);
       }, ac.signal);
     };
-    const visible = () => { if (document.visibilityState === 'visible') subscribe(); };
+    const visible = () => { subscribe(); if (document.visibilityState === 'hidden') clearTimeout(refreshTimer.current); };
     subscribe();
     document.addEventListener('visibilitychange', visible);
     window.addEventListener('mc:resume', subscribe);
     window.addEventListener('online', subscribe);
+    window.addEventListener('mc:connection-change', subscribe);
     return () => {
       ac?.abort();
       clearTimeout(refreshTimer.current);
       document.removeEventListener('visibilitychange', visible);
       window.removeEventListener('mc:resume', subscribe);
       window.removeEventListener('online', subscribe);
+      window.removeEventListener('mc:connection-change', subscribe);
     };
-  }, [needsServer, unpaired, refresh]);
+  }, [needsServer, unpaired, refresh, kind]);
 
   // Pull to refresh: discard the cached endpoint choice, verify the connection again and reload the list.
   const checkNow = useEvent(async () => {
@@ -223,21 +279,16 @@ export default function App() {
   const openChat = useEvent((id, origin) => {
     transitionTo(() => { setOpenSettings(false); setOpenId(id); }, '.mc-chat', origin);
   });
-  const toggleArchived = useEvent(async (event) => {
+  const toggleArchived = useEvent((event) => {
     if (switchingRef.current) return;
     const origin = event?.currentTarget;
     const next = !archivedView;
     switchingRef.current = true;
     setSwitchingArchived(true);
-    try {
-      const list = await api.listChats(next, query);
-      transitionTo(() => {
-        setArchivedView(next);
-        setChats(prev => shareItems(prev, list));
-        setOffline(false); setStatus('online'); setError('');
-      }, '.mc-list', origin);
-    } catch (e) { setError(e.message); }
-    finally { switchingRef.current = false; setSwitchingArchived(false); }
+    listRequests.current.cancel();
+    transitionTo(() => {
+      setArchivedView(next); setChats([]); setStatus('checking'); setError('');
+    }, '.mc-list', origin);
   });
   const openGlobal = useEvent((event) => transitionTo(() => setGlobalOpen(true), '.mc-screen', event?.currentTarget));
 
@@ -257,7 +308,8 @@ export default function App() {
     }
   }
 
-  if (shouldShowServerSetup({ manual: manualServerSetup, needsServer, unpaired, embeddedReady: config.embeddedReady })) {
+  if (shouldShowServerSetup({ manual: manualServerSetup, needsServer, unpaired, embeddedReady: config.embeddedReady })
+      && (!isNative() || manualServerSetup || config.kind === 'pc')) {
     return (
       <ServerSetup
         needsServer={needsServer}
@@ -277,6 +329,14 @@ export default function App() {
   return (
     <>
       <div className={openId ? 'hidden' : 'flex h-full flex-col'}>
+        {isNative() && kind !== 'pc' && (status === 'offline' || hostStartup.phase === 'error') && (
+          <div role="alert" className="px-4 py-3 text-sm text-amber-200">
+            <p>{error || hostStartup.message || tr('O host Android não está disponível. Os dados foram preservados.')}</p>
+            <button type="button" disabled={retryingHost} onClick={retryLocalHost} className="mt-2 rounded-xl bg-white/10 px-4 py-2 disabled:opacity-40">
+              {retryingHost ? tr('Iniciando Auto-Hospedagem…') : tr('Tentar Auto-Hospedagem novamente')}
+            </button>
+          </div>
+        )}
         <ChatList
           hostStatus={!openId && !globalOpen ? hostStatus : null}
           chats={chats}

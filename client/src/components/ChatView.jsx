@@ -6,6 +6,8 @@ import {
   ArrowDown, Keyboard, Layers, Info, WifiOff, Check, AlertTriangle,
 } from 'lucide-react';
 import { api, config, uuid } from '../api.js';
+import { connectionSnapshot } from '../server-connection.js';
+import { watchProviderCatalog } from '../provider-catalog.js';
 import { useLayer } from '../nav.js';
 import { Avatar, SceneText, UserText, useLongPress, copyText, useEvent } from '../ui.jsx';
 import { plainText } from '../format.js';
@@ -85,6 +87,9 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   const composerRef = useRef(null);
   const listRef = useRef(null);
   const readingRef = useRef(null);
+  const followingRef = useRef(true);
+  const scrollMetricsRef = useRef(null);
+  const scrollFrameRef = useRef(0);
   const openedRef = useRef(false);
   const abortRef = useRef(null);
   const busyRef = useRef(false);
@@ -133,8 +138,6 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   useEffect(() => {
     let alive = true;
     api.cachedChat(chatId).then((c) => alive && c && !chatRef.current && setChat({ ...c, history: c.history.filter(m => m.status !== 'generating') }));
-    api.cachedPresets().then((cp) => alive && setPresets((cur) => cur || cp));
-    api.presets().then((p) => alive && setPresets(p)).catch(() => {});
     load().then((c) => {
       if (!alive || !c || busyRef.current) return;
       if (api.getPending(chatId)) recoverPending(api.getPending(chatId));
@@ -149,6 +152,9 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
+
+  useEffect(() => watchProviderCatalog({ window, snapshot: connectionSnapshot,
+    getCached: api.cachedPresets, getPresets: api.presets, onPresets: setPresets }), []);
 
   // Debounce writes of the encrypted cache (WebCrypto + IndexedDB) to avoid
   // repeated CPU/I/O cycles on every quick state change.
@@ -221,10 +227,11 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   const drawerGesture = useDrawerGesture(() => setDrawer(true), !drawer && !editMsg && !menuMsg && !castOpen && !memoryOpen && !versionsFor && !detailFor && !renameOpen && !viewerAvatar);
   // Reading anchor: first message whose bottom is below the visible top. Binary search over the list's
   // children (ordered by layout): ~9 geometry reads instead of one per message.
-  const rememberReading = () => {
+  const rememberReading = useEvent(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const top = el.getBoundingClientRect().top;
+    const rect = el.getBoundingClientRect();
+    const top = rect.top, scaleY = el.offsetHeight ? rect.height / el.offsetHeight || 1 : 1;
     const ey = Number(el.dataset.elasticY) || 0; // elastic stretch in progress (content translateY)
     const kids = listRef.current?.children;
     let anchor = null;
@@ -232,41 +239,77 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
       let lo = 0, hi = kids.length;
       while (lo < hi) {
         const mid = (lo + hi) >> 1;
-        if (kids[mid].getBoundingClientRect().bottom - ey > top) hi = mid; else lo = mid + 1;
+        if ((kids[mid].getBoundingClientRect().bottom - top) / scaleY - ey > 0) hi = mid; else lo = mid + 1;
       }
       while (lo < kids.length && !kids[lo].dataset.messageId) lo++; // skip notices/cards without an id
       anchor = kids[lo] || null;
     }
-    readingRef.current = { top: el.scrollTop, id: anchor?.dataset.messageId, offset: anchor ? anchor.getBoundingClientRect().top - top - ey : 0 };
-  };
-  useLayoutEffect(() => {
+    readingRef.current = { top: el.scrollTop, id: anchor?.dataset.messageId, offset: anchor ? (anchor.getBoundingClientRect().top - top) / scaleY - ey : 0 };
+  });
+  const restoreReading = useEvent(() => {
     const el = scrollRef.current;
-    if (!el || !chat) return;
-    if (!openedRef.current) {
+    if (!el || !chatRef.current) return;
+    const end = Math.max(0, el.scrollHeight - el.clientHeight);
+    let target = el.scrollTop;
+    if (!openedRef.current || followingRef.current) {
       openedRef.current = true;
-      el.scrollTop = el.scrollHeight; // A single jump to the end when the chat opens.
-    } else if (stuck) {
-      el.scrollTop = el.scrollHeight;
+      target = end; // Opening and explicitly following the end share one scroll owner.
     } else if (readingRef.current) {
       const r = readingRef.current;
       const anchor = r.id ? el.querySelector(`[data-message-id="${CSS.escape(r.id)}"]`) : null;
-      el.scrollTop = anchor ? el.scrollTop + anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - (Number(el.dataset.elasticY) || 0) - r.offset : r.top;
+      const rect = el.getBoundingClientRect(), scaleY = el.offsetHeight ? rect.height / el.offsetHeight || 1 : 1;
+      target = anchor ? el.scrollTop + (anchor.getBoundingClientRect().top - rect.top) / scaleY - (Number(el.dataset.elasticY) || 0) - r.offset : r.top;
     }
-    rememberReading();
-  }, [chat, stream, error, offline, renderedCount, stuck]);
+    target = Math.max(0, Math.min(end, target));
+    if (el.scrollTop !== target) el.scrollTop = target;
+    scrollMetricsRef.current = { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight };
+    // Keep the intended anchor through a temporary shrink or a hidden regeneration target.
+    // A programmatic scroll/clamp must not replace it or opt the reader into following.
+    if (followingRef.current) rememberReading();
+  });
+  const scheduleReading = useEvent(() => {
+    if (scrollFrameRef.current) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = 0;
+      restoreReading();
+    });
+  });
+  useLayoutEffect(() => {
+    restoreReading();
+  }, [chat, stream, error, offline, renderedCount, restoreReading]);
+  useLayoutEffect(() => {
+    const observer = new ResizeObserver(scheduleReading);
+    if (scrollRef.current) observer.observe(scrollRef.current);
+    if (listRef.current) observer.observe(listRef.current);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = 0;
+    };
+  }, [scheduleReading]);
 
   function onScroll() {
     const el = scrollRef.current;
     if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
-    setStuck(near);
-    rememberReading(); // binary search: cheap with a clean layout, and the anchor never goes stale for the next commit
+    const current = { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight };
+    const previous = scrollMetricsRef.current;
+    if (previous && (previous.height !== current.height || previous.client !== current.client)) {
+      scheduleReading(); // Layout changed; this is not evidence of an intent to follow.
+      return;
+    }
+    if (previous?.top === current.top) return; // Our restoration already owns this position.
+    // scrollTop can be fractional whereas scrollHeight/clientHeight are rounded integers.
+    const atEnd = current.height - current.client - current.top <= 1;
+    followingRef.current = atEnd;
+    setStuck(atEnd);
+    rememberReading();
+    scrollMetricsRef.current = current;
   }
   const toBottom = () => {
-    const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    followingRef.current = true;
     setStuck(true);
     setNewContent(false);
+    restoreReading();
   };
 
   const updateChat = (fn) =>
@@ -480,10 +523,6 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     const content = text.trim();
     if (!content || busy) return;
     if (text.length > 6000) return setError(tr("Sua mensagem pode ter no máximo 6.000 caracteres."));
-    setStuck(true);
-    readingRef.current = null;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
     run({ mode: 'send', content }, { fromComposer: true });
   }
 
@@ -494,17 +533,9 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   const onBranch = useEvent((m, d) => switchBranch(m, d));
   const onVersions = useEvent((m) => setVersionsFor(m));
   const onContinue = useEvent(() => {
-    setStuck(true);
-    readingRef.current = null;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
     run({ mode: 'continue' });
   });
   const onRegenerate = useEvent(() => {
-    setStuck(true);
-    readingRef.current = null;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
     run({ mode: 'regenerate' });
   });
   const onStop = useEvent(() => stop());
@@ -724,9 +755,44 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
           })}
           {busy && <StreamCard onStop={onStop} idle={offline} />}
           {error && (
-            <div className="flex items-start gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">
-              <span className="flex-1 break-words">{tr(error)}</span>
-              <button onClick={() => setError('')} className="shrink-0 text-xs underline">{tr("fechar")}</button>
+            <div className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              <div className="flex items-start gap-2">
+                <span className="flex-1 break-words">{tr(error)}</span>
+                <button onClick={() => setError('')} className="shrink-0 text-xs underline">{tr("fechar")}</button>
+              </div>
+              {isNative() && (String(error).includes('compacto') || String(error).includes('standby') || String(error).includes('LOCAL_')) && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await api.localActivate();
+                      setError(tr('Download/ativação do modelo iniciada. Acompanhe a barra de progresso no topo.'));
+                    } catch (e) {
+                      setError(e.message);
+                    }
+                  }}
+                  className="mt-2 block rounded-full bg-accentPurple px-4 py-1.5 text-xs font-semibold text-white active:scale-95"
+                >
+                  {tr('Baixar e ativar modelo compacto (~1.1 GB)')}
+                </button>
+              )}
+              {config.kind === 'pc' && (chat?.presetId === 'mobile-local' || String(error).includes('Modelos locais')) && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const updated = await api.updateChat(chatId, { presetId: 'deepseek-v41-flash', routeId: 'cbai/deepseek-v4.1-flash' });
+                      onSaved?.(updated);
+                      setError('');
+                    } catch (e) {
+                      setError(e.message);
+                    }
+                  }}
+                  className="mt-2 block rounded-full bg-accentPurple px-4 py-1.5 text-xs font-semibold text-white active:scale-95"
+                >
+                  {tr('Mudar para modelo do PC/nuvem (DeepSeek)')}
+                </button>
+              )}
             </div>
           )}
           {!busy && history.length > 0 && !lastIsAssistant && (
@@ -746,7 +812,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
         )}
       </div>
 
-      <Composer ref={composerRef} chatId={chatId} busy={busy} offline={offline} onSend={send} />
+      <Composer ref={composerRef} chatId={chatId} busy={busy} offline={offline} onSend={send} onStorageError={setError} />
       {drawer && chat && (
         <SettingsDrawer
           hostStatus={hostStatus}
@@ -904,7 +970,7 @@ const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, on
 
 // Composer with its own state: typing re-renders only this component, not the history. The draft is saved
 // with a delay (and on exit/when the app is hidden), since every write encrypts the whole private storage.
-const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend }, ref) {
+const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, onStorageError }, ref) {
   useLanguage();
   const [value, setValue] = useState(() => api.getDraft(chatId));
   const [collapsed, setCollapsed] = useState(true);
@@ -926,8 +992,8 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
     if (!draftTimer.current) return;
     clearTimeout(draftTimer.current);
     draftTimer.current = 0;
-    api.setDraft(chatId, valueRef.current);
-  }, [chatId]);
+    api.setDraft(chatId, valueRef.current).catch(error => onStorageError(error.message));
+  }, [chatId, onStorageError]);
 
   const collapse = useCallback(() => {
     if (collapsedRef.current) return;
@@ -962,9 +1028,9 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend },
       draftTimer.current = 0;
       valueRef.current = '';
       setValue('');
-      api.setDraft(chatId, '');
+      api.setDraft(chatId, '').catch(error => onStorageError(error.message));
     },
-  }), [chatId]);
+  }), [chatId, onStorageError]);
 
   useEffect(() => {
     const hide = () => { if (document.visibilityState === 'hidden') flushDraft(); };

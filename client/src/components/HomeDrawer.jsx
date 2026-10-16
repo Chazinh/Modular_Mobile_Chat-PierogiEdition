@@ -15,6 +15,7 @@ import StyleForm from './StyleForm.jsx';
 import ChoiceField from './ChoiceField.jsx';
 import ColorField from './ColorField.jsx';
 import PersonaManager from './PersonaManager.jsx';
+import PairedDevices from './PairedDevices.jsx';
 import { StairList, Row, SubPage, Switch } from './SettingsDrawer.jsx';
 import '../drawer.css';
 
@@ -30,7 +31,6 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
   const [iconMsg, setIconMsg] = useState('');
   const [personasOpen, setPersonasOpen] = useState(false);
   const [localHostOpen, setLocalHostOpen] = useState(false);
-  const [devices, setDevices] = useState(null);
   const [code, setCode] = useState(null);
   const [trash, setTrash] = useState(null);
   const [trashError, setTrashError] = useState('');
@@ -106,10 +106,6 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
     } catch (e) {
       setTrashError(e.message || 'Não foi possível carregar a lixeira.');
     }
-  }
-
-  async function loadDevices() {
-    api.devices().then((r) => setDevices(r.devices)).catch(() => setDevices(null));
   }
 
   async function runAction(fn, ok) {
@@ -197,10 +193,7 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
                 lead={<Smartphone size={20} />}
                 label={tr("Pareamento / Conectar PC")}
                 value={config.kind === 'local' ? tr('Host local') : config.server ? tr('Conectado') : tr('Configurar')}
-                onClick={() => {
-                  loadDevices();
-                  setPage('pairing');
-                }}
+                onClick={() => setPage('pairing')}
               />
 
               {isNative() && config.embeddedReady && (
@@ -341,6 +334,7 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
           <SubPage title={tr("Idioma")} onBack={() => setPage(null)}>
             <div className="mc-bubble mx-[10px] space-y-3 rounded-[26px] p-4 text-sm">
               <ChoiceField
+                variant="dropdown"
                 label={tr('Idioma da interface')}
                 value={language}
                 onChange={setLanguage}
@@ -409,12 +403,7 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
                 </>
               )}
 
-              {devices?.filter((d) => !d.revoked_at).map((d) => (
-                <div key={d.id} className="flex items-center justify-between rounded-xl bg-composer px-3 py-2 text-sm">
-                  <span>{d.name}<span className="block text-[11px] text-textMuted">{tr("visto ")}{d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : tr("nunca")}</span></span>
-                  <button onClick={() => runAction(() => api.revokeDevice(d.id), tr("Aparelho removido."))} aria-label={tr("Remover aparelho")}><Trash2 size={16} className="text-red-300" /></button>
-                </div>
-              ))}
+              <PairedDevices />
               {msg && <p className="text-xs text-accentPurpleLight">{msg}</p>}
             </div>
           </SubPage>

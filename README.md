@@ -19,7 +19,7 @@ Project changes and migration assessments are recorded in [CHANGELOG.md](CHANGEL
 
 ## Features
 
-- **Rust server** (axum + SQLite) with a single encrypted vault file (AES-256-GCM, key protected by Windows DPAPI). Nothing is ever written to disk in plain text.
+- **Rust server** (axum + SQLite) with an AES-256-GCM encrypted vault at rest, with key protection through Windows DPAPI or Android Keystore.
 - **Pluggable providers**: several OpenAI-compatible endpoints at once, selected per conversation (`provider:model` routes).
 - **Presets per model family** with locked reasoning effort and an on/off thinking switch where the provider supports it (DeepSeek, Claude, Gemini, Kimi, GLM, …). New models are added in a JSON file.
 - **Local memory**: each turn is mined for facts, relationships, scene state and timeline by a local model (llama.cpp), with embeddings for retrieval, curation of near-duplicate memories and quote provenance checks.
@@ -29,7 +29,7 @@ Project changes and migration assessments are recorded in [CHANGELOG.md](CHANGEL
 - **Automatic Android connection** between user-configured local and internet HTTPS endpoints, without automatic replay of writes or generation requests.
 - **Liquid-glass UI**: side menu with spring/rubber-band physics, collapsible "soap bubble" top bar, eye-care options (text brightness/color, blue-light filter, paper texture).
 - **Local interface language** (Portuguese/English), with live updates and persistence per device. Interface language does not translate saved conversations or change the model's response-language policy.
-- **Consistent in-app controls**: language and memory-type choices, custom color palette (HEX and hue/saturation/lightness), and action confirmations use the app's glass sheets instead of Android's default web dialogs.
+- **Consistent in-app controls**: an anchored language list, plus glass sheets for memory-type choices, custom color palette (HEX and hue/saturation/lightness), and action confirmations.
 - Branches and versions of replies, continue/regenerate, 30-day trash, encrypted backups, export/import, device pairing with 6-digit codes.
 
 ## Requirements
@@ -92,12 +92,16 @@ one when necessary, caches its choice for up to 30 seconds, and rechecks after
 resume, network changes or failure. An open request or SSE stream keeps its
 endpoint; endpoint selection never replays a POST. Pair initially on the LAN.
 
-Android trusts system CAs by default and permits HTTP only for the internal
-Capacitor `localhost` origin. An optional `MC_ANDROID_HOST_TRUST_DIR` resource
+Android trusts system and user CAs and permits HTTP only for the internal
+Capacitor `localhost` origin and the embedded host at `127.0.0.1`. An optional `MC_ANDROID_HOST_TRUST_DIR` resource
 directory can add the public CA of the chosen local host for a private build.
 Generate it with `scripts/configure-android-host.ps1`; the default output is
 Git-ignored. Private keys and the originating host's certificate are not bundled.
 Legacy HTTP endpoints require explicit HTTPS configuration.
+
+Vault/cache encryption protects data at rest; HTTPS protects remote transport.
+This is not end-to-end encryption: the selected provider processes the request,
+and an external provider/router may retain its own request logs.
 
 The side drawer now settles more gently, needs a 12 px inward edge drag, ignores
 controls as gesture origins and clears stale drag events. Button opening, Back,
@@ -111,14 +115,26 @@ browser tabs. The Android biometric prompts use the same saved preference. Saved
 messages, character sheets, persona names, provider routes and generation settings
 keep their content; the backend's current response-language policy remains pt-BR.
 
-Language and memory-type choices, custom colors and deletion/cleanup confirmations
-open glass sheets inside the app, with its purple/lavender palette, instead of OS
-select/color/JavaScript dialogs. Custom colors support HEX and hue, saturation and
+The language choice opens an anchored list. Memory-type choices, custom colors
+and deletion/cleanup confirmations open glass sheets inside the app, with its
+purple/lavender palette. Custom colors support HEX and hue, saturation and
 lightness, with preview, validation, Apply and Cancel. Back/Escape cancels the top
 sheet; destructive requests start only after explicit confirmation. Android keeps
 the system's strong biometric authentication and required system file picker.
 
+Context-budget estimates are diagnostics, not a hard veto on saving settings or
+sending a message; the server still applies its context/output limits. Global
+defaults and each conversation's saved overrides keep their existing behavior.
+
 ## Model providers
+
+Android's local-host settings seal provider credentials in its own vault; desktop
+credentials are not copied into the app. Local discovery only probes already
+installed, running daemons on the Android host's loopback, without installing or
+starting services or changing saved defaults. 9Router exposes an OpenAI-compatible
+API; OpenCode `serve` uses a native API that this host cannot use for chat
+completions. OpenCode Zen HTTPS is a separate provider. Detection alone does not
+select a provider or model.
 
 Providers are listed in `providers.json` (in the data directory, or the path in `MC_PROVIDERS_FILE`):
 
@@ -209,12 +225,17 @@ Without local models, chatting works; memory jobs stay queued until the models a
 ## Android app
 
 ```powershell
+.\scripts\build-android-autohost.ps1  # ARM64 Rust/JNI library; requires the existing NDK and Rust target
 cd client
-npm run build
-npx cap sync android
+npm.cmd run build
+npx.cmd --no-install cap copy android
 cd android
 .\gradlew.bat assembleRelease
 ```
+
+The native library is applied to `client/android/app/src/main/jniLibs/arm64-v8a`;
+the web build updates `client/dist`, then `cap copy` applies those assets without
+syncing plugin configuration. These steps do not install or launch the app.
 
 To sign the release, create `client/android/keystore.properties` (git-ignored) or point `MC_KEYSTORE_PROPS` to one:
 
@@ -292,3 +313,7 @@ start-server.ps1   Windows launcher (backup, sandbox, environment)
 - Every device must pair; tokens can be revoked in **Settings → Pairing**.
 - Provider API keys never leave the PC.
 - Conversation text is sent to the provider you choose for generation and to the local memory models.
+
+---
+
+> **Note**: This project is developed with the assistance of Artificial Intelligence (multi-agent orchestration).

@@ -59,7 +59,7 @@ export default function AutoHostStatus() {
     <div className="max-h-36 overflow-y-auto rounded-2xl border border-white/10 bg-cardDark px-3 py-2">
       <div className="flex items-center justify-between gap-2 font-semibold">
         <span>{kind === 'pc' ? tr('Host ativo: PC') : kind === 'local' ? tr('Host ativo: Android') : tr('Verificando host ativo…')}</span>
-        {kind === 'local' && downloadError && <button type="button" disabled={retrying} onClick={retry} className="rounded-full bg-composer px-3 py-1 disabled:opacity-40">{tr('Tentar ativar modelos')}</button>}
+        {kind === 'local' && (downloadError || !status?.activated || !status?.chat?.ok) && <button type="button" disabled={retrying} onClick={retry} className="rounded-full bg-composer px-3 py-1 font-medium disabled:opacity-40">{tr(!status?.activated ? 'Baixar e ativar modelos' : downloadError ? 'Tentar ativar modelos' : 'Ativar modelos')}</button>}
       </div>
       {syncLabel && <p role="status" className={conflict ? 'text-yellow-300' : 'text-textMuted'}>{tr(syncLabel)}</p>}
       {health?.message && !syncLabel && <p className="text-yellow-300">{tr(health.message)}</p>}

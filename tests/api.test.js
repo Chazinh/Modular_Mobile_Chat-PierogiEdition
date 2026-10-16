@@ -370,34 +370,68 @@ test('configurações salvas durante a geração permanecem (API)', async () => 
   router.set(DEFAULTS());
 });
 
-test('contexto grande demais: 422 com explicação e NADA é gravado', async () => {
-  router.set(DEFAULTS());
-  const c = await mkChat({ settings: { context: { hardLimit: 2000 } } });
-  const huge = 'palavra '.repeat(700);
-  const n = router.requests.length;
-  const r = await j('POST', `/api/chats/${c.id}/message`, { mode: 'send', content: huge, opId: 'big-1' });
-  assert.equal(r.status, 422);
-  assert.equal(r.body.code, 'CONTEXT_TOO_LARGE');
-  assert.match(r.body.error, /Nada foi enviado/);
-  assert.equal(router.requests.length, n, 'nenhuma chamada ao modelo');
-  const chat = (await j('GET', `/api/chats/${c.id}`)).body;
-  assert.equal(chat.history.length, 0);
+test('contexto acima do orçamento estimado chega integral uma vez e salva histórico e resposta', async () => {
+  const reply = 'Mira: O histórico continua aqui.';
+  router.set({ ...DEFAULTS(), chunks: [reply] });
+  await j('PUT', '/api/settings/global', { ...DEFAULT_STYLE, dialoguePct: 100 });
+  try {
+    const prompt = 'Nome: Mira\n' + 'PERSONALIZAÇÃO_INTEGRAL_🚀 '.repeat(900);
+    const c = await mkChat({ prompt, settings: { context: { hardLimit: 1 } } });
+    const prior = 'HISTÓRICO_INTEGRAL_✨';
+    const first = await sse(`/api/chats/${c.id}/message`, { mode: 'send', content: prior, opId: 'big-history' });
+    assert.equal(first.events.at(-1).status, 'complete');
+    const huge = 'palavra '.repeat(700);
+    const n = router.requests.length;
+    const corrections = router.correctionRequests.length;
+    const r = await sse(`/api/chats/${c.id}/message`, { mode: 'send', content: huge, opId: 'big-1' });
+    assert.equal(r.status, 200);
+    assert.equal(r.events.at(-1).status, 'complete');
+    assert.equal(r.events.find(e => e.ack).ack.context.exceededEstimatedBudget, true);
+    assert.equal(router.requests.length, n + 1, 'um único envio ao modelo');
+    assert.equal(router.correctionRequests.length, corrections, 'sem outro POST de correção');
+    const sent = router.requests.at(-1).body.messages;
+    assert.ok(sent.some(m => m.content.includes(prompt)), 'personalização integral');
+    assert.ok(sent.some(m => m.content === prior), 'pergunta anterior integral');
+    assert.ok(sent.some(m => m.content === reply), 'resposta anterior integral');
+    assert.ok(sent.at(-1).content.includes(huge.trim()), 'mensagem atual integral');
+    const chat = (await j('GET', `/api/chats/${c.id}`)).body;
+    assert.deepEqual(chat.history.map(m => m.content), [prior, reply, huge.trim(), reply]);
+  } finally {
+    await j('PUT', '/api/settings/global', DEFAULT_STYLE);
+    router.set(DEFAULTS());
+  }
 });
 
-test('erro do provedor: mensagem do usuário preservada, erro informado e Refazer funciona', async () => {
-  const c = await mkChat();
-  router.set({ status: 500 });
-  const r = await sse(`/api/chats/${c.id}/message`, { mode: 'send', content: 'Alô?', opId: 'err-1' });
-  const done = r.events.at(-1);
-  assert.equal(done.status, 'error');
-  assert.match(done.error, /Provedor \S+ HTTP 500/);
-  let chat = (await j('GET', `/api/chats/${c.id}`)).body;
-  assert.deepEqual(chat.history.map((m) => m.role), ['user']);
-  router.set(DEFAULTS());
-  const retry = await sse(`/api/chats/${c.id}/message`, { mode: 'regenerate', opId: 'err-2' });
-  assert.equal(retry.events.at(-1).status, 'complete');
-  chat = (await j('GET', `/api/chats/${c.id}`)).body;
-  assert.deepEqual(chat.history.map((m) => m.role), ['user', 'assistant']);
+test('erro 400 ou 500 do provedor: pending integral, um POST, erro explícito e Refazer funciona', async () => {
+  for (const status of [400, 500]) {
+    const c = await mkChat({ settings: { context: { hardLimit: 1 } } });
+    const pending = 'PENDING_FÍSICO_🚀 ' + 'palavra '.repeat(700).trim();
+    router.set({ ...DEFAULTS(), status });
+    const n = router.requests.length;
+    const corrections = router.correctionRequests.length;
+    const r = await sse(`/api/chats/${c.id}/message`, { mode: 'send', content: pending, opId: `err-${status}-1` });
+    const done = r.events.at(-1);
+    assert.equal(done.status, 'error');
+    assert.match(done.error, new RegExp(`Provedor \\S+ HTTP ${status}`));
+    assert.equal(router.requests.length, n + 1, 'sem novo POST após erro upstream');
+    assert.equal(router.correctionRequests.length, corrections);
+    assert.ok(router.requests.at(-1).body.messages.at(-1).content.includes(pending));
+    let chat = (await j('GET', `/api/chats/${c.id}`)).body;
+    assert.deepEqual(chat.history.map((m) => m.role), ['user']);
+    assert.equal(chat.history[0].content, pending);
+    const replay = await sse(`/api/chats/${c.id}/message`, { mode: 'send', content: pending, opId: `err-${status}-1` });
+    assert.equal(replay.events.find(e => e.ack).ack.generationId, r.events.find(e => e.ack).ack.generationId);
+    assert.equal(replay.events.find(e => e.ack).ack.opId, `err-${status}-1`);
+    assert.equal(replay.events.at(-1).status, 'error');
+    assert.equal(router.requests.length, n + 1, 'replay do erro preserva opId sem novo POST');
+    assert.equal(router.correctionRequests.length, corrections);
+    router.set(DEFAULTS());
+    const retry = await sse(`/api/chats/${c.id}/message`, { mode: 'regenerate', opId: `err-${status}-2` });
+    assert.equal(retry.events.at(-1).status, 'complete');
+    chat = (await j('GET', `/api/chats/${c.id}`)).body;
+    assert.deepEqual(chat.history.map((m) => m.role), ['user', 'assistant']);
+    assert.equal(chat.history[0].content, pending);
+  }
 });
 
 test('estados distintos: limite atingido, resposta vazia e raciocínio oculto', async () => {

@@ -23,6 +23,13 @@ fn review_schema() -> &'static Value {
             .expect("bundled review schema must be valid JSON")
     })
 }
+fn extraction_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::from_str(include_str!("extraction-schema.json"))
+            .expect("bundled extraction schema must be valid JSON")
+    })
+}
 #[derive(Clone)]
 pub struct Runner {
     store: Store,
@@ -112,7 +119,7 @@ impl Runner {
         })
     }
     pub fn stop(&self) {
-        let _ = self.stop.send(true);
+        self.stop.send_replace(true);
     }
     pub fn kick(&self) {
         self.wake.notify_one();
@@ -392,14 +399,14 @@ impl Runner {
                     crate::provenance::block(&s(&input, "userText"), &sources)
                 )
             } else {
-                format!(
-                    "PERSONA: {}\nCENA ANTERIOR: {scene}\nTEMPO: {}\nFATOS ANTERIORES: {related}\nRECUPERAÇÃO: {}\nTHREADS: {}\nHISTÓRICO ANTERIOR RELEVANTE (fontes identificadas):\n{}\n{}\nTEXTO DO TURNO (fragmento integral):\n{text}",
-                    input["conv"]["persona"],
-                    input["timeline"]["current"],
-                    retrieval["candidates"],
-                    input["threads"],
-                    tail(&s(&input, "previous"), 1500),
-                    crate::provenance::block(&s(&input, "userText"), &sources)
+                crate::memory_prompt::desktop(
+                    &input,
+                    &scene,
+                    &related,
+                    &retrieval,
+                    &text,
+                    &tail(&s(&input, "previous"), 1500),
+                    &sources,
                 )
             };
             let messages = vec![
@@ -409,7 +416,7 @@ impl Runner {
             let raw = backend
                 .chat_json(
                     messages,
-                    serde_json::from_str(include_str!("extraction-schema.json")).unwrap(),
+                    extraction_schema().clone(),
                     if backend.compact() {
                         1200
                     } else if level == 0 {

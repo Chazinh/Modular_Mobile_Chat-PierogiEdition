@@ -16,7 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 const env = process.env;
-const adb = env.ADB || path.join(os.homedir(), 'RoleplayChat-local', 'android-sdk', 'platform-tools', 'adb.exe');
+const adb = env.ADB || path.join(os.homedir(), 'ModularChat-local', 'android-sdk', 'platform-tools', 'adb.exe');
 const pkg = env.MC_PERF_PACKAGE || 'io.github.modularchat.pierogiedition.perf';
 const mode = ['scroll', 'bar'].includes(env.MC_PERF_MODE) ? env.MC_PERF_MODE : 'drawer';
 const swipes = Number(env.MC_PERF_SWIPES || 80);

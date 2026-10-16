@@ -2,7 +2,7 @@ import fs from 'node:fs';
 export const mira = JSON.parse(fs.readFileSync(new URL('./fixtures/quote-attribution.json', import.meta.url), 'utf8'));
 export const [previousBot, currentUser, falseBot] = mira.messages.map(m => m.content);
 export const noFlags = () => ({ agency: [], knowledge: [], continuity: [], attribution: [] });
-export const attributionReview = () => ({ ...noFlags(), attribution: [mira.attributionFlag] });
+export const attributionReview = () => ({ ...noFlags(), attribution: [structuredClone(mira.attributionFlag)] });
 export const extractionFixture = () => ({
   summary: mira.summary, cast: [],
   scene: { location: 'corredor', time: '', mood: '', present: ['Alex', 'Mira'], objects: [], characters: [] },

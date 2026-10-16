@@ -9,6 +9,7 @@
 //  - the APK Back button and the in-app back button close the top layer directly, without relying on the
 //    WebView delivering popstate.
 import { useEffect, useRef } from 'react';
+import { createSharedListener } from './connection-lifetime.js';
 
 const stack = [];
 let syncTimer;
@@ -83,18 +84,13 @@ if (typeof window !== 'undefined') {
 }
 
 // Registers the APK hardware Back button: closes layers; with none, minimizes the app.
-export async function installNativeBack() {
-  try {
-    const cap = window.Capacitor;
-    if (!cap?.isNativePlatform?.()) return;
-    const { App } = await import('@capacitor/app');
-    App.addListener('backButton', () => {
-      if (!closeTopLayer()) App.minimizeApp();
-    });
-  } catch {
-    /* plugin missing: the WebView handles Back through history */
-  }
-}
+export const installNativeBack = createSharedListener(async () => {
+  if (!window.Capacitor?.isNativePlatform?.()) return;
+  const { App } = await import('@capacitor/app');
+  return App.addListener('backButton', () => {
+    if (!closeTopLayer()) App.minimizeApp();
+  });
+});
 
 // While `open` is true, keeps one layer active; Back calls onClose.
 export function useLayer(open, onClose) {
