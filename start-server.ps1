@@ -11,11 +11,17 @@ param(
   [switch]$LocalModels,    # sandbox only: also start the local memory models
   [switch]$NoUpstream,     # disable text generation (no provider is contacted)
   [switch]$Production,     # explicit production mode (the default)
+  [switch]$With9Router,    # also ensure 9Router is running (starts it if not active)
+  [switch]$NineRouter,     # alias for -With9Router
+  [int]$NineRouterPort = 20128, # port used by 9Router (default: 20128)
   [string]$Upstream = '',  # OpenAI-compatible base URL when there is no providers.json
   [string]$DataDir = '',   # override the data directory
   [string]$Exe = ''        # use this server executable instead of the release build
 )
 $ErrorActionPreference = 'Stop'
+if ($NineRouter -or ($args -contains '-9Router') -or ($args -contains '-9router') -or ($args -contains '--9router') -or ($args -contains '9router') -or ($args -contains 'with-9router')) {
+  $With9Router = [switch]::Present
+}
 if ($Sandbox -and $Production) { throw 'Choose either -Production or -Sandbox.' }
 if ($Lan -and $Loopback) { throw 'Choose either -Lan or -Loopback.' }
 if ($ResetSandbox -and -not $Sandbox) { throw '-ResetSandbox requires -Sandbox; the main vault is never discarded.' }
@@ -41,6 +47,73 @@ function Write-ConnectionAddresses([int]$ListenPort, [bool]$LanEnabled) {
     Write-Host 'Servidor restrito a este PC. Conexao direta do celular pela rede local desativada.'
   }
   Write-Host "SOMENTE NO NAVEGADOR DESTE PC: http://127.0.0.1:$ListenPort"
+}
+
+function Find-NineRouterExecutable {
+  $cmd = Get-Command '9router.cmd' -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source) { return $cmd.Source }
+
+  $appDataCmd = Join-Path $env:APPDATA 'npm\9router.cmd'
+  if (Test-Path -LiteralPath $appDataCmd) { return $appDataCmd }
+
+  $plainCmd = Get-Command '9router' -ErrorAction SilentlyContinue
+  if ($plainCmd -and $plainCmd.Source -and $plainCmd.Source -notlike '*.ps1') { return $plainCmd.Source }
+
+  $cliJs = Join-Path $env:APPDATA 'npm\node_modules\9router\cli.js'
+  if (Test-Path -LiteralPath $cliJs) { return $cliJs }
+
+  return $null
+}
+
+function Start-NineRouter {
+  param(
+    [int]$TargetPort = 20128,
+    [int]$TimeoutSeconds = 25
+  )
+
+  $existing = Get-NetTCPConnection -State Listen -LocalPort $TargetPort -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($existing) {
+    Write-Host "9Router ja esta ativo na porta $TargetPort." -ForegroundColor Green
+    return $existing.OwningProcess
+  }
+
+  Write-Host "Iniciando o 9Router na porta $TargetPort..." -ForegroundColor Cyan
+  $exe = Find-NineRouterExecutable
+  if (-not $exe) {
+    throw "Executavel do 9Router (9router.cmd) nao foi encontrado no PATH nem em %APPDATA%\npm."
+  }
+
+  $routerArgs = @('--port', "$TargetPort", '--tray', '--no-browser', '--skip-update')
+  $proc = $null
+  if ($exe.EndsWith('.js', [StringComparison]::OrdinalIgnoreCase)) {
+    $nodeExe = (Get-Command 'node' -ErrorAction SilentlyContinue).Source
+    if (-not $nodeExe) { $nodeExe = 'node' }
+    $procArgs = @($exe) + $routerArgs
+    $proc = Start-Process -FilePath $nodeExe -ArgumentList $procArgs -WindowStyle Hidden -PassThru
+  } elseif ($exe.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase) -or $exe.EndsWith('.bat', [StringComparison]::OrdinalIgnoreCase)) {
+    $cmdLineArgs = @('/c', "`"$exe`"") + $routerArgs
+    $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdLineArgs -WindowStyle Hidden -PassThru
+  } else {
+    $proc = Start-Process -FilePath $exe -ArgumentList $routerArgs -WindowStyle Hidden -PassThru
+  }
+
+  $deadline = [Diagnostics.Stopwatch]::StartNew()
+  $ready = $false
+  while ($deadline.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+    Start-Sleep -Milliseconds 500
+    if (Get-NetTCPConnection -State Listen -LocalPort $TargetPort -ErrorAction SilentlyContinue) {
+      $ready = $true
+      break
+    }
+  }
+
+  if ($ready) {
+    Write-Host "9Router iniciado com sucesso na porta $TargetPort." -ForegroundColor Green
+  } else {
+    Write-Host "Aviso: Processo do 9Router iniciado (PID $($proc.Id)), mas a porta $TargetPort ainda nao respondeu." -ForegroundColor Yellow
+  }
+
+  if ($proc) { return $proc.Id } else { return $null }
 }
 
 # The executable runs from a per-build staging copy so `cargo build` can replace the original while it runs.
@@ -138,6 +211,10 @@ $env:MC_LOCAL_MODELS_ENABLED = if ($LocalModels -or -not $Sandbox) { '1' } else 
 $env:LOCAL_CHAT_PORT = if ($Sandbox) { '20581' } else { '20481' }
 $env:LOCAL_EMBED_PORT = if ($Sandbox) { '20582' } else { '20482' }
 Remove-Item Env:MC_TEST_LOCAL_URL -ErrorAction SilentlyContinue
+
+if ($With9Router) {
+  Start-NineRouter -TargetPort $NineRouterPort
+}
 
 Write-Host "ModularChat on port $Port. Vault: $vault"
 Write-ConnectionAddresses -ListenPort $Port -LanEnabled ($env:HOST -eq '0.0.0.0')

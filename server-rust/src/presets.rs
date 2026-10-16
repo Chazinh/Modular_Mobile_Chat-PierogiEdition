@@ -325,14 +325,24 @@ pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
         body,
         controls,
         capacity: json!({"contextWindow":rv["contextWindow"].as_u64().unwrap_or(preset["contextWindow"].as_u64().unwrap_or(128000)),"maxOutput":max_output,"source":if rv["maxOutput"].is_number(){json!("validated")}else{preset["capacitySource"].clone()}}),
-        system_mode: if conv["settings"]["rulesPlacement"] == "first_turn"
-            || rv["systemRole"] == "dropped"
-            || rv.is_null() && route.starts_with("cbai/")
-        {
-            "user_prefix"
-        } else {
-            "system"
-        }
-        .into(),
+        system_mode: {
+            let r = route.to_lowercase();
+            let is_cbai_or_deepseek = r.starts_with("cbai/")
+                || r.contains("cbai")
+                || r.contains("codebuddy")
+                || r.contains("deepseek")
+                || preset["family"] == "deepseek"
+                || (preset["family"] == "glm" && r.contains("cbai"));
+            if conv["settings"]["rulesPlacement"] == "first_turn"
+                || rv["systemRole"] == "dropped"
+                || preset["systemMode"] == "user_prefix"
+                || is_cbai_or_deepseek
+            {
+                "user_prefix"
+            } else {
+                "system"
+            }
+            .into()
+        },
     }
 }

@@ -559,19 +559,28 @@ impl Manager {
                     .map_err(|_| Error::new(502, "Requisição ao provedor falhou; nenhum destino alternativo foi enviado.").extra("code", "PROVIDER_UNAVAILABLE"))?,
             };
             if !response.status().is_success() {
-                warn!(generation = %g.id, http = response.status().as_u16(), "provedor respondeu com erro");
-                return Err(Error::new(
-                    502,
-                    format!(
-                        "Provedor {} HTTP {}",
-                        match &backend {
-                            crate::providers::SelectedBackend::Cloud { provider, .. } =>
-                                provider.id.as_str(),
-                            _ => "mobile-local",
-                        },
-                        response.status()
-                    ),
-                ));
+                let status = response.status();
+                let body_text = response.text().await.unwrap_or_default();
+                warn!(generation = %g.id, http = status.as_u16(), body = %body_text, "provedor respondeu com erro");
+                let detail = serde_json::from_str::<Value>(&body_text)
+                    .ok()
+                    .and_then(|v| {
+                        v["error"]["message"].as_str()
+                            .or_else(|| v["message"].as_str())
+                            .or_else(|| v["msg"].as_str())
+                            .or_else(|| v["displayTips"]["en"].as_str())
+                            .map(str::to_owned)
+                    });
+                let provider_name = match &backend {
+                    crate::providers::SelectedBackend::Cloud { provider, .. } =>
+                        provider.id.as_str(),
+                    _ => "mobile-local",
+                };
+                let err_msg = match detail {
+                    Some(msg) => format!("Provedor {provider_name} HTTP {status}: {msg}"),
+                    None => format!("Provedor {provider_name} HTTP {status}"),
+                };
+                return Err(Error::new(502, err_msg).extra("body", json!(body_text)));
             }
             let mut stream = response.bytes_stream();
             let mut buffer = Vec::<u8>::new();

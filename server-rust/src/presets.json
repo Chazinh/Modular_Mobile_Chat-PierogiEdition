@@ -21,7 +21,8 @@
     "providerReserve": 16384,
     "contextWindow": 1000000,
     "maxOutput": 32768,
-    "capacitySource": "assumed"
+    "capacitySource": "assumed",
+    "systemMode": "user_prefix"
   },
   {
     "id": "claude-opus-5-5",
@@ -203,6 +204,7 @@
     "contextWindow": 1000000,
     "maxOutput": 131072,
     "capacitySource": "documented",
+    "systemMode": "user_prefix",
     "thinkingOffShape": "omit"
   },
   {

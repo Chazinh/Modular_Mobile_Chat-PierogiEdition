@@ -5,6 +5,25 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.22: CodeBuddy HTTP 400 Channel Verification Fix, Memory Deadlock Resolution, and 9Router Automation — 2026-10-16
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Upstream CodeBuddy / DeepSeek HTTP 400 Fix (`presets.json`, `presets.rs`, `generation.rs`)**:
+  - Enforced `user_prefix` mode for DeepSeek, CBAI and CodeBuddy routes, eliminating rejected `role: "system"` payload envelopes that triggered upstream channel verification error `11128 ("request illegal")`.
+  - Added full response text inspection and JSON parsing for upstream provider errors in `generation.rs`, surfacing clear diagnostic messages instead of masking them behind generic HTTP status codes.
+
+- **Memory Background Queue Deadlock & Thrashing Resolution (`jobs.rs`, `store/jobs.rs`, `local.rs`)**:
+  - Pre-checked `backend.available()` before claiming jobs in `cycle_work`, preventing unavailable memory runtimes from thrashing tasks in and out of the `running` state.
+  - Reset error states on job claim (`error = NULL`) and added a deferral ceiling (`attempts >= 5`) in `defer_job` to permanently prevent infinite retry loops.
+  - Added automatic fallback to `RoleplayChat-local` in `local.rs` when `ModularChat-local` is not present, ensuring local GGUF models (`Qwen3.5-9B`, `embeddinggemma`) and `llama-server.exe` are discovered immediately.
+  - Adapted `MemoryBackend::Api` to map `role: "system"` into compliant `user`/`assistant` instruction turns for external memory model APIs.
+
+- **Automated 9Router Launcher & Dedicated Regression Test Suite (`start-server.ps1`, `start-server.bat`, `regression_send_and_memory.rs`)**:
+  - Integrated `-With9Router` parameter and interactive launcher menu in `start-server.ps1` and `start-server.bat` to detect and spin up the 9Router gateway on port 20128 automatically.
+  - Added dedicated regression test suite (`server-rust/tests/regression_send_and_memory.rs`) validating system-free payload emission, CodeBuddy route resolution, and memory claim safeguards.
+
+
 ### ModularChat 3.1.21: Model Providers, Crash-Free Error Handling, and Vault Baseline Recovery — 2026-10-16
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

@@ -201,6 +201,9 @@ impl Runner {
                 compact: false,
             }
         };
+        if !backend.available() {
+            return Ok(false);
+        }
         let job = self.store.call(Request::ClaimJob).await?;
         if job.is_null() {
             return tokio::select! {

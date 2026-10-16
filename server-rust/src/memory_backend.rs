@@ -189,7 +189,20 @@ impl MemoryBackend {
                         "Entrada de memória excedeu o orçamento configurado; retry reduzido necessário.",
                     ));
                 }
-                let body = json!({"messages":messages,"stream":false,"temperature":temperature,"max_tokens":reserve,
+                let adapted_messages: Vec<Value> = messages
+                    .into_iter()
+                    .flat_map(|m| {
+                        if m["role"] == "system" {
+                            vec![
+                                json!({"role":"user","content":format!("[INSTRUÇÕES DO SISTEMA]\n{}", m["content"].as_str().unwrap_or_default())}),
+                                json!({"role":"assistant","content":"Entendido. Seguirei estritamente as instruções fornecidas."}),
+                            ]
+                        } else {
+                            vec![m]
+                        }
+                    })
+                    .collect();
+                let body = json!({"messages":adapted_messages,"stream":false,"temperature":temperature,"max_tokens":reserve,
                     "response_format":{"type":"json_schema","json_schema":{"name":"memory","strict":true,"schema":schema}}});
                 // No retry or route fallback here: this POST may have been accepted.
                 let response = provider
@@ -210,9 +223,11 @@ impl MemoryBackend {
                     return Err(unavailable());
                 }
                 if !status.is_success() {
+                    let err_text = response.text().await.unwrap_or_default();
+                    tracing::warn!(status = status.as_u16(), body = %err_text, "API de memória recusou requisição");
                     return Err(Error::new(
                         502,
-                        "API de memória recusou o schema ou a entrada.",
+                        format!("API de memória recusou o schema ou a entrada (HTTP {status}): {err_text}"),
                     ));
                 }
                 let mut stream = response.bytes_stream();

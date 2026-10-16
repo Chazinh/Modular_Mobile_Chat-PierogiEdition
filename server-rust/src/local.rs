@@ -500,15 +500,19 @@ impl LocalModels {
                 embed_digest,
             });
         }
-        let home = env_path(
-            "MC_LOCAL_HOME",
-            PathBuf::from(
-                std::env::var_os("USERPROFILE")
-                    .or_else(|| std::env::var_os("HOME"))
-                    .unwrap_or_default(),
-            )
-            .join("ModularChat-local"),
+        let base_profile = PathBuf::from(
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .unwrap_or_default(),
         );
+        let default_home = if base_profile.join("ModularChat-local").exists() {
+            base_profile.join("ModularChat-local")
+        } else if base_profile.join("RoleplayChat-local").exists() {
+            base_profile.join("RoleplayChat-local")
+        } else {
+            base_profile.join("ModularChat-local")
+        };
+        let home = env_path("MC_LOCAL_HOME", default_home);
         let exe = env_path("LLAMA_SERVER", home.join("llama-cuda/llama-server.exe"));
         // Memory model: Qwen3.5-9B (Q4_K_M, ~5.3 GiB) is markedly better at structured extraction than the 4B. It does not
         // fit entirely in a 6 GiB GPU next to the desktop, so `--fit` keeps as many layers as fit in VRAM and the rest in RAM.

@@ -150,7 +150,7 @@ impl Database {
             return Ok(Value::Null);
         }
         self.exec(
-            "UPDATE jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=?",
+            "UPDATE jobs SET status='running',attempts=attempts+1,error=NULL,updated_at=? WHERE id=?",
             &[json!(now()), r["id"].clone()],
         )?;
         self.exec(
@@ -179,9 +179,10 @@ impl Database {
     }
     /// The claim already counted an attempt; an unavailable model is not the input's fault, so the attempt is
     /// refunded. Otherwise each wait for the model to load pushed the job to the reduced/minimal context and to "failed".
+    /// A ceiling prevents infinite deferral loops when a failure persists indefinitely.
     pub(super) fn defer_job(&self, jid: &str, error: &str) -> Result<Value> {
         self.exec(
-            "UPDATE jobs SET status='pending',attempts=MAX(attempts-1,0),error=?,updated_at=? WHERE id=? AND status='running'",
+            "UPDATE jobs SET status=CASE WHEN attempts >= 5 THEN 'failed' ELSE 'pending' END,attempts=CASE WHEN attempts >= 5 THEN attempts ELSE MAX(attempts-1,0) END,error=?,updated_at=? WHERE id=? AND status='running'",
             &[
                 json!(crate::rules::clip(error, 500)),
                 json!(now()),
