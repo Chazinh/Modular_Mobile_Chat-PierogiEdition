@@ -5,7 +5,7 @@ implemented features.
 
 ## Released
 
-### ModularChat 2.1: LAN Connectivity, Paired Devices Management, and Performance & Security Consolidation — 2026-10-16
+### ModularChat 2.2: LAN Connectivity, Real-Time Device Pairing, and Sync Conflict Recovery — 2026-10-16
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
 
@@ -19,6 +19,10 @@ _Development assisted by Artificial Intelligence (multi-agent collaboration)._
   - Extracted shared `PairedDevices.jsx` component used across both `HomeDrawer` and `GlobalSettings` with 44px touch targets, optimistic immediate deletion, live device counter updates, and touch debounce.
   - Added backend device revocation events (`devices` SSE broadcast in `server-rust/src/api.rs`) ensuring synchronized device list state across active sessions.
   - Robust HTTP 409 conflict recovery (`PUBLIC_SETTINGS_BATCH`) in `client/src/mobile-sync.js`, safely handling divergent batches, known-baseline prioritization, and idempotent receipts.
+
+### ModularChat 2.1: Performance & Security Consolidation, Context Optimization, and Bounded HTTP — 2026-10-16
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
 
 - **Context, Memory & Extraction Optimizations**:
   - Excluded redundant raw messages already represented by recent or pending turn pairs (`context.rs`), preserving cross-speaker turn provenance.
