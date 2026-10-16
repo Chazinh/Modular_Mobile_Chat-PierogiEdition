@@ -9,6 +9,10 @@ implemented features.
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
 
+> [!NOTE]
+> **Version Alignment Transition (`3.1.14`)**: Starting with this release, git tags, release headers, and commits transition from the arbitrary `2.x` numbering scheme to align strictly 1:1 with the internal mobile application package version (`3.1.14`, build 65). This guarantees direct traceability between the version reported inside the Android client UI ("About / Version") and repository tags/releases.
+
+
 - **Public Proxy Pairing Bootstrap (`Caddyfile.template`)**:
   - Configured `@pareamento_publico` route in Caddy reverse proxy allowing `/api/health`, `/api/pair`, and `/api/pair/info` to reach the backend service without requiring a pre-existing Bearer authentication token.
   - Resolves "Aparelho não pareado" when bootstrapping connection from mobile over public domains or reverse proxies.
