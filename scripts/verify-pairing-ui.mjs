@@ -49,10 +49,11 @@ if(setup){
   window.Capacitor={isNativePlatform:()=>true,isPluginAvailable:()=>false};
   localStorage.setItem('mc.connection',JSON.stringify({local:'http://127.0.0.1:3000',remote:''}));
   const send=window.fetch.bind(window);window.__probeCalls=[];window.__connectCalls=[];
-  window.fetch=(url,options)=>{window.__probeCalls.push({url,method:options.method});return send('/__pc-health',options)};
+  window.fetch=(url,options)=>{if(url==='http://192.168.1.0:3000/api/health')return Promise.reject(new TypeError('Failed to fetch'));window.__probeCalls.push({url,method:options.method});return send('/__pc-health',options)};
   api.health=async()=>{window.__connectCalls.push('health');return {ok:true}};
   api.pair=async()=>{window.__connectCalls.push('pair');return {}};
-  api.switchToPc=async()=>{window.__connectCalls.push('switch');return {kind:'pc'}};
+  let syncAttempts=0;
+  api.switchToPc=async()=>{window.__connectCalls.push('switch');if(++syncAttempts===1)throw Object.assign(Error('job ativo'),{code:'BUSY'});return {kind:'pc'}};
 }
 const Surface=setup?ServerSetup:drawer?HomeDrawer:GlobalSettings;
 createRoot(document.getElementById('root')).render(<React.StrictMode><ConfirmProvider><Surface fontSize={16} onFontSize={()=>{}} onClose={()=>{}} onChanged={()=>{}} onResetServer={()=>{}} onDone={()=>{window.__connectCalls?.push('done')}}/></ConfirmProvider></React.StrictMode>);
@@ -198,6 +199,10 @@ try {
   await evaluate(`${connectButton}.click()`);
   await waitFor(`document.querySelector('[role="alert"]')?.textContent.includes('próprio celular')`);
   assert.deepEqual(await evaluate('window.__connectCalls'),[],'Conectar rejects loopback before health, pairing or sync');
+  await setInput(lanLabel,'http://192.168.1.0:3000');
+  await evaluate(`${testButton}.click()`);
+  await waitFor(`document.querySelector('[role="status"]')?.textContent.includes('Não foi possível acessar http://192.168.1.0:3000')`);
+  assert.match(await evaluate(`document.querySelector('[role="status"]').textContent`),/todos os números do IP/,'Failed probe identifies the exact address and guides IP correction');
   await setInput(lanLabel,'http://192.168.1.100:3000');
   await evaluate(`${testButton}.click()`);
   await waitFor(`document.querySelector('[role="status"]')?.textContent.includes('confirmada')`);
@@ -208,8 +213,13 @@ try {
   await waitFor(`document.querySelector('[role="status"]')?.textContent.includes('confirmada')`);
   assert.equal(await evaluate('window.__probeCalls.at(-1).url'),'https://chat.example.com/api/health');
   await evaluate(`${connectButton}.click()`);
+  await waitFor(`[...document.querySelectorAll('[role="status"]')].some(node=>node.textContent.includes('Pareamento salvo'))`);
+  assert.deepEqual(await evaluate('window.__connectCalls'),['health','pair','switch'],'BUSY preserves pairing and waits before retrying sync');
+  assert.equal(await evaluate(`document.querySelector('input[aria-label=${JSON.stringify(remoteLabel)}]').disabled`),true,'Endpoint cannot change during pending sync');
+  // The production wait is ten seconds. Let the actual UI timer perform its retry.
+  await pause(10200);
   await waitFor(`window.__connectCalls.includes('done')`);
-  assert.deepEqual(await evaluate('window.__connectCalls'),['health','pair','switch','done'],'Connection completes only after pairing and PC promotion');
+  assert.deepEqual(await evaluate('window.__connectCalls'),['health','pair','switch','switch','done'],'BUSY retries sync without replaying the consumed pairing code');
   assert.deepEqual(runtimeErrors,[]);
   console.log('PASS ServerSetup: real Testar/Conectar form, loopback feedback before requests, LAN health, remote-only test and pairing/promotion order.');
 } finally {

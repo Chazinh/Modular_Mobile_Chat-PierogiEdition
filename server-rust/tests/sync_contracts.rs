@@ -590,6 +590,62 @@ async fn deletion_concurrent_with_offline_turn_conflicts_preserving_mobile_turn(
 }
 
 #[tokio::test]
+async fn reextracting_relationship_replacement_keeps_prior_relation_syncable() {
+    let pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let c = pc.create().await;
+    let first = turn(&pc, &c, "Primeira fonte", &id()).await;
+    let extract = |generation: &Value, relationships: Value| Request::ApplyExtraction(json!({
+        "convId":c,"interactionId":generation["interactionId"],"versionId":generation["versionId"],
+        "extraction":{"summary":"fixture","facts":[],"cast":[],"relationships":relationships,"openThreads":[],"resolvedThreads":[]}
+    }));
+    pc.store.call(extract(&first, json!([{"a":"Mira","b":"Alex","description":"São amigos próximos desde crianças."}]))).await.unwrap();
+    let second = turn(&pc, &c, "Segunda fonte", &id()).await;
+    pc.store.call(extract(&second, json!([{"a":"Mira","b":"Alex","description":"Tornaram-se adversários por uma disputa política."}]))).await.unwrap();
+    let before = offer(&pc, &phone.server, &c).await;
+    assert_eq!(before["snapshot"]["relationships"].as_array().unwrap().len(), 2);
+    assert!(before["snapshot"]["relationships"].as_array().unwrap().iter().any(|r| !r["superseded_by"].is_null()));
+    pc.store.call(extract(&second, json!([]))).await.unwrap();
+    let snapshot = mirror(&pc, &phone, &c).await;
+    let rows = snapshot["snapshot"]["relationships"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["source_interaction_id"], first["interactionId"]);
+    assert_eq!(rows[0]["superseded_by"], Value::Null);
+    assert_eq!(rows[0]["status"], "current");
+    assert_eq!(offer(&phone, &pc.server, &c).await["snapshot"], snapshot["snapshot"]);
+    pc.close().await; phone.close().await;
+}
+
+#[tokio::test]
+async fn legacy_dangling_relationship_is_canonical_on_wire_without_erasing_vault_data() {
+    let mut pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let c = pc.create().await;
+    pc.close().await;
+    let missing = id(); let relation = id();
+    {
+        let (vault, db) = modularchat_server::privacy::Vault::open(pc.dir.path()).unwrap();
+        db.execute("INSERT INTO relationships(id,conv_id,a_key,a_name,b_key,b_name,description,status,superseded_by,created_at) VALUES(?1,?2,'mira','Mira','alex','Alex','Relação preservada','historical',?3,?4)", rusqlite::params![relation,c,missing,modularchat_server::now()]).unwrap();
+        vault.save(&db).unwrap();
+    }
+    let audit = Store::audit_sync_snapshot(&pc.dir.path().join("modularchat.db.vault")).unwrap();
+    assert_eq!(audit["ok"], true);
+    pc.store = Store::open_encrypted(pc.dir.path()).unwrap();
+    let snapshot = mirror(&pc, &phone, &c).await;
+    assert_eq!(snapshot["snapshot"]["relationships"][0]["id"], relation);
+    assert_eq!(snapshot["snapshot"]["relationships"][0]["description"], "Relação preservada");
+    assert_eq!(snapshot["snapshot"]["relationships"][0]["superseded_by"], Value::Null);
+    let source = modularchat_server::privacy::read_snapshot(&pc.dir.path().join("modularchat.db.vault")).unwrap();
+    assert_eq!(source.query_row("SELECT superseded_by FROM relationships WHERE id=?", [&relation], |row| row.get::<_,String>(0)).unwrap(), missing);
+    let mut malformed = snapshot.clone();
+    malformed["snapshot"]["relationships"][0]["superseded_by"] = json!(id()); rehash(&mut malformed);
+    let error = phone.delta(batch(&pc.server, vec![push(&malformed,snapshot["hash"].clone())])).await.unwrap_err();
+    assert_eq!(error.extra["code"], "INVALID_SYNC");
+    assert_eq!(error.extra["targetTable"], "relationships");
+    pc.close().await; phone.close().await;
+}
+
+#[tokio::test]
 async fn malformed_references_tables_columns_provenance_and_private_json_are_rejected() {
     let pc = Fixture::new().await;
     let phone = Fixture::new().await;
@@ -1118,6 +1174,25 @@ async fn http_state() -> (tempfile::TempDir, AppState, String) {
         .await
         .unwrap();
     (dir, state, paired["token"].as_str().unwrap().into())
+}
+
+#[tokio::test]
+async fn http_sync_pauses_only_background_memory_after_authentication() {
+    let (_dir, state, token) = http_state().await;
+    let router = api::router(state.clone());
+    assert_eq!(state.runner.state().await["pausedForSync"], false);
+    assert_eq!(http(router.clone(), "GET", "/api/sync/status", "".into(), None).await.0, 401);
+    assert_eq!(state.runner.state().await["pausedForSync"], false);
+    assert_eq!(http(router.clone(), "GET", "/api/sync/status?observe=1", "".into(), Some(&token)).await.0, 200);
+    assert_eq!(state.runner.state().await["pausedForSync"], false, "periodic observation must let background inference finish");
+    let conv = state.store.call(Request::CreateConversation(json!({"routeId":"cbai/glm-5.2","presetId":"glm-52"}))).await.unwrap();
+    let generation = state.store.call(Request::BeginTurn(serde_json::from_value::<TurnRequest>(json!({"convId":conv["id"],"mode":"send","content":"fixture","opId":"sync-priority"})).unwrap())).await.unwrap();
+    let status = http(router.clone(), "GET", "/api/sync/status", "".into(), Some(&token)).await;
+    assert_eq!(status.0, 200);
+    assert_eq!(state.runner.state().await["pausedForSync"], true, "adjacent snapshot requests share a short grace period");
+    assert!(status.1["manifests"].as_array().unwrap().iter().any(|entry| entry["convId"] == conv["id"] && entry["busy"] == true), "user generation must still block unsafe synchronization");
+    state.store.call(Request::FinishGeneration(serde_json::from_value::<FinishRequest>(json!({"generationId":generation["generationId"],"status":"interrupted","text":""})).unwrap())).await.unwrap();
+    state.shutdown().await;
 }
 
 #[tokio::test]

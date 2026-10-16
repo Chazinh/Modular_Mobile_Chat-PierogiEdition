@@ -258,6 +258,28 @@ test('auto: BUSY aguarda 10s para novo sync mesmo com writes locais consecutivos
   assert.equal(syncs, 2);
 });
 
+test('PC ativo: checagem periódica observa memória sem interromper inferência nem desconectar', async () => {
+  let now = 0, calls = 0; const policies = [];
+  const f = autoFixture({ now: () => now, sync: async options => {
+    policies.push(options.pauseMemory);
+    if (++calls > 1) throw Object.assign(Error('memória ativa'), { code: 'BUSY' });
+    return { converged: true };
+  } });
+  f.connection.configure({ local });
+  assert.equal((await f.connection.resolveTarget()).kind, 'pc');
+  now = 11000;
+  assert.equal((await f.connection.resolveTarget()).kind, 'pc');
+  assert.equal(f.statuses.at(-1).code, 'BUSY');
+  now = 11500;
+  const write = await f.connection.acquireTarget({ write: true });
+  assert.equal(write.kind, 'pc'); write.release();
+  assert.equal(calls, 2, 'no new synchronization during the retry interval');
+  now = 22000;
+  assert.equal((await f.connection.resolveTarget()).kind, 'pc');
+  assert.deepEqual(policies, [true, false, false]);
+  assert.equal(f.lifecycle.includes('activate'), false, 'the phone must not take over from a healthy busy PC');
+});
+
 test('auto: timer foreground 10s, visibility/offline/resume e teardown StrictMode', async () => {
   let now = 0, seq = 0, syncs = 0;
   const jobs = new Map();

@@ -399,6 +399,17 @@ pub struct Store {
     pub encrypted: bool,
 }
 impl Store {
+    /// Validate the wire snapshots of an encrypted vault in memory. No plaintext
+    /// database, conversation content or credentials are written or returned.
+    pub fn audit_sync_snapshot(path: &Path) -> Result<Value> {
+        let database = Database {
+            db: crate::privacy::read_snapshot(path)?,
+            dir: path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
+            timeline_cache: std::cell::RefCell::default(), vault: None, deadline: None,
+            changing: 0, immediate: 0, pruned_at: Instant::now(),
+        };
+        Ok(database.sync_audit())
+    }
     pub fn open(dir: &Path) -> Result<Self> {
         Self::open_with_limits(dir, 64, Duration::from_secs(30))
     }

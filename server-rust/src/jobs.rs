@@ -15,6 +15,26 @@ struct State {
     running: bool,
     last_error: Option<String>,
 }
+
+/// Keep memory paused only while a sync request owns the guard. Concurrent
+/// requests share the pause; returning an HTTP error or cancelling also releases it.
+pub struct SyncPauseGuard {
+    pause: watch::Sender<tokio::time::Instant>,
+    users: Arc<std::sync::Mutex<usize>>,
+    wake: Arc<Notify>,
+}
+impl Drop for SyncPauseGuard {
+    fn drop(&mut self) {
+        let mut users = self.users.lock().unwrap();
+        *users -= 1;
+        if *users == 0 {
+            // Adjacent snapshot requests share one quiet burst. This ends well
+            // before the next periodic connection check.
+            self.pause.send_replace(tokio::time::Instant::now() + Duration::from_secs(1));
+            self.wake.notify_one();
+        }
+    }
+}
 /// Parsed once; every reviewed chunk reuses it.
 fn review_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
@@ -42,6 +62,9 @@ pub struct Runner {
     providers: RuntimeProviders,
     policy: PolicySnapshot,
     client: reqwest::Client,
+    sync_pause: watch::Sender<tokio::time::Instant>,
+    cycle_gate: Arc<Mutex<()>>,
+    sync_users: Arc<std::sync::Mutex<usize>>,
 }
 impl Runner {
     pub fn new(
@@ -52,6 +75,7 @@ impl Runner {
         review: bool,
     ) -> Self {
         let (stop, _) = watch::channel(false);
+        let (sync_pause, _) = watch::channel(tokio::time::Instant::now());
         let policy = Arc::new(std::sync::RwLock::new(MemoryPolicy {
             mode: if local.is_mobile() {
                 MemoryMode::Deferred
@@ -71,6 +95,9 @@ impl Runner {
             providers: RuntimeProviders::default(),
             policy,
             client: reqwest::Client::new(),
+            sync_pause,
+            cycle_gate: Arc::default(),
+            sync_users: Arc::default(),
         }
     }
     pub fn set_backends(
@@ -85,7 +112,8 @@ impl Runner {
     }
     pub async fn state(&self) -> Value {
         let s = self.state.lock().await;
-        json!({"running":s.running,"lastError":s.last_error,"policy":self.policy.read().unwrap().clone(),"concurrency":1})
+        json!({"running":s.running,"lastError":s.last_error,"policy":self.policy.read().unwrap().clone(),"concurrency":1,
+            "pausedForSync":*self.sync_pause.borrow() > tokio::time::Instant::now()})
     }
     pub fn start(&self) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
@@ -94,9 +122,19 @@ impl Runner {
                 this.state.lock().await.last_error = Some(e.message);
             }
             let mut stop = this.stop.subscribe();
+            let mut pause = this.sync_pause.subscribe();
             let mut timer = tokio::time::interval(Duration::from_secs(30));
             loop {
-                tokio::select! {_=stop.wait_for(|s|*s)=>break,_=this.wake.notified()=>{},_=timer.tick()=>{}}
+                let until = *pause.borrow_and_update();
+                if until > tokio::time::Instant::now() {
+                    tokio::select! {
+                        _=stop.wait_for(|s|*s)=>break,
+                        _=pause.changed()=>{},
+                        _=tokio::time::sleep_until(until)=>this.wake.notify_one(),
+                    }
+                    continue;
+                }
+                tokio::select! {_=stop.wait_for(|s|*s)=>break,_=this.wake.notified()=>{},_=timer.tick()=>{},_=pause.changed()=>continue}
                 this.state.lock().await.running = true;
                 loop {
                     if *stop.borrow() {
@@ -124,7 +162,31 @@ impl Runner {
     pub fn kick(&self) {
         self.wake.notify_one();
     }
+    /// Synchronization has priority over derived memory. Drop only the background
+    /// inference future, refund/requeue its job, and wait for Store writes to settle.
+    /// The short renewable lease expires even if the client disconnects.
+    pub async fn pause_for_sync(&self) -> SyncPauseGuard {
+        self.pause_for_sync_for(Duration::from_secs(30)).await
+    }
+    async fn pause_for_sync_for(&self, duration: Duration) -> SyncPauseGuard {
+        {
+            let mut users = self.sync_users.lock().unwrap();
+            *users += 1;
+            self.sync_pause.send_replace(tokio::time::Instant::now() + duration);
+        }
+        // Construct before awaiting the active cycle so cancellation cannot leak a pause.
+        let guard = SyncPauseGuard { pause: self.sync_pause.clone(), users: self.sync_users.clone(), wake: self.wake.clone() };
+        self.wake.notify_one();
+        let _gate = self.cycle_gate.lock().await;
+        guard
+    }
     async fn cycle(&self) -> Result<bool> {
+        let _gate = self.cycle_gate.lock().await;
+        let mut pause = self.sync_pause.subscribe();
+        if *pause.borrow() > tokio::time::Instant::now() { return Ok(false); }
+        self.cycle_work(&mut pause).await
+    }
+    async fn cycle_work(&self, pause: &mut watch::Receiver<tokio::time::Instant>) -> Result<bool> {
         let backend = if self.local.is_mobile() {
             let policy = self.policy.read().unwrap().clone();
             let Some(backend) =
@@ -141,9 +203,20 @@ impl Runner {
         };
         let job = self.store.call(Request::ClaimJob).await?;
         if job.is_null() {
-            return Ok(self.embeddings().await? > 0);
+            return tokio::select! {
+                biased;
+                _=pause.changed()=>Ok(false),
+                result=self.embeddings()=>Ok(result? > 0),
+            };
         }
-        let outcome = self.handle(&job, &backend).await;
+        let outcome = tokio::select! {
+            biased;
+            _=pause.changed()=> {
+                self.store.call(Request::DeferJob { id: s(&job,"id"), error: "Pausado temporariamente para sincronização.".into() }).await?;
+                return Ok(false);
+            },
+            outcome=self.handle(&job, &backend)=>outcome,
+        };
         let (status, error, continue_work) = match outcome {
             Ok(status) => (status, None, true),
             Err(e)
@@ -200,7 +273,13 @@ impl Runner {
                 .await;
         }
         // Embeddings receive a share even with a continuous backlog of turns.
-        if let Err(e) = self.embeddings().await {
+        if *pause.borrow_and_update() > tokio::time::Instant::now() { return Ok(false); }
+        let embeddings = tokio::select! {
+            biased;
+            _=pause.changed()=>return Ok(false),
+            result=self.embeddings()=>result,
+        };
+        if let Err(e) = embeddings {
             self.state.lock().await.last_error = Some(e.message);
         }
         Ok(continue_work)
@@ -655,6 +734,101 @@ mod mobile_backend_tests {
     use super::*;
     use crate::{config::Config, providers::MobileProviders};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn sync_pause_is_shared_and_cancellation_cannot_leave_memory_paused() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = tempfile::tempdir().unwrap();
+        let config = Config::for_android(dir.path(), native.path()).unwrap();
+        let store = Store::open_for_config(&config).unwrap();
+        let local = LocalModels::new(&config, reqwest::Client::new()).unwrap();
+        let (events, _) = broadcast::channel(8);
+        let runner = Runner::new(store.clone(), local, Arc::new(Notify::new()), events, false);
+        let first = runner.pause_for_sync().await;
+        let second = runner.pause_for_sync().await;
+        drop(first);
+        assert_eq!(runner.state().await["pausedForSync"], true, "another sync request still owns the pause");
+        drop(second);
+        assert_eq!(*runner.sync_users.lock().unwrap(), 0);
+        let gate = runner.cycle_gate.lock().await;
+        let waiting_runner = runner.clone();
+        let waiting = tokio::spawn(async move { waiting_runner.pause_for_sync().await });
+        tokio::task::yield_now().await;
+        assert_eq!(runner.state().await["pausedForSync"], true);
+        waiting.abort(); let _ = waiting.await;
+        assert_eq!(*runner.sync_users.lock().unwrap(), 0, "cancelled gate acquisition must release its pause");
+        drop(gate);
+        store.call(Request::Close).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn synchronization_preempts_memory_and_resumes_same_job_without_spending_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = tempfile::tempdir().unwrap();
+        let config = Config::for_android(dir.path(), native.path()).unwrap();
+        let store = Store::open_for_config(&config).unwrap();
+        let client = reqwest::Client::new();
+        let local = LocalModels::new(&config, client.clone()).unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let app_started = started.clone();
+        let app_release = release.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
+            let started = app_started.clone();
+            let release = app_release.clone();
+            async move {
+                if request.uri().path().ends_with("/models") {
+                    return axum::Json(json!({"data":[{"id":"exact"}]}));
+                }
+                started.notify_one();
+                release.notified().await;
+                axum::Json(json!({}))
+            }
+        });
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let conv = store.call(Request::CreateConversation(json!({"routeId":"cbai/glm-5.2","presetId":"glm-52","prompt":"Uma viajante curiosa."}))).await.unwrap();
+        let job = store.call(Request::EnqueueJob(json!({"convId":conv["id"],"kind":"cast"}))).await.unwrap();
+        let (events, _) = broadcast::channel(8);
+        let mut runner = Runner::new(store.clone(), local.clone(), Arc::new(Notify::new()), events, false);
+        let runtime = RuntimeProviders::new(MobileProviders::parse(&json!({"providers":[{"id":"fixture","baseUrl":url,"models":["exact"],"allowLoopback":true}]})).unwrap().runtime().unwrap());
+        let policy = Arc::new(std::sync::RwLock::new(MemoryPolicy::parse(&json!({"mode":"api","api":{"provider":"fixture","model":"exact","historyConsent":true}})).unwrap()));
+        runner.set_backends(runtime, policy, client);
+        local.activate().await.unwrap();
+        let worker = runner.start();
+        tokio::time::timeout(Duration::from_secs(5), started.notified()).await.expect("fixture memory request started");
+        let before = store.call(Request::JobInput(s(&job,"id"))).await.unwrap();
+        assert_eq!(before["job"]["status"], "running");
+        assert_eq!(before["job"]["attempts"], 1);
+        let pause = tokio::time::timeout(Duration::from_secs(1), runner.pause_for_sync_for(Duration::from_millis(300))).await.expect("sync pause must not wait for inference");
+        let paused = store.call(Request::JobInput(s(&job,"id"))).await.unwrap();
+        assert_eq!(paused["job"]["status"], "pending");
+        assert_eq!(paused["job"]["attempts"], 0);
+        let status = store.call(Request::SyncStatus(json!({}))).await.unwrap();
+        assert!(status["manifests"].as_array().unwrap().iter().all(|entry| entry["busy"] == false));
+        assert_eq!(store.call(Request::GetMeta(s(&conv,"id"))).await.unwrap()["prompt"], "Uma viajante curiosa.");
+        tokio::time::timeout(Duration::from_secs(5), started.notified()).await.expect("lease expiry must resume queued job automatically");
+        let resumed = store.call(Request::JobInput(s(&job,"id"))).await.unwrap();
+        assert_eq!(resumed["job"]["id"], job["id"]);
+        assert_eq!(resumed["job"]["status"], "running");
+        assert_eq!(resumed["job"]["attempts"], 1);
+        drop(pause);
+        let paused_again = runner.pause_for_sync().await;
+        assert_eq!(runner.state().await["pausedForSync"], true);
+        let first_page = store.call(Request::SyncStatus(json!({}))).await.unwrap();
+        drop(paused_again);
+        let next_page_pause = runner.pause_for_sync().await;
+        let next_page = store.call(Request::SyncStatus(json!({}))).await.unwrap();
+        assert_eq!(first_page, next_page, "adjacent status/delta requests must not churn job timestamps or snapshot hashes");
+        drop(next_page_pause);
+        tokio::time::timeout(Duration::from_secs(3), started.notified()).await.expect("completed sync must resume after the short request-burst grace period");
+        let _final_pause = runner.pause_for_sync().await;
+        runner.stop();
+        tokio::time::timeout(Duration::from_secs(1), worker).await.unwrap().unwrap();
+        release.notify_waiters(); server.abort();
+        local.stop().await.unwrap(); store.call(Request::Close).await.unwrap();
+    }
 
     #[tokio::test]
     async fn deferred_and_standby_preserve_pending_job_attempts_without_requests() {

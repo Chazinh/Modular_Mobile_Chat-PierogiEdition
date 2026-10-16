@@ -103,6 +103,19 @@ test('sync: LAN HTTP sincroniza cofres; HTTP publico e URLs com caminho são rec
   }
 });
 
+test('sync: observação periódica de PC ocupado não solicita pausa nem envia snapshots', async () => {
+  const f = fixture();
+  f.put('pc', 'memory-in-progress', 'Fonte preservada');
+  await f.sync.synchronize(f.options);
+  f.states.pc.rows.get('memory-in-progress').busy = true;
+  const before = f.calls.length;
+  await assert.rejects(f.sync.synchronize({ ...f.options, pauseMemory: false }), { code: 'BUSY' });
+  const calls = f.calls.slice(before);
+  assert.ok(calls.length > 0);
+  assert.ok(calls.every(call => new URL(call.url).searchParams.get('observe') === '1'));
+  assert.ok(calls.every(call => !call.body), 'an occupied background worker is observed without write/pause requests');
+});
+
 test('sync + conexão: promoção ao PC HTTP aguarda convergência do sincronizador real', async () => {
   const f = fixture({ pcServer: 'http://192.168.1.6:3000' });
   f.put('pc', 'promoted-conversation', 'Promoted after sync');

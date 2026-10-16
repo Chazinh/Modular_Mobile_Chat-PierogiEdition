@@ -302,6 +302,38 @@ pub fn query(query: &HashMap<String, String>, delta: bool) -> Result<Value> {
 }
 
 impl Database {
+    pub(super) fn sync_audit(&self) -> Value {
+        let rows = match self.rows("SELECT id FROM conversations ORDER BY id", &[]) {
+            Ok(rows) => rows,
+            Err(error) => return json!({"ok":false,"error":error.message}),
+        };
+        let mut checks = Vec::new();
+        for row in rows {
+            let c = s(&row, "id");
+            let result = self.sync_snapshot(&c).and_then(|mut snapshot| {
+                // Read-only audit simulates the runtime's memory pause. Never
+                // rewrite the vault or wait for an active inference here.
+                for row in snapshot["jobs"].as_array_mut().into_iter().flatten() {
+                    if row["status"] == "running" { row["status"] = json!("pending"); }
+                }
+                self.sync_validate(&snapshot)
+            });
+            checks.push(match result {
+                Ok(_) => json!({"convId":c,"ok":true}),
+                Err(error) => {
+                    let mut details = error.extra;
+                    if details["targetTable"] == "relationships" {
+                        let target = self.one("SELECT id,conv_id,source_interaction_id,superseded_by FROM relationships WHERE id=?", &[details["referenceId"].clone()]).unwrap_or(Value::Null);
+                        let source = self.one("SELECT id,conv_id FROM interactions WHERE id=?", &[target["source_interaction_id"].clone()]).unwrap_or(Value::Null);
+                        details["targetMetadata"] = target;
+                        details["sourceMetadata"] = source;
+                    }
+                    json!({"convId":c,"ok":false,"error":error.message,"details":details})
+                },
+            });
+        }
+        json!({"ok":checks.iter().all(|row|row["ok"]==true),"conversations":checks})
+    }
     pub(super) fn init_sync(&self) -> Result<()> {
         self.db.execute_batch("
             CREATE TABLE IF NOT EXISTS sync_clock(id INTEGER PRIMARY KEY CHECK(id=1),cursor INTEGER NOT NULL);
@@ -597,6 +629,19 @@ impl Database {
             out[table] = json!(rows.into_values().collect::<Vec<_>>());
         }
         filter_removed_dependents(&mut out);
+        let relationship_ids = out["relationships"].as_array().unwrap().iter().map(|r| s(r,"id")).collect::<HashSet<_>>();
+        for row in out["relationships"].as_array_mut().unwrap() {
+            if let Some(target) = row["superseded_by"].as_str().filter(|id| !relationship_ids.contains(*id)) {
+                let target_conv = self.one("SELECT conv_id FROM relationships WHERE id=?", &[json!(target)])?;
+                // Compatibility for links left by earlier re-extractions, or
+                // a target omitted because its source was permanently removed.
+                // A real cross-conversation reference remains invalid.
+                if target_conv.is_null() || target_conv["conv_id"] == c {
+                    row["superseded_by"] = Value::Null;
+                    row["status"] = json!("current");
+                }
+            }
+        }
         for row in out["jobs"].as_array_mut().unwrap() {
             let gone = [
                 ("interactions", "interaction_id"),
@@ -1774,7 +1819,8 @@ fn validate_refs(data: &Value) -> Result<()> {
                 set.contains_key(s) || tombstones.contains(&(table.to_owned(), s.to_owned()))
             })
         {
-            return Err(invalid("Referência de sync ausente/fora da conversa."));
+            return Err(invalid("Referência de sync ausente/fora da conversa.")
+                .extra("targetTable", table).extra("referenceId", value.clone()));
         }
         Ok(())
     };

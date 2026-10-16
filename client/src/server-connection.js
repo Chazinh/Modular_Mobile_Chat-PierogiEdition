@@ -167,15 +167,15 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
         onStatus({ code: 'PC_UNPAIRED', message: 'O PC precisa de pareamento; o host Android continua disponível.', kind: 'local' });
         selected = null;
       }
-      if (!requiredKind && host && selected && now() < syncRetryAt) selected = null;
-      if (host && selected && (active?.server !== selected.server || active?.kind !== 'pc' || now() >= syncedUntil)) {
+      if (!requiredKind && !wasPc && host && selected && now() < syncRetryAt) selected = null;
+      if (host && selected && (requiredKind || now() >= syncRetryAt) && (active?.server !== selected.server || active?.kind !== 'pc' || now() >= syncedUntil)) {
         boundary = controller;
         try {
           if (!sync) throw error('SYNC_REQUIRED', 'A sincronização precisa ser concluída antes de usar o PC.');
           onStatus({ code: 'SYNCING', kind: 'local' });
           await embedded.standby(controller.signal);
           check();
-          syncResult = await sync({ pc: { ...selected, token: pcToken }, mobile: host, signal: controller.signal,
+          syncResult = await sync({ pc: { ...selected, token: pcToken }, mobile: host, signal: controller.signal, pauseMemory: !wasPc || requiredKind === 'pc',
             isCurrent: () => startedAt === epoch && !controller.signal.aborted });
           check();
           if (syncResult?.converged !== true) throw error('INCOMPLETE_SYNC', 'Os cofres ainda não convergiram.');
@@ -190,7 +190,9 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
             if (active?.kind !== 'pc') await activate();
             throw failure;
           }
-          selected = null;
+          // An occupied memory worker must not disconnect a PC already in use.
+          // Periodic checks observe it without interrupting its inference.
+          if (!wasPc || failure.code !== 'BUSY') selected = null;
         } finally { if (boundary === controller) boundary = null; }
       }
       check();

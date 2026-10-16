@@ -121,6 +121,10 @@ async fn run() -> Result<()> {
         );
         return Ok(());
     }
+    if args.first().is_some_and(|a| a == "sync-check") && args.len() == 2 {
+        println!("{}", modularchat_server::store::Store::audit_sync_snapshot(std::path::Path::new(&args[1]))?);
+        return Ok(());
+    }
     if !args.is_empty() {
         return Err(Error::new(400, "Argumento desconhecido."));
     }

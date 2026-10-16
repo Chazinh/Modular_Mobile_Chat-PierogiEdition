@@ -737,5 +737,8 @@
   "Pareamentos ativos: {0}": "Active pairings: {0}",
   "ID {0}": "ID {0}",
   "Este endereço aponta para o próprio celular. Use o IP do PC na rede Wi-Fi, incluindo a porta (ex: http://192.168.1.100:3000).": "This address points to the phone itself. Use the PC's Wi-Fi network IP, including the port (e.g. http://192.168.1.100:3000).",
-  "No celular, 127.0.0.1 e localhost apontam para o próprio aparelho. Copie o endereço “NO CELULAR” exibido pelo servidor no PC.": "On the phone, 127.0.0.1 and localhost point to the device itself. Copy the address labelled “NO CELULAR” by the PC server."
+  "No celular, 127.0.0.1 e localhost apontam para o próprio aparelho. Copie o endereço “NO CELULAR” exibido pelo servidor no PC.": "On the phone, 127.0.0.1 and localhost point to the device itself. Copy the address labelled “NO CELULAR” by the PC server.",
+  "Não foi possível acessar {0}. Copie o endereço completo exibido em “NO CELULAR” no PC; confira todos os números do IP e a porta.": "Could not reach {0}. Copy the full address labelled “NO CELULAR” on the PC; check every digit of the IP and the port.",
+  "Pareamento salvo. Aguardando o trabalho ativo terminar; a sincronização será tentada a cada 10 segundos, por até 5 minutos. Não é preciso gerar outro código.": "Pairing saved. Waiting for the active task to finish; synchronization will retry every 10 seconds for up to 5 minutes. There is no need to generate another code.",
+  "O pareamento foi salvo, mas o trabalho ativo ainda não terminou. Tente conectar novamente, sem gerar outro código.": "Pairing was saved, but the active task has not finished yet. Try connecting again without generating another code."
 }

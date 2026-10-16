@@ -1,8 +1,9 @@
 import { tr, useLanguage } from '../i18n.js';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link2, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { api, config, isNative } from '../api.js';
 import { normalizePcServer, testPcConnection } from '../server-connection.js';
+import { synchronizePairedPc } from '../pc-pairing.js';
 
 // Optional PC connection. Editing/canceling never clears the current endpoints or credential.
 export default function ServerSetup({ needsServer, onDone, onCancel }) {
@@ -16,6 +17,9 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
   const [probing, setProbing] = useState(false);
   const [probeStatus, setProbeStatus] = useState(null);
   const [pairedPc, setPairedPc] = useState('');
+  const [waiting, setWaiting] = useState(false);
+  const action = useRef(null);
+  useEffect(() => () => action.current?.abort(), []);
 
   async function testConnection() {
     setProbeStatus(null);
@@ -36,7 +40,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
       setProbeStatus({
         ok: false,
         message: err.name === 'TypeError' || err.name === 'TimeoutError'
-          ? tr('Não consegui falar com o PC. Confira se o servidor está rodando, o IP e a porta (padrão 3000).')
+          ? tr('Não foi possível acessar {0}. Copie o endereço completo exibido em “NO CELULAR” no PC; confira todos os números do IP e a porta.', [target])
           : tr(err.message)
       });
     } finally {
@@ -56,8 +60,11 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
 
   async function connect(e) {
     e.preventDefault();
+    if (action.current) return;
+    const controller = action.current = new AbortController();
     setError('');
     setBusy(true);
+    setWaiting(false);
     let rollback;
     try {
       if (isNative()) {
@@ -72,13 +79,16 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
       }
       // Pairing has committed the credential. Keep its matching endpoint if sync needs another attempt.
       rollback = undefined;
-      if (isNative()) await api.switchToPc();
+      if (isNative()) await synchronizePairedPc({ connect: signal => api.switchToPc(signal), signal: controller.signal,
+        onWaiting: () => { if (!controller.signal.aborted) setWaiting(true); } });
+      if (controller.signal.aborted) return;
       onDone();
     } catch (err) {
       rollback?.();
+      if (controller.signal.aborted) return;
       setError(err.status === 0 ? 'Não consegui falar com o PC. Confira os endereços, a porta e o firewall.' : err.message);
     } finally {
-      setBusy(false);
+      if (action.current === controller) { action.current = null; if (!controller.signal.aborted) { setBusy(false); setWaiting(false); } }
     }
   }
 
@@ -103,6 +113,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
                 <input
                   aria-label={tr('Endereço do PC na rede local (Wi-Fi)')}
                   value={server}
+                  disabled={busy}
                   onChange={(e) => { setServer(e.target.value); setProbeStatus(null); }}
                   inputMode="url"
                   autoCapitalize="none"
@@ -140,7 +151,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
 
             <label className="block text-sm">
               <span className="text-textMuted">{tr('Endereço pela internet (opcional)')}</span>
-              <input aria-label={tr('Endereço pela internet (opcional)')} value={remote} onChange={(e) => { setRemote(e.target.value); setProbeStatus(null); }} inputMode="url" autoCapitalize="none" autoCorrect="off"
+              <input disabled={busy} aria-label={tr('Endereço pela internet (opcional)')} value={remote} onChange={(e) => { setRemote(e.target.value); setProbeStatus(null); }} inputMode="url" autoCapitalize="none" autoCorrect="off"
                 className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none" placeholder="https://chat.example.com" />
             </label>
             <p className="text-xs leading-relaxed text-textMuted">{tr('Conecte o celular e o PC à mesma rede Wi-Fi. Use o endereço exibido pelo servidor no PC, incluindo a porta (ex: http://192.168.1.100:3000).')}</p>
@@ -153,6 +164,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
           <input
             aria-label={tr('Código de pareamento (6 dígitos)')}
             value={code}
+            disabled={busy}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             inputMode="numeric"
             className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-center text-[22px] tracking-[0.4em] outline-none"
@@ -162,10 +174,11 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
 
         <label className="block text-sm">
           <span className="text-textMuted">{tr("Nome deste aparelho")}</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none" />
+          <input disabled={busy} value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none" />
         </label>
 
         {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">{tr(error)}</p>}
+        {waiting && <p role="status" className="rounded-xl bg-accentPurple/10 px-3 py-2 text-sm text-accentPurpleLight">{tr('Pareamento salvo. Aguardando o trabalho ativo terminar; a sincronização será tentada a cada 10 segundos, por até 5 minutos. Não é preciso gerar outro código.')}</p>}
 
         <button
           type="submit"
@@ -173,7 +186,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
           className="flex w-full items-center justify-center gap-2 rounded-full bg-accentPurple py-3.5 font-semibold text-white disabled:opacity-40"
         >
           {busy && <Loader2 size={18} className="animate-spin" />}{tr(" Conectar\n        ")}</button>
-        {(onCancel || config.embeddedReady) && <button type="button" disabled={busy} onClick={onCancel || onDone} className="w-full py-2 text-sm text-textMuted">{tr(config.embeddedReady ? 'Continuar no aparelho' : 'Cancelar')}</button>}
+        {(onCancel || config.embeddedReady) && <button type="button" disabled={busy && !waiting} onClick={() => { action.current?.abort(); (onCancel || onDone)(); }} className="w-full py-2 text-sm text-textMuted">{tr(config.embeddedReady ? 'Continuar no aparelho' : 'Cancelar')}</button>}
         <p className="text-xs leading-relaxed text-textMuted">{tr("\n          O código aparece na janela do servidor ao iniciar o ")}<b>start-server.ps1</b>{tr(", ou no PC em ")}<b>{tr("⋯ → Configurações → Gerar código")}</b>{tr(". Ele vale por 5 minutos e só pode ser usado uma vez.\n        ")}</p>
       </form>
     </div>

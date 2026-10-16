@@ -407,6 +407,10 @@ impl Database {
         Ok(())
     }
     pub(super) fn delete_derived(&self, i: &str) -> Result<()> {
+        // Reprocessing a later turn removes its derived relationship revision.
+        // Restore earlier rows before deleting that revision so no dangling
+        // supersession link survives into a subsequent sync snapshot.
+        self.exec("UPDATE relationships SET superseded_by=NULL,status='current' WHERE superseded_by IN (SELECT id FROM relationships WHERE source_interaction_id=?)", &[json!(i)])?;
         for m in self.rows(
             "SELECT id FROM memories WHERE source_interaction_id=?",
             &[json!(i)],

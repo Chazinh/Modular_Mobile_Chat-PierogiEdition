@@ -19,7 +19,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
   const fail = (code, message) => { throw new SyncError(code, message); };
   const envelope = (peerId, convIds = []) => ({ format: 'modularchat-sync', version: 1, peerId, known: [], convIds, after: 0, limit: 4 });
 
-  async function run({ pc, mobile, signal, isCurrent = () => true }) {
+  async function run({ pc, mobile, signal, isCurrent = () => true, pauseMemory = true }) {
     const check = () => {
       signal?.throwIfAborted();
       if (!isCurrent()) fail('STALE_CONNECTION', 'A configuração mudou durante a sincronização.');
@@ -35,7 +35,8 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       check();
       if (body && bytes(body) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'O lote de sincronização excede 8 MiB.');
       const timeout = AbortSignal.timeout(15000);
-      const response = await send(`${target.server}/api/sync/${path}`, {
+      const observe = !pauseMemory && path.startsWith('status?') ? '&observe=1' : '';
+      const response = await send(`${target.server}/api/sync/${path}${observe}`, {
         method: body ? 'POST' : 'GET', redirect: 'error', cache: 'no-store', credentials: 'omit',
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         headers: { Authorization: `Bearer ${target.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },

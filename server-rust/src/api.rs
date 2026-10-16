@@ -593,7 +593,7 @@ async fn dispatch(
     if !b.is_object() {
         return Err(Error::new(400, "Objeto JSON esperado."));
     }
-    let query = uri
+    let mut query = uri
         .query()
         .map(|q| {
             reqwest::Url::parse(&format!("http://f/?{q}"))
@@ -612,11 +612,14 @@ async fn dispatch(
     let mut status = 200;
     let out = match seg.as_slice() {
         ["sync", "status"] if get => {
+            let observe = query.remove("observe").is_some_and(|value| value == "1");
+            let _memory_pause = if observe { None } else { Some(state.runner.pause_for_sync().await) };
             let mut out=state.store.call(Request::SyncStatus(crate::store::sync::query(&query, false)?)).await?;
             out["embeddingFingerprint"]=json!(state.local.fingerprint().await);
             out
         }
         ["sync", "delta"] if get || post => {
+            let _memory_pause = state.runner.pause_for_sync().await;
             let value = if get { crate::store::sync::query(&query, true)? } else { b };
             let out = state.store.call(Request::SyncDelta {
                 value,

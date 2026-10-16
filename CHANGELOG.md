@@ -5,6 +5,25 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.17: Historical Relationship Links, Sync Snapshots, and Background Memory Prioritization — 2026-10-16
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Historical Relationship Consistency & Snapshot Normalization (`server-rust/src/store/turns.rs`, `sync.rs`)**:
+  - Reprocessing turns restores earlier relationship rows before removing a derived revision, eliminating dangling `superseded_by` links across sync cycles.
+  - Wire snapshots normalize historical relationships whose replacement targets no longer exist, maintaining conversation vault integrity while strictly rejecting invalid cross-conversation references.
+  - Added `sync-check` CLI diagnostic (`server-rust/src/main.rs`, `store/mod.rs`) for in-memory vault snapshot validation without exporting conversation plaintext or credentials.
+
+- **Background Memory Preemption & Sync Prioritization (`server-rust/src/jobs.rs`, `api.rs`)**:
+  - Authenticated sync requests preemptively pause background memory inference without spending job retry attempts, returning tasks to the queue safely.
+  - Pause duration is bounded (30s) and shared across concurrent sync requests, automatically resuming tasks with a 1s grace margin once replication concludes.
+  - Periodic connection checks observe busy workers (`&observe=1`) without interrupting active inference or disconnecting healthy PC sessions.
+
+- **Real-Time Pairing Wait & Controlled Sync Retry (`client/src/pc-pairing.js`, `ServerSetup.jsx`)**:
+  - When pairing succeeds while the server is processing background memory (`BUSY`), the client commits the pairing and safely retries only the synchronization phase every 10 seconds for up to 5 minutes without re-requesting or replaying the one-time pairing code.
+  - Added real-time user feedback ("Pareamento salvo. Aguardando o trabalho ativo terminar...") with cancellation support.
+
+
 ### ModularChat 3.1.14: Public Proxy Pairing Bootstrap, Code Expiration Renewal, and Loopback Guidance — 2026-10-16
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
