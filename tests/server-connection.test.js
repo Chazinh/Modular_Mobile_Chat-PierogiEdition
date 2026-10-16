@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServerConnection, normalizeServer, testPcConnection } from '../client/src/server-connection.js';
+import { createServerConnection, normalizeServer, normalizePcServer, testPcConnection } from '../client/src/server-connection.js';
 import { createLocalHost } from '../client/src/local-host.js';
 
 const local = 'https://pc.example.com:8443', remote = 'https://chat.example.com';
@@ -61,6 +61,23 @@ test('conexão: testar candidato novo não exige cadastro e não envia credencia
   assert.equal(f.calls.length, 0, 'operações normais ainda exigem o PC configurado');
 });
 
+test('PC no celular: loopback é explicado antes de testar ou alterar a configuração', async () => {
+  const f = fixture();
+  f.connection.configure({ local });
+  const before = [...f.data];
+  for (const address of ['http://127.0.0.1:3000', '127.0.0.1:3000', 'http://127.42.1.2:3000',
+    'http://127.1:3000', 'http://localhost:3000', 'http://[::1]:3000', 'https://[::ffff:127.0.0.1]:3000', 'https://0.0.0.0:3000']) {
+    assert.throws(() => normalizePcServer(address), /próprio celular/);
+    assert.throws(() => f.connection.configure({ local: address }), /próprio celular/);
+    await assert.rejects(testPcConnection(address, { fetch: () => assert.fail('loopback não deve ser sondado como PC') }), /próprio celular/);
+    assert.deepEqual([...f.data], before, 'a configuração válida anterior é preservada');
+  }
+  assert.equal(normalizePcServer('192.168.1.100:3000'), 'http://192.168.1.100:3000');
+  assert.equal(normalizePcServer(remote, true), remote);
+  assert.equal(normalizeServer('http://127.0.0.1:3011', false), 'http://127.0.0.1:3011', 'o host Android continua usando loopback');
+  assert.equal(f.calls.length, 0);
+});
+
 test('conexão: teste público valida identidade/cofre e respeita cancelamento antes do envio', async () => {
   for (const data of [{ ok: true }, { ok: true, name: 'other', encrypted: true }, { ok: true, name: 'modularchat', encrypted: false }]) {
     await assert.rejects(testPcConnection(local, { fetch: async () => Response.json(data) }), /não é um servidor ModularChat/);
@@ -77,6 +94,17 @@ function autoFixture(overrides = {}) {
   const f = fixture({ mode: 'auto', embedded, sync: async () => ({ converged: true }), onStatus: s => statuses.push(s), ...overrides });
   return { ...f, lifecycle, statuses };
 }
+
+test('PC no celular: cadastro antigo de loopback não é contatado nem bloqueia o host Android', async () => {
+  const f = autoFixture();
+  f.data.set('mc.connection', JSON.stringify({ local: 'http://127.0.0.1:3000', remote: '' }));
+  assert.equal((await f.connection.resolveTarget()).kind, 'local');
+  assert.equal(await f.connection.probePc(), false);
+  const target = await f.connection.acquireTarget({ embedded: true, write: true });
+  assert.equal(target.server, embeddedTarget.server); target.release();
+  await assert.rejects(f.connection.acquireTarget({ pc: 'http://127.0.0.1:3000' }), /próprio celular/);
+  assert.equal(f.calls.length, 0);
+});
 
 test('auto: LAN HTTP funciona na seleção, pareamento, recuperação, probe e troca após preferência local', async () => {
   const lan = 'http://10.229.240.173:3000';

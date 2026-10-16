@@ -5,6 +5,29 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.14: Public Proxy Pairing Bootstrap, Code Expiration Renewal, and Loopback Guidance — 2026-10-16
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Public Proxy Pairing Bootstrap (`Caddyfile.template`)**:
+  - Configured `@pareamento_publico` route in Caddy reverse proxy allowing `/api/health`, `/api/pair`, and `/api/pair/info` to reach the backend service without requiring a pre-existing Bearer authentication token.
+  - Resolves "Aparelho não pareado" when bootstrapping connection from mobile over public domains or reverse proxies.
+
+- **Pairing Code Retention & Window Renewal (`server-rust/src/auth.rs`)**:
+  - Preserves the active 6-digit pairing code on repeated renewal requests while resetting the 300-second expiration window, preventing race conditions and invalidation while the user types the code on mobile.
+  - Added unit and contract tests verifying pairing bootstrap ignores revoked tokens while preserving device data security.
+
+- **Stale Credential Omission on Pairing (`client/src/api.js`)**:
+  - Explicitly omits outdated `Authorization` headers during pairing initiation and code submission, ensuring clean authentication handshakes.
+
+- **Mobile Loopback Detection & Guidance (`ServerSetup.jsx`, `server-address.js`, `server-connection.js`)**:
+  - Rejects loopback addresses (`127.0.0.1`, `localhost`) on native Android platforms, presenting immediate localized guidance directing users to configure the PC's local network (LAN) IP.
+  - Updated `client/src/locales/en.json` with comprehensive English guidance for connection setup.
+
+- **LAN Server Connection Guidance (`start-server.ps1`)**:
+  - Enhanced `Write-ConnectionAddresses` output formatting: highlights local LAN IP addresses in green specifically for mobile device pairing, and flags loopback in yellow for PC browser use only.
+
+
 ### ModularChat 2.2: LAN Connectivity, Real-Time Device Pairing, and Sync Conflict Recovery — 2026-10-16
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

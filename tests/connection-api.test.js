@@ -3,6 +3,50 @@ import assert from 'node:assert/strict';
 import { api, config, createApiTransport } from '../client/src/api.js';
 import { createServerConnection } from '../client/src/server-connection.js';
 
+test('pareamento: chamadas públicas não enviam token antigo e operações protegidas continuam autenticadas', async () => {
+  const calls = [];
+  const transport = createApiTransport({ acquire: async () => ({ server: 'https://pc.example.com',
+    token: 'revoked-device', kind: 'pc', release() {} }), auth() {},
+    fetch: async (url, options) => { calls.push({ url, options }); return Response.json({ ok: true }); },
+  });
+  for (const path of ['/api/health', '/api/pair/info', '/api/pair']) {
+    await transport.request(path === '/api/pair' ? 'POST' : 'GET', path,
+      path === '/api/pair' ? { code: '123456' } : undefined, { unauthenticated: true });
+    assert.equal(calls.at(-1).options.headers.Authorization, undefined);
+  }
+  await transport.request('GET', '/api/devices');
+  assert.equal(calls.at(-1).options.headers.Authorization, 'Bearer revoked-device');
+});
+
+test('API pair: substitui credencial revogada somente depois de aceitar o código no PC', async () => {
+  const originals = { window: globalThis.window, storage: globalThis.localStorage, fetch: globalThis.fetch };
+  const values = new Map([['mc.token', 'revoked-device']]);
+  globalThis.window = { Capacitor: { isNativePlatform: () => true }, dispatchEvent() {} };
+  globalThis.localStorage = { getItem: key => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith('/api/health')) return Response.json({ ok: true, name: 'modularchat', encrypted: true });
+    assert.equal(url, 'https://pc.example.com/api/pair');
+    assert.equal(options.headers.Authorization, undefined);
+    assert.deepEqual(JSON.parse(options.body), { code: '123456', deviceName: 'Phone' });
+    assert.equal(config.token, 'revoked-device');
+    return Response.json({ token: 'new-device', deviceId: 'phone' }, { status: 201 });
+  };
+  try {
+    config.configureConnection({ local: 'https://pc.example.com' });
+    await api.pair('123456', 'Phone');
+    assert.equal(config.token, 'new-device');
+    assert.equal(calls.filter(call => call.url.endsWith('/api/pair')).length, 1);
+  } finally {
+    config.configureConnection({});
+    if (originals.window === undefined) delete globalThis.window; else globalThis.window = originals.window;
+    if (originals.storage === undefined) delete globalThis.localStorage; else globalThis.localStorage = originals.storage;
+    globalThis.fetch = originals.fetch;
+  }
+});
+
 test('API: seleção anterior ao POST, endereço fixo durante SSE e nenhuma repetição automática', async () => {
   const originals = { window: globalThis.window, storage: globalThis.localStorage, fetch: globalThis.fetch };
   const saved = new Map();

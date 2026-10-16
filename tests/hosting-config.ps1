@@ -3,14 +3,28 @@ $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $files=@('scripts\caddy-host.ps1','scripts\duckdns-host.ps1','scripts\caddy-portas.ps1','scripts\configure-android-host.ps1','start-server.ps1')
 $hostAst=$null
+$startAst=$null
 foreach($relative in $files){
     $tokens=$null;$parseErrors=$null
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root $relative),[ref]$tokens,[ref]$parseErrors)
     if($parseErrors.Count){throw "Erro de sintaxe em ${relative}: $($parseErrors[0].Message)"}
     if($relative -eq 'scripts\caddy-host.ps1'){$hostAst=$ast}
+    if($relative -eq 'start-server.ps1'){$startAst=$ast}
 }
 $definition=$hostAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Validate-HostOptions'},$true)
 Invoke-Expression $definition.Extent.Text
+
+# Run only the address banner, never the launcher's server/process/vault operations.
+$banner=$startAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-ConnectionAddresses'},$true)
+Invoke-Expression $banner.Extent.Text
+function Get-NetIPAddress { param($AddressFamily) @([pscustomobject]@{IPAddress='127.0.0.1'},[pscustomobject]@{IPAddress='169.254.2.1'},[pscustomobject]@{IPAddress='192.168.0.10'}) }
+$lanLines=@(Write-ConnectionAddresses -ListenPort 3456 -LanEnabled $true 6>&1 | ForEach-Object { $_.ToString() })
+if($lanLines[0] -ne 'NO CELULAR, use este endereco no app: http://192.168.0.10:3456'){throw 'Endereco LAN do celular nao foi destacado primeiro.'}
+if(@($lanLines|Where-Object {$_ -match '^NO CELULAR, use este endereco no app: http://(?:127\.|169\.254\.)'}).Count){throw 'Loopback/link-local anunciado como PC para o celular.'}
+if(-not ($lanLines -match '^No celular, 127\.0\.0\.1 e localhost')){throw 'Orientacao sobre loopback ausente.'}
+$localLines=@(Write-ConnectionAddresses -ListenPort 3456 -LanEnabled $false 6>&1 | ForEach-Object { $_.ToString() })
+if($localLines -match '^NO CELULAR'){throw 'Modo loopback anunciou acesso LAN.'}
+if(-not ($localLines -match '^SOMENTE NO NAVEGADOR DESTE PC: http://127\.0\.0\.1:3456$')){throw 'URL do navegador do PC nao identificada.'}
 $BackendPort=3000;$HttpsPort=8443;$AdminPort=2019
 $Domain='chat.example.com';$LanAddress='192.168.0.10';$LanSubnet='192.168.0.0/24'
 Validate-HostOptions $true

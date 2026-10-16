@@ -2,7 +2,7 @@ import { tr, useLanguage } from '../i18n.js';
 import React, { useState } from 'react';
 import { Link2, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { api, config, isNative } from '../api.js';
-import { normalizeServer, testPcConnection } from '../server-connection.js';
+import { normalizePcServer, testPcConnection } from '../server-connection.js';
 
 // Optional PC connection. Editing/canceling never clears the current endpoints or credential.
 export default function ServerSetup({ needsServer, onDone, onCancel }) {
@@ -46,7 +46,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
 
   function appendPort() {
     try {
-      const url = new URL(normalizeServer(server, false));
+      const url = new URL(normalizePcServer(server, false));
       url.port = '3000';
       setServer(url.origin);
       setError('');
@@ -101,6 +101,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
               <span className="text-textMuted">{tr('Endereço do PC na rede local (Wi-Fi)')}</span>
               <div className="mt-1 flex gap-2">
                 <input
+                  aria-label={tr('Endereço do PC na rede local (Wi-Fi)')}
                   value={server}
                   onChange={(e) => { setServer(e.target.value); setProbeStatus(null); }}
                   inputMode="url"
@@ -111,7 +112,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
                 />
                 <button
                   type="button"
-                  disabled={probing || !server.trim()}
+                  disabled={probing || busy || (!server.trim() && !remote.trim())}
                   onClick={testConnection}
                   className="flex shrink-0 items-center gap-1 rounded-xl bg-composer px-3 py-2 text-xs font-medium text-accentPurpleLight disabled:opacity-40"
                 >
@@ -131,7 +132,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
             )}
 
             {probeStatus && (
-              <div className={`flex items-start gap-2 rounded-xl px-3 py-2 text-xs leading-relaxed ${probeStatus.ok ? 'bg-green-500/10 text-green-300' : 'bg-yellow-500/10 text-yellow-300'}`}>
+              <div role="status" className={`flex items-start gap-2 rounded-xl px-3 py-2 text-xs leading-relaxed ${probeStatus.ok ? 'bg-green-500/10 text-green-300' : 'bg-yellow-500/10 text-yellow-300'}`}>
                 {probeStatus.ok ? <CheckCircle2 size={16} className="shrink-0 mt-0.5 text-green-400" /> : <AlertCircle size={16} className="shrink-0 mt-0.5 text-yellow-400" />}
                 <span>{probeStatus.message}</span>
               </div>
@@ -139,16 +140,18 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
 
             <label className="block text-sm">
               <span className="text-textMuted">{tr('Endereço pela internet (opcional)')}</span>
-              <input value={remote} onChange={(e) => setRemote(e.target.value)} inputMode="url" autoCapitalize="none" autoCorrect="off"
+              <input aria-label={tr('Endereço pela internet (opcional)')} value={remote} onChange={(e) => { setRemote(e.target.value); setProbeStatus(null); }} inputMode="url" autoCapitalize="none" autoCorrect="off"
                 className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none" placeholder="https://chat.example.com" />
             </label>
             <p className="text-xs leading-relaxed text-textMuted">{tr('Conecte o celular e o PC à mesma rede Wi-Fi. Use o endereço exibido pelo servidor no PC, incluindo a porta (ex: http://192.168.1.100:3000).')}</p>
+            <p className="text-xs leading-relaxed text-textMuted">{tr('No celular, 127.0.0.1 e localhost apontam para o próprio aparelho. Copie o endereço “NO CELULAR” exibido pelo servidor no PC.')}</p>
           </div>
         )}
 
         <label className="block text-sm">
           <span className="text-textMuted">{tr("Código de pareamento (6 dígitos)")}</span>
           <input
+            aria-label={tr('Código de pareamento (6 dígitos)')}
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             inputMode="numeric"
@@ -162,7 +165,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
           <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-[16px] outline-none" />
         </label>
 
-        {error && <p className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">{tr(error)}</p>}
+        {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">{tr(error)}</p>}
 
         <button
           type="submit"

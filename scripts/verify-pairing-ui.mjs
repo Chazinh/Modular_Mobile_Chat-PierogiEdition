@@ -19,9 +19,11 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import GlobalSettings from ${modulePath('src/components/GlobalSettings.jsx')};
 import HomeDrawer from ${modulePath('src/components/HomeDrawer.jsx')};
+import ServerSetup from ${modulePath('src/components/ServerSetup.jsx')};
 import { ConfirmProvider } from ${modulePath('src/components/ConfirmProvider.jsx')};
 import { api } from ${modulePath('src/api.js')};
 const drawer=new URLSearchParams(location.search).get('surface')==='drawer';
+const setup=new URLSearchParams(location.search).get('surface')==='setup';
 let host='pc', fail=false, hold=false, release, stale;
 let rows={pc:[{id:'old',name:'Pareamento antigo'},{id:'second',name:'Segundo antigo'}],local:[{id:'android',name:'Host Android'}]};
 window.__calls=[];
@@ -43,8 +45,17 @@ if(!drawer)api.revokeDevice=async(id,options)=>{
 };
 api.status=async()=>({router:{ok:true,models:0},local:{chat:{ok:true},embed:{ok:true}},db:{jobs:{}}});api.trash=async()=>({days:30,items:[]});api.backup=async()=>({file:'fixture'});
 api.peekGlobalSettings=()=>({dialoguePct:40,botChars:1000});
-const Surface=drawer?HomeDrawer:GlobalSettings;
-createRoot(document.getElementById('root')).render(<React.StrictMode><ConfirmProvider><Surface fontSize={16} onFontSize={()=>{}} onClose={()=>{}} onChanged={()=>{}} onResetServer={()=>{}}/></ConfirmProvider></React.StrictMode>);
+if(setup){
+  window.Capacitor={isNativePlatform:()=>true,isPluginAvailable:()=>false};
+  localStorage.setItem('mc.connection',JSON.stringify({local:'http://127.0.0.1:3000',remote:''}));
+  const send=window.fetch.bind(window);window.__probeCalls=[];window.__connectCalls=[];
+  window.fetch=(url,options)=>{window.__probeCalls.push({url,method:options.method});return send('/__pc-health',options)};
+  api.health=async()=>{window.__connectCalls.push('health');return {ok:true}};
+  api.pair=async()=>{window.__connectCalls.push('pair');return {}};
+  api.switchToPc=async()=>{window.__connectCalls.push('switch');return {kind:'pc'}};
+}
+const Surface=setup?ServerSetup:drawer?HomeDrawer:GlobalSettings;
+createRoot(document.getElementById('root')).render(<React.StrictMode><ConfirmProvider><Surface fontSize={16} onFontSize={()=>{}} onClose={()=>{}} onChanged={()=>{}} onResetServer={()=>{}} onDone={()=>{window.__connectCalls?.push('done')}}/></ConfirmProvider></React.StrictMode>);
 `);
 const { build } = await import(pathToFileURL(path.join(client, 'node_modules/vite/dist/node/index.js')).href);
 await build({ root: client, configFile: false, logLevel: 'error', css: { postcss: { plugins: [] } },
@@ -57,6 +68,11 @@ const wireDeletes = [];
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://fixture');
+    if (url.pathname === '/__pc-health') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ok:true,name:'modularchat',encrypted:true}));
+      return;
+    }
     if (url.pathname === '/api/devices' && req.method === 'GET') {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({devices:wireStale || wireRows})); wireStale = null;
@@ -165,6 +181,37 @@ try {
   assert.match(await evaluate('document.body.innerText'),/Pareamentos ativos: 0/);
   assert.deepEqual(runtimeErrors,[],'No runtime errors in either settings entry point');
   console.log('PASS HomeDrawer: actual home-menu navigation and API transport, 44px touch, one DELETE, immediate removal/count, stale HTTP response, HTTP failure and live event.');
+
+  await cdp('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/?surface=setup`});
+  const lanLabel='Endereço do PC na rede local (Wi-Fi)', remoteLabel='Endereço pela internet (opcional)';
+  await waitFor(`document.querySelector('input[aria-label=${JSON.stringify(lanLabel)}]')`);
+  const testButton=`[...document.querySelectorAll('button')].find(b=>b.textContent==='Testar')`;
+  const setInput=async(label,value)=>{
+    await evaluate(`(()=>{const input=document.querySelector('input[aria-label=${JSON.stringify(label)}]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+    await pause(50);
+  };
+  await evaluate(`${testButton}.click()`);
+  await waitFor(`document.querySelector('[role="status"]')?.textContent.includes('próprio celular')`);
+  assert.equal(await evaluate('window.__probeCalls.length'),0,'Testar explains loopback before any network call');
+  await setInput('Código de pareamento (6 dígitos)','123456');
+  const connectButton=`document.querySelector('button[type="submit"]')`;
+  await evaluate(`${connectButton}.click()`);
+  await waitFor(`document.querySelector('[role="alert"]')?.textContent.includes('próprio celular')`);
+  assert.deepEqual(await evaluate('window.__connectCalls'),[],'Conectar rejects loopback before health, pairing or sync');
+  await setInput(lanLabel,'http://192.168.1.100:3000');
+  await evaluate(`${testButton}.click()`);
+  await waitFor(`document.querySelector('[role="status"]')?.textContent.includes('confirmada')`);
+  assert.deepEqual(await evaluate('window.__probeCalls.map(call=>call.url)'),['http://192.168.1.100:3000/api/health']);
+  await setInput(lanLabel,''); await setInput(remoteLabel,'https://chat.example.com');
+  assert.equal(await evaluate(`${testButton}.disabled`),false,'Remote-only address can be tested');
+  await evaluate(`${testButton}.click()`);
+  await waitFor(`document.querySelector('[role="status"]')?.textContent.includes('confirmada')`);
+  assert.equal(await evaluate('window.__probeCalls.at(-1).url'),'https://chat.example.com/api/health');
+  await evaluate(`${connectButton}.click()`);
+  await waitFor(`window.__connectCalls.includes('done')`);
+  assert.deepEqual(await evaluate('window.__connectCalls'),['health','pair','switch','done'],'Connection completes only after pairing and PC promotion');
+  assert.deepEqual(runtimeErrors,[]);
+  console.log('PASS ServerSetup: real Testar/Conectar form, loopback feedback before requests, LAN health, remote-only test and pairing/promotion order.');
 } finally {
   ws?.close();edge.kill();await new Promise(resolve=>server.close(resolve));
   await pause(250);

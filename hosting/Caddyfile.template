@@ -46,8 +46,9 @@
 		path /api/*
 		header Authorization "Bearer *"
 	}
-	@pareamento_lan {
-		remote_ip 127.0.0.1 ::1 __LAN_SUBNET__
+	# These endpoints bootstrap authentication. The pairing code is verified and
+	# rate-limited by Rust; requiring an existing Bearer here prevents new pairing.
+	@pareamento_publico {
 		path /api/health /api/pair /api/pair/info
 	}
 	@preflight {
@@ -70,7 +71,7 @@
 				redir * / 303
 			}
 		}
-		handle @pareamento_lan {
+		handle @pareamento_publico {
 			import modularchat_backend
 		}
 		handle @api_com_token {

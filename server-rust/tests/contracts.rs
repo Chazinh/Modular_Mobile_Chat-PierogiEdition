@@ -678,6 +678,36 @@ async fn pairing_revocation() {
     assert!(auth.verify(token).await.unwrap().is_null());
 }
 #[tokio::test]
+async fn pairing_bootstrap_ignores_revoked_token_but_protects_device_data() {
+    use http_body_util::BodyExt;
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(Config {
+        data_dir: dir.path().into(), dist: dir.path().join("absent"),
+        address: "127.0.0.1:0".parse().unwrap(), require_pairing: true,
+        providers: None, max_generations: 1, production: false,
+        native_lib_dir: None, review: true,
+    }).await.unwrap();
+    let router = api::router(state.clone());
+    let code = state.auth.start().await;
+    let req = |method: &str, path: &str, token: &str, body: Value| {
+        HttpRequest::builder().uri(path).method(method)
+            .extension(ConnectInfo("192.168.0.9:1234".parse::<std::net::SocketAddr>().unwrap()))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(if body.is_null() { String::new() } else { body.to_string() })).unwrap()
+    };
+    let denied = router.clone().oneshot(req("GET", "/api/devices", "revoked", Value::Null)).await.unwrap();
+    assert_eq!(denied.status(), 401);
+    let paired = router.clone().oneshot(req("POST", "/api/pair", "revoked",
+        json!({"code":code["code"],"deviceName":"Phone"}))).await.unwrap();
+    assert_eq!(paired.status(), 201);
+    let body: Value = serde_json::from_slice(&paired.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let token = body["token"].as_str().unwrap();
+    assert_eq!(router.clone().oneshot(req("GET", "/api/devices", token, Value::Null)).await.unwrap().status(), 200);
+    assert_eq!(router.oneshot(req("POST", "/api/pair", "revoked", json!({"code":code["code"]}))).await.unwrap().status(), 401);
+    state.shutdown().await;
+}
+#[tokio::test]
 async fn empty_first_turn_and_new_limit() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();

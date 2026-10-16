@@ -84,7 +84,7 @@ export function createApiTransport({ acquire = acquireTarget, fetch: send = (...
         target = await acquire({ ...options, signal, write: method !== 'GET' });
         if (options.localOnly && selectedKind() !== 'local') throw new ApiError('A ativação exige o host Android selecionado.', 409, { code: 'HOST_CHANGED' });
         dispatched = true;
-        const res = await send(`${target.server}${path}`, { method, headers: headers(target, body !== undefined),
+        const res = await send(`${target.server}${path}`, { method, headers: headers(options.unauthenticated ? { token: '' } : target, body !== undefined),
           body: body === undefined ? undefined : JSON.stringify(body), signal, redirect: 'error',
           credentials: target.server ? 'omit' : 'same-origin' });
         const data = await res.json();
@@ -222,10 +222,10 @@ export const api = {
   },
 
   // ----- pareamento / status -----
-  health: (options) => request('GET', '/api/health', undefined, options),
-  pairInfo: (pc) => request('GET', '/api/pair/info', undefined, { pc: pc ?? (config.connection.local || config.connection.remote || '') }),
+  health: (options) => request('GET', '/api/health', undefined, { ...options, unauthenticated: true }),
+  pairInfo: (pc) => request('GET', '/api/pair/info', undefined, { pc: pc ?? (config.connection.local || config.connection.remote || ''), unauthenticated: true }),
   async pair(code, deviceName, pc = config.connection.local || config.connection.remote || '') {
-    const r = await request('POST', '/api/pair', { code, deviceName }, { pc });
+    const r = await request('POST', '/api/pair', { code, deviceName }, { pc, unauthenticated: true });
     const needsPairing = privacyNeedsPairing();
     if(needsPairing) await initializePrivacy(pc,r.token);
     await privateSet(LS_TOKEN,r.token);

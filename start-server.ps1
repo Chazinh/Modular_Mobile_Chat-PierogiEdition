@@ -27,6 +27,22 @@ function Get-FileSha256([string]$Path) {
   finally { $stream.Dispose(); $sha.Dispose() }
 }
 
+function Write-ConnectionAddresses([int]$ListenPort, [bool]$LanEnabled) {
+  if ($LanEnabled) {
+    $addresses = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+      $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'
+    })
+    foreach ($address in $addresses) {
+      Write-Host "NO CELULAR, use este endereco no app: http://$($address.IPAddress):$ListenPort" -ForegroundColor Green
+    }
+    if (-not $addresses.Count) { Write-Host 'Nenhum endereco de rede encontrado. Conecte o PC a mesma rede Wi-Fi do celular.' -ForegroundColor Yellow }
+    Write-Host 'No celular, 127.0.0.1 e localhost apontam para o proprio aparelho.' -ForegroundColor Yellow
+  } else {
+    Write-Host 'Servidor restrito a este PC. Conexao direta do celular pela rede local desativada.'
+  }
+  Write-Host "SOMENTE NO NAVEGADOR DESTE PC: http://127.0.0.1:$ListenPort"
+}
+
 # The executable runs from a per-build staging copy so `cargo build` can replace the original while it runs.
 $appHome = Join-Path $env:LOCALAPPDATA 'ModularChat'
 # The build directory may live outside the project (CARGO_TARGET_DIR or build.target-dir in a .cargo/config.toml).
@@ -124,11 +140,7 @@ $env:LOCAL_EMBED_PORT = if ($Sandbox) { '20582' } else { '20482' }
 Remove-Item Env:MC_TEST_LOCAL_URL -ErrorAction SilentlyContinue
 
 Write-Host "ModularChat on port $Port. Vault: $vault"
-Write-Host "On this PC: http://127.0.0.1:$Port"
-if ($env:HOST -eq '0.0.0.0') {
-  Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
-    ForEach-Object { Write-Host "On your phone: http://$($_.IPAddress):$Port" }
-}
+Write-ConnectionAddresses -ListenPort $Port -LanEnabled ($env:HOST -eq '0.0.0.0')
 Write-Host 'The pairing code appears below. Ctrl+C stops the server and saves the vault.'
 & $server
 exit $LASTEXITCODE

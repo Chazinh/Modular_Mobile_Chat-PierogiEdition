@@ -9,8 +9,8 @@ export function isLocalAddress(hostname) {
   return !!match172 && Number(match172[1]) >= 16 && Number(match172[1]) <= 31;
 }
 
-export function normalizeServer(value, httpsOnly = true) {
-  if (!String(value || '').trim()) return '';
+function parseServer(value, httpsOnly) {
+  if (!String(value || '').trim()) return null;
   let raw = String(value).trim();
   if (!/^https?:\/\//i.test(raw) && !raw.startsWith('//')) {
     let hostname;
@@ -22,8 +22,27 @@ export function normalizeServer(value, httpsOnly = true) {
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
     throw Error('Informe somente o endereço do PC, sem senha, caminho ou parâmetros.');
   }
+  return url;
+}
+
+export function normalizeServer(value, httpsOnly = true) {
+  const url = parseServer(value, httpsOnly);
+  if (!url) return '';
   if (url.protocol !== 'https:' && (httpsOnly || url.protocol !== 'http:' || !isLocalAddress(url.hostname))) {
     throw Error('Use HTTPS para endereços públicos. HTTP só é permitido na rede local.');
   }
   return url.origin;
+}
+
+// A PC address entered on a phone must not resolve to the phone itself.
+// Keep normalizeServer available for the embedded Android host and browser-local APIs.
+export function normalizePcServer(value, httpsOnly = false) {
+  const url = parseServer(value, httpsOnly);
+  if (!url) return '';
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || /^127\./.test(host) ||
+      host === '::1' || /^::ffff:7f[0-9a-f]{2}:/.test(host) || host === '0.0.0.0' || host === '::') {
+    throw Error('Este endereço aponta para o próprio celular. Use o IP do PC na rede Wi-Fi, incluindo a porta (ex: http://192.168.1.100:3000).');
+  }
+  return normalizeServer(url.origin, httpsOnly);
 }

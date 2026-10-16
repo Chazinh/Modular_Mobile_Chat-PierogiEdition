@@ -55,7 +55,7 @@ test('gateway Caddy: Bearer, login web, CORS, bloqueio de pareamento e SSE prese
   for (const [key, value] of Object.entries({
     ADMIN_ADDRESS: 'off', RUNTIME: dir.replaceAll('\\', '/'), BACKEND_PORT: backend.address().port,
     WEB_USER: 'fixture', PASSWORD_HASH: hash, SESSION_TOKEN: 'fixture-session',
-    // Exclude loopback from the LAN exemption in this fixture to exercise remote authentication.
+    // Bootstrap endpoints must also work for a client outside the configured LAN.
     LAN_SUBNET: '', LOCAL_SITE: `http://127.0.0.1:${port} {\n bind 127.0.0.1\n import modularchat_gateway\n}`, LAN_SITE: '', PUBLIC_SITE: '',
   })) config = config.replaceAll(`__${key}__`, String(value));
   config = config.replace('remote_ip 127.0.0.1 ::1 ', 'remote_ip 192.0.2.0/24 ');
@@ -73,11 +73,24 @@ test('gateway Caddy: Bearer, login web, CORS, bloqueio de pareamento e SSE prese
     if (child.exitCode !== null) throw Error(`Caddy fixture exit ${child.exitCode}: ${logs}`);
     try {
       const check = await request('/api/health', { signal: AbortSignal.timeout(500) });
-      ready = check.status === 401 && (await check.json()).code === 'WEB_LOGIN_REQUIRED';
+      ready = check.status === 200 && (await check.json()).ok === true;
     } catch { /* Only the disposable gateway is being awaited. */ }
     if (!ready) await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.ok(ready, `Caddy fixture startup timeout: ${logs}`);
+  // No prior device credential is needed, including when the app retains a revoked token.
+  for (const authorization of [undefined, 'Bearer revoked-device']) {
+    for (const endpoint of ['/api/health', '/api/pair/info', '/api/pair']) {
+      const beforeAuth = operations.filter(o => o.path === '/api/privacy/cache-key').length;
+      const response = await request(endpoint, { method: endpoint === '/api/pair' ? 'POST' : 'GET',
+        headers: { ...(authorization ? { Authorization: authorization } : {}), 'Content-Type': 'application/json' },
+        ...(endpoint === '/api/pair' ? { body: JSON.stringify({ code: '123456' }) } : {}) });
+      assert.equal(response.status, 200, `${endpoint} must reach the code verifier without prior pairing`);
+      await response.arrayBuffer();
+      assert.equal(operations.filter(o => o.path === '/api/privacy/cache-key').length, beforeAuth);
+      assert.equal(operations.at(-1).path, endpoint);
+    }
+  }
   let response = await request('/api/chats');
   assert.equal(response.status, 401);
   assert.equal((await response.json()).code, 'WEB_LOGIN_REQUIRED');

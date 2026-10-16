@@ -4,13 +4,13 @@ import { localHost } from './local-host.js';
 import { mobileSync } from './mobile-sync.js';
 import { waitForOperation } from './connection-lifetime.js';
 
-import { normalizeServer } from './server-address.js';
-export { normalizeServer, isLocalAddress } from './server-address.js';
+import { normalizeServer, normalizePcServer } from './server-address.js';
+export { normalizeServer, normalizePcServer, isLocalAddress } from './server-address.js';
 
 // A candidate health check is public: it never changes the saved PC or sends its credential.
 export async function testPcConnection(value, { httpsOnly = false, signal, fetch: send = globalThis.fetch,
   now = Date.now } = {}) {
-  const server = normalizeServer(value, httpsOnly);
+  const server = normalizePcServer(value, httpsOnly);
   if (!server) throw Error('Informe o endereço do PC primeiro.');
   const deadline = AbortSignal.timeout(5000);
   const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -57,7 +57,8 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     previous?.controller.abort(error('STALE_CONNECTION', 'A conexão mudou. Tente novamente.'));
   }
   function configure({ local: newLocal = '', remote: newRemote = '' } = {}) {
-    const next = { local: normalizeServer(newLocal, false), remote: normalizeServer(newRemote) };
+    const normalize = native() ? normalizePcServer : normalizeServer;
+    const next = { local: normalize(newLocal, false), remote: normalize(newRemote, true) };
     const previous = { record: read('mc.connection'), legacy: read('mc.server'), active };
     // Keep both endpoints together: changing computers cannot inherit another computer's domain.
     storage.setItem('mc.connection', JSON.stringify(next));
@@ -153,7 +154,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
       let lan = '', remote = '', selected = null, syncResult, pcReachable = false;
       if (desired !== 'local') {
         const saved = configured();
-        try { lan = normalizeServer(saved.local, false); remote = normalizeServer(saved.remote); }
+        try { lan = normalizePcServer(saved.local, false); remote = normalizePcServer(saved.remote, true); }
         catch (failure) { if (!host || requiredKind === 'pc') throw failure; onStatus({ code: 'INVALID_PC_CONFIG', message: failure.message, kind: 'local' }); }
         if (lan && await available(lan, pcToken, controller.signal)) selected = { server: lan, kind: 'pc' };
         else if (remote && remote !== lan && await available(remote, pcToken, controller.signal)) selected = { server: remote, kind: 'pc' };
@@ -234,7 +235,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
         if (fixed.server !== local()?.server) throw error('ORIGIN_UNAVAILABLE', 'O host Android de origem não está disponível.');
         target = captured(fixed);
       } else {
-        const server = fixed.server ? normalizeServer(fixed.server, false) : '';
+        const server = fixed.server ? (native() ? normalizePcServer(fixed.server, false) : normalizeServer(fixed.server, false)) : '';
         const saved = configured();
         if (native() && (!server || ![saved.local, saved.remote].includes(server))) throw error('ORIGIN_CHANGED', 'Reconfigure o PC de origem antes de recuperar esta operação.');
         target = captured({ server, kind: fixed.kind });
@@ -322,8 +323,8 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     const saved = configured();
     let lan = '', remote = '';
     try {
-      lan = normalizeServer(saved.local, false);
-      remote = normalizeServer(saved.remote);
+      lan = normalizePcServer(saved.local, false);
+      remote = normalizePcServer(saved.remote, true);
     } catch {
       return false;
     }
