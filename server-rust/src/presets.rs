@@ -6,8 +6,8 @@ use std::sync::LazyLock;
 pub const PRESET_VERSION: u32 = 10;
 /// Retired presets: old conversations that use them still open and generate with the current default preset.
 const RETIRED_PRESETS: &[&str] = &["space-bunny"];
-/// Routes 9Router still lists but the provider shut down (z-ai/glm-5.2 on NVIDIA: HTTP 410 since 2026-08-21).
-const RETIRED_ROUTE_MARKS: &[&str] = &["space-bunny", "nvidia/z-ai/glm-5.2"];
+/// Routes that must not be exposed or selected (e.g. argon is excluded by request; space-bunny is retired).
+const RETIRED_ROUTE_MARKS: &[&str] = &["space-bunny", "argon"];
 pub fn selectable_route(route: &str) -> bool {
     !route.trim().is_empty() && route.len() <= 512 && !route.chars().any(char::is_control)
         && !RETIRED_ROUTE_MARKS.iter().any(|m| route.to_lowercase().contains(m))

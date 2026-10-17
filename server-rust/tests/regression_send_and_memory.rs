@@ -197,3 +197,56 @@ async fn regression_memory_runner_does_not_claim_jobs_when_backend_unavailable()
     runner.stop();
     store.call(Request::Close).await.unwrap();
 }
+
+#[test]
+fn regression_screenshot_model_routes_and_argon_exclusion() {
+    // 1. Argon deve ser estritamente rejeitado como rota selecionável
+    assert!(!presets::selectable_route("ag/gemini-4-argon-high"), "ag/gemini-4-argon-high deve ser rejeitado");
+    assert!(!presets::selectable_route("gemini/gemini-4-argon"), "gemini/gemini-4-argon deve ser rejeitado");
+    assert!(!presets::selectable_route("Argon"), "Argon combo deve ser rejeitado");
+
+    // 2. Rotas solicitadas nas screenshots devem ser selecionáveis
+    assert!(presets::selectable_route("oc/deepseek-v4.1-flash-free"), "oc/deepseek-v4.1-flash-free deve ser selecionável");
+    assert!(presets::selectable_route("cbai/deepseek-v4.1-flash"), "cbai/deepseek-v4.1-flash deve ser selecionável");
+    assert!(presets::selectable_route("nvidia/deepseek-ai/deepseek-v4.1-flash"), "nvidia/deepseek-ai/deepseek-v4.1-flash deve ser selecionável");
+    assert!(presets::selectable_route("cbai/glm-5.2"), "cbai/glm-5.2 deve ser selecionável");
+    assert!(presets::selectable_route("nvidia/z-ai/glm-5.2"), "nvidia/z-ai/glm-5.2 deve ser selecionável");
+    assert!(presets::selectable_route("cc/claude-opus-5-5"), "cc/claude-opus-5-5 deve ser selecionável");
+    assert!(presets::selectable_route("cc/claude-sonnet-5-5"), "cc/claude-sonnet-5-5 deve ser selecionável");
+    assert!(presets::selectable_route("nvidia/moonshotai/kimi-k3"), "nvidia/moonshotai/kimi-k3 deve ser selecionável");
+    assert!(presets::selectable_route("oc/muse-spark-1.3-contributor-free"), "oc/muse-spark-1.3-contributor-free deve ser selecionável");
+    assert!(presets::selectable_route("oc/step-5-preview-free"), "oc/step-5-preview-free deve ser selecionável");
+    assert!(presets::selectable_route("gemini/gemini-3.8-flash"), "gemini/gemini-3.8-flash deve ser selecionável");
+
+    // 3. Mapeamento correto para presets
+    assert_eq!(presets::for_route("oc/deepseek-v4.1-flash-free")["id"], "deepseek-v41-flash");
+    assert_eq!(presets::for_route("nvidia/z-ai/glm-5.2")["id"], "glm-52");
+
+    // 4. Verificação de presets::public
+    let advertised = vec![
+        "cbai/deepseek-v4.1-flash".to_string(),
+        "oc/deepseek-v4.1-flash-free".to_string(),
+        "cbai/glm-5.2".to_string(),
+        "nvidia/z-ai/glm-5.2".to_string(),
+        "ag/gemini-4-argon-high".to_string(),
+    ];
+    let public_presets = presets::public(&advertised, &json!({"routes": {}}));
+
+    // DeepSeek preset
+    let ds = public_presets.iter().find(|p| p["id"] == "deepseek-v41-flash").expect("Deepseek preset");
+    let ds_routes: Vec<&str> = ds["routes"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str()).collect();
+    assert!(ds_routes.contains(&"oc/deepseek-v4.1-flash-free"), "DeepSeek deve conter oc/deepseek-v4.1-flash-free");
+    assert!(ds_routes.contains(&"cbai/deepseek-v4.1-flash"), "DeepSeek deve conter cbai/deepseek-v4.1-flash");
+
+    // GLM preset
+    let glm = public_presets.iter().find(|p| p["id"] == "glm-52").expect("GLM preset");
+    let glm_routes: Vec<&str> = glm["routes"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str()).collect();
+    assert!(glm_routes.contains(&"cbai/glm-5.2"), "GLM deve conter cbai/glm-5.2");
+    assert!(glm_routes.contains(&"nvidia/z-ai/glm-5.2"), "GLM deve conter nvidia/z-ai/glm-5.2");
+
+    // Argon NUNCA deve aparecer em nenhum preset
+    for p in &public_presets {
+        let routes: Vec<&str> = p["routes"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str()).collect();
+        assert!(!routes.iter().any(|r| r.to_lowercase().contains("argon")), "Preset {} não pode conter rota argon", p["id"]);
+    }
+}

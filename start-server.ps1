@@ -85,16 +85,28 @@ function Start-NineRouter {
 
   $routerArgs = @('--port', "$TargetPort", '--tray', '--no-browser', '--skip-update')
   $proc = $null
-  if ($exe.EndsWith('.js', [StringComparison]::OrdinalIgnoreCase)) {
-    $nodeExe = (Get-Command 'node' -ErrorAction SilentlyContinue).Source
-    if (-not $nodeExe) { $nodeExe = 'node' }
-    $procArgs = @($exe) + $routerArgs
-    $proc = Start-Process -FilePath $nodeExe -ArgumentList $procArgs -WindowStyle Hidden -PassThru
-  } elseif ($exe.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase) -or $exe.EndsWith('.bat', [StringComparison]::OrdinalIgnoreCase)) {
-    $cmdLineArgs = @('/c', "`"$exe`"") + $routerArgs
-    $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdLineArgs -WindowStyle Hidden -PassThru
-  } else {
-    $proc = Start-Process -FilePath $exe -ArgumentList $routerArgs -WindowStyle Hidden -PassThru
+  $prevDataDir = $env:DATA_DIR
+  try {
+    # 9Router uses process.env.DATA_DIR if set, which would divert its db from %APPDATA%\9router
+    # to ModularChat's server DATA_DIR. Clear DATA_DIR during process launch to ensure 9Router
+    # uses its standard config and combos (identical to launching 9Router standalone).
+    Remove-Item Env:DATA_DIR -ErrorAction SilentlyContinue
+
+    if ($exe.EndsWith('.js', [StringComparison]::OrdinalIgnoreCase)) {
+      $nodeExe = (Get-Command 'node' -ErrorAction SilentlyContinue).Source
+      if (-not $nodeExe) { $nodeExe = 'node' }
+      $procArgs = @($exe) + $routerArgs
+      $proc = Start-Process -FilePath $nodeExe -ArgumentList $procArgs -WindowStyle Hidden -PassThru
+    } elseif ($exe.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase) -or $exe.EndsWith('.bat', [StringComparison]::OrdinalIgnoreCase)) {
+      $cmdLineArgs = @('/c', "`"$exe`"") + $routerArgs
+      $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdLineArgs -WindowStyle Hidden -PassThru
+    } else {
+      $proc = Start-Process -FilePath $exe -ArgumentList $routerArgs -WindowStyle Hidden -PassThru
+    }
+  } finally {
+    if ($null -ne $prevDataDir) {
+      $env:DATA_DIR = $prevDataDir
+    }
   }
 
   $deadline = [Diagnostics.Stopwatch]::StartNew()

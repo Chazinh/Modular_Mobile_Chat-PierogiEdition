@@ -5,6 +5,24 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.23: Precise Model Routes, Argon Exclusion, and 9Router Environment Isolation — 2026-10-17
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Model Preset & Route Alignment (`default-presets.js`, `presets.json`, `presets.rs`)**:
+  - Removed artificial 9Router combo titles (`Deepseek`, `Opus`, `Sonnet`, `Gemini`, `Kimi`, `Muse`, `GLM`, `Step5-preview`) from model preset route listings, keeping strictly valid routing endpoints.
+  - Added real screenshot-verified routes: `oc/deepseek-v4.1-flash-free` (DeepSeek V4.1 Flash), `nvidia/z-ai/glm-5.2` (GLM), `gemini/gemini-3.8-flash` (Gemini 3.8 Flash), and verified routes for Claude Opus 5.5, Sonnet 5.5, Kimi K3, Muse Spark 1.3, and Step 5 Preview.
+  - Explicitly excluded Argon (`ag/gemini-4-argon-high`) and registered `"argon"` under `RETIRED_ROUTE_MARKS` in Rust to programmatically prevent Argon routes from being selected or exposed even if advertised by an upstream proxy.
+
+- **9Router Environment Isolation (`start-server.ps1`)**:
+  - Isolated the process environment when launching 9Router from `start-server.ps1` via a `try/finally` block that temporarily unsets `DATA_DIR`. This ensures 9Router always loads its canonical database at `%APPDATA%\9router\db\data.sqlite` rather than inheriting ModularChat's server data directory.
+
+- **Automated Regression Test Suite (`regression_send_and_memory.rs`, `default-presets.test.js`, `start-server-9router.ps1`)**:
+  - Added Rust test `regression_screenshot_model_routes_and_argon_exclusion` verifying Argon rejection, route availability, preset mapping, and exclusion from public presets.
+  - Added JS test asserting presence of valid routes, exclusion of combo titles, and absence of Argon across all presets.
+  - Added PowerShell Scenario 4d testing `DATA_DIR` environment isolation during 9Router process launch and restoring the caller's environment.
+
+
 ### ModularChat 3.1.22: CodeBuddy HTTP 400 Channel Verification Fix, Memory Deadlock Resolution, and 9Router Automation — 2026-10-16
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

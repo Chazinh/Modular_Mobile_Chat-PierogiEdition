@@ -10,7 +10,8 @@
     ],
     "preferredRoutes": [
       "cbai/deepseek-v4.1-flash",
-      "nvidia/deepseek-ai/deepseek-v4.1-flash"
+      "nvidia/deepseek-ai/deepseek-v4.1-flash",
+      "oc/deepseek-v4.1-flash-free"
     ],
     "efforts": [
       "high"
@@ -85,11 +86,11 @@
     "preferredRoutes": [
       "ag/gemini-3.8-flash-low",
       "ag/gemini-3.8-flash-medium",
-      "ag/gemini-3.8-flash-high"
+      "ag/gemini-3.8-flash-high",
+      "gemini/gemini-3.8-flash"
     ],
     "routeAliases": {
-      "ag/gemini-3.8-flash": "ag/gemini-3.8-flash-low",
-      "gemini/gemini-3.8-flash": "ag/gemini-3.8-flash-low"
+      "ag/gemini-3.8-flash": "ag/gemini-3.8-flash-low"
     },
     "efforts": [
       "low",
@@ -190,7 +191,8 @@
       "glm-5\\.2(?:[^0-9]|$)"
     ],
     "preferredRoutes": [
-      "cbai/glm-5.2"
+      "cbai/glm-5.2",
+      "nvidia/z-ai/glm-5.2"
     ],
     "efforts": [
       "high"

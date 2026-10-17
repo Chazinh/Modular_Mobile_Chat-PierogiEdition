@@ -123,6 +123,35 @@ try {
 }
 if (-not $rejected) { throw 'Start-NineRouter deveria falhar quando nenhum executavel e encontrado.' }
 
+# Cenário 4d: Regressão - DATA_DIR isolado para que o 9Router use seu AppData canônico em vez do DATA_DIR do servidor
+$mockState.ListeningPorts.Remove(20128)
+$mockState.MockCommand = 'C:\fake\npm\9router.cmd'
+$mockState.StartedProcesses.Clear()
+$env:DATA_DIR = 'C:\fake\modularchat-data'
+$capturedDataDirDuringSpawn = $null
+
+function Start-Process {
+    param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru)
+    # Captura o valor de DATA_DIR no exato momento em que o processo filho seria iniciado
+    $capturedDataDirDuringSpawn = $env:DATA_DIR
+    $mockState.StartedProcesses.Add([pscustomobject]@{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        WindowStyle = $WindowStyle
+    })
+    $mockState.ListeningPorts[20128] = $true
+    return [pscustomobject]@{ Id = 12345 }
+}
+
+$pidResult = Start-NineRouter -TargetPort 20128 -TimeoutSeconds 2
+if ($null -ne $capturedDataDirDuringSpawn) {
+    throw "Regressao detectada: DATA_DIR nao foi isolado durante o spawn do 9Router! Valor capturado: $capturedDataDirDuringSpawn"
+}
+if ($env:DATA_DIR -ne 'C:\fake\modularchat-data') {
+    throw "DATA_DIR nao foi restaurado no ambiente pai apos a execucao de Start-NineRouter. Valor atual: $($env:DATA_DIR)"
+}
+Remove-Item Env:DATA_DIR -ErrorAction SilentlyContinue
+
 # 5. Validacao do start-server.bat
 $batContent = Get-Content -LiteralPath $batPath -Raw
 if ($batContent -notmatch '-With9Router') { throw 'start-server.bat deve conter referencia para -With9Router.' }
