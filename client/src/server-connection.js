@@ -192,9 +192,9 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
             if (active?.kind !== 'pc') await activate();
             throw failure;
           }
-          // An occupied memory worker must not disconnect a PC already in use.
-          // Periodic checks observe it without interrupting its inference.
-          if (!wasPc || failure.code !== 'BUSY') selected = null;
+          // An active PC connection must not be dropped by periodic sync failures.
+          // Periodic checks observe it and schedule retry without interrupting active chat.
+          if (!wasPc) selected = null;
         } finally { if (boundary === controller) boundary = null; }
       }
       check();

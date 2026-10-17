@@ -1,17 +1,20 @@
 [
   {
     "id": "deepseek-v41-flash",
+    "groupRoute": "Deepseek",
     "thinkingCanDisable": true,
     "selectable": true,
     "label": "DeepSeek V4.1 Flash",
     "family": "deepseek",
     "match": [
-      "deepseek-v4\\.1-flash"
+      "deepseek-v4\\.1-flash",
+      "^deepseek$"
     ],
     "preferredRoutes": [
       "cbai/deepseek-v4.1-flash",
-      "nvidia/deepseek-ai/deepseek-v4.1-flash",
-      "oc/deepseek-v4.1-flash-free"
+      "Deepseek",
+      "oc/deepseek-v4.1-flash-free",
+      "nvidia/deepseek-ai/deepseek-v4.1-flash"
     ],
     "efforts": [
       "high"
@@ -27,16 +30,19 @@
   },
   {
     "id": "claude-opus-5-5",
+    "groupRoute": "Opus",
     "selectable": true,
     "label": "Claude Opus 5.5",
     "family": "claude",
     "match": [
-      "claude-opus-5-5"
+      "claude-opus-5-5",
+      "^opus$"
     ],
     "exclude": [
       "claude-opus-5-5-\\d"
     ],
     "preferredRoutes": [
+      "Opus",
       "cc/claude-opus-5-5"
     ],
     "efforts": [
@@ -52,15 +58,18 @@
   },
   {
     "id": "claude-sonnet-5-5",
+    "groupRoute": "Sonnet",
     "thinkingCanDisable": true,
     "thinkingOffType": "between_tools",
     "selectable": true,
     "label": "Claude Sonnet 5.5",
     "family": "claude",
     "match": [
-      "claude-sonnet-5-5"
+      "claude-sonnet-5-5",
+      "^sonnet$"
     ],
     "preferredRoutes": [
+      "Sonnet",
       "cc/claude-sonnet-5-5"
     ],
     "efforts": [
@@ -77,13 +86,16 @@
   },
   {
     "id": "gemini-38-flash",
+    "groupRoute": "Gemini",
     "selectable": true,
     "label": "Gemini 3.8 Flash",
     "family": "gemini",
     "match": [
-      "gemini-3\\.8-flash"
+      "gemini-3\\.8-flash",
+      "^gemini$"
     ],
     "preferredRoutes": [
+      "Gemini",
       "ag/gemini-3.8-flash-low",
       "ag/gemini-3.8-flash-medium",
       "ag/gemini-3.8-flash-high",
@@ -113,7 +125,7 @@
   {
     "id": "kimi-k3",
     "label": "Kimi K3",
-    "selectable": true,
+    "selectable": false,
     "family": "kimi",
     "match": [
       "kimi-k3(?:[^0-9]|$)"
@@ -135,7 +147,7 @@
   {
     "id": "muse-spark-13",
     "label": "Muse Spark 1.3",
-    "selectable": true,
+    "selectable": false,
     "family": "muse",
     "match": [
       "muse-spark-1\\.3"
@@ -160,7 +172,7 @@
   {
     "id": "step-5-preview",
     "label": "Step 5 Preview",
-    "selectable": true,
+    "selectable": false,
     "family": "step",
     "match": [
       "step-5-preview"
@@ -184,15 +196,17 @@
   },
   {
     "id": "glm-52",
+    "groupRoute": "GLM",
     "label": "GLM",
     "selectable": true,
     "family": "glm",
     "match": [
-      "glm-5\\.2(?:[^0-9]|$)"
+      "glm-5\\.2(?:[^0-9]|$)",
+      "^glm$"
     ],
     "preferredRoutes": [
-      "cbai/glm-5.2",
-      "nvidia/z-ai/glm-5.2"
+      "GLM",
+      "cbai/glm-5.2"
     ],
     "efforts": [
       "high"

@@ -342,6 +342,22 @@ test('sync: hash divergente com fingerprint compatível e conversa perdida bloqu
   await assert.rejects(lost.sync.synchronize(lost.options), { code: 'MISSING_CONVERSATIONS' });
 });
 
+test('sync: pushback reconcilia conversa mesclada que divergiu do PC apos pull', async () => {
+  let pullDone = false;
+  const f = fixture({
+    onCall: ({ kind, state, body }) => {
+      if (kind === 'mobile' && body?.pushes?.some(p => p.convId === 'merged-c')) {
+        pullDone = true;
+      }
+    }
+  });
+  f.put('pc', 'merged-c', 'nome inicial');
+  const res = await f.sync.synchronize(f.options);
+  assert.equal(res.converged, true);
+  assert.equal(f.states.mobile.rows.has('merged-c'), true);
+  assert.equal(pullDone, true);
+});
+
 for (const loseCheckpoint of [false, true]) test(loseCheckpoint
   ? 'sync Rust real: recupera checkpoint privado perdido sem perder alterações independentes dos dois cofres'
   : 'sync Rust real: Stores criptografados, baseline, merge offline, pullback e IDs', {

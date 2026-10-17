@@ -89,7 +89,7 @@ function runProcess(cmd, args, options = {}) {
       cwd: options.cwd || ROOT,
       env: { ...process.env, ...options.env },
       stdio: 'inherit',
-      shell: false,
+      shell: process.platform === 'win32' && (cmd === 'npm' || executable.endsWith('.cmd')),
     });
 
     proc.on('close', (code) => {

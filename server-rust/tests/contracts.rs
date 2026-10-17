@@ -1068,3 +1068,29 @@ fn router_reader_is_readonly_and_incompatible_stays_unverified() {
         "unverified"
     );
 }
+
+
+#[test]
+fn combo_group_routes_support_and_public_ordering() {
+    assert_eq!(presets::for_route("Deepseek")["id"], "deepseek-v41-flash");
+    assert_eq!(presets::for_route("Gemini")["id"], "gemini-38-flash");
+    assert_eq!(presets::for_route("Sonnet")["id"], "claude-sonnet-5-5");
+    assert_eq!(presets::for_route("Opus")["id"], "claude-opus-5-5");
+    assert_eq!(presets::for_route("GLM")["id"], "glm-52");
+
+    let advertised = vec![
+        "cbai/deepseek-v4.1-flash".to_string(),
+        "Deepseek".to_string(),
+        "oc/deepseek-v4.1-flash-free".to_string(),
+        "Gemini".to_string(),
+        "ag/gemini-3.8-flash-low".to_string(),
+    ];
+    let pub_list = presets::public(&advertised, &json!({}));
+    let ds = pub_list.iter().find(|p| p["id"] == "deepseek-v41-flash").unwrap();
+    assert_eq!(ds["routes"][0]["id"], "Deepseek", "groupRoute must be ordered first in routes");
+    assert_eq!(ds["groupRoute"], "Deepseek");
+
+    let gemini = pub_list.iter().find(|p| p["id"] == "gemini-38-flash").unwrap();
+    assert_eq!(gemini["routes"][0]["id"], "Gemini", "groupRoute must be ordered first in routes");
+    assert_eq!(gemini["groupRoute"], "Gemini");
+}

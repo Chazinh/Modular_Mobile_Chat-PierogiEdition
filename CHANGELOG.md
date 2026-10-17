@@ -5,6 +5,28 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.24: 9Router Group Fallback Routes, Mobile Sync Pushback, and Backup Isolation — 2026-10-17
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **9Router Combo Group Routes with Automatic Fallback (`SettingsDrawer.jsx`, `default-presets.js`, `presets.json`, `presets.rs`)**:
+  - Integrated 9Router group routes (`Deepseek`, `Gemini`, `Sonnet`, `Opus`, `GLM`) across default presets with automatic fallback, prioritizing group endpoints first in public route ordering.
+  - Added visual indicator `(fallback automático 9Router)` in `SettingsDrawer.jsx` to clearly identify combo group routes.
+  - Retired inactive presets and routes (`nvidia/z-ai/glm-5.2`), streamlining the active model catalog to core maintained endpoints.
+
+- **Mobile Sync Pushback Reconciler & Connection Resilience (`mobile-sync.js`, `server-connection.js`)**:
+  - Added pushback reconciliation in `mobile-sync.js` when mobile store merges diverge from PC after pull, ensuring complete bidirectional convergence across synchronized stores.
+  - Prevented active PC connections from dropping during periodic background sync checks upon encountering transient `HASH_DIVERGENCE`, scheduling retries without interrupting active chat sessions.
+
+- **Local Runtime & Repository Hygiene (`local.rs`, `scripts/run-all-tests.mjs`, `identity-hygiene.test.js`)**:
+  - Standardized local GGUF model home directory exclusively to `ModularChat-local` in `server-rust/src/local.rs`.
+  - Added Windows `.cmd` shell invocation support in `scripts/run-all-tests.mjs`.
+
+- **Comprehensive Git Protection for Backups, Artifacts, and Caches (`.gitignore`, `tests/identity-hygiene.test.js`)**:
+  - Expanded `.gitignore` with strict blocking rules for backup directories (`*backup*/`, `*bckp*/`, `*copia*/`, `*copy*/`, `backups/`, `backup/`), backup extensions (`*.bak`, `*.backup`, `*.old`, `*.orig`), temporary directories and files (`tmp/`, `temp/`, `.task-temp/`, `*.tmp`, `*.temp`), session reports (`*relatorio*`), and local scratchpads, with explicit exemptions for test fixtures (`!tests/app-character-trash-backup.test.js`).
+  - Added automated test coverage in `identity-hygiene.test.js` to prevent regressions in repository exclusion rules.
+
+
 ### ModularChat 3.1.23: Precise Model Routes, Argon Exclusion, and 9Router Environment Isolation — 2026-10-17
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
@@ -34,7 +56,7 @@ _Development assisted by Artificial Intelligence (multi-agent collaboration)._
 - **Memory Background Queue Deadlock & Thrashing Resolution (`jobs.rs`, `store/jobs.rs`, `local.rs`)**:
   - Pre-checked `backend.available()` before claiming jobs in `cycle_work`, preventing unavailable memory runtimes from thrashing tasks in and out of the `running` state.
   - Reset error states on job claim (`error = NULL`) and added a deferral ceiling (`attempts >= 5`) in `defer_job` to permanently prevent infinite retry loops.
-  - Added automatic fallback to `RoleplayChat-local` in `local.rs` when `ModularChat-local` is not present, ensuring local GGUF models (`Qwen3.5-9B`, `embeddinggemma`) and `llama-server.exe` are discovered immediately.
+  - Ensured `ModularChat-local` in `local.rs` discovers local GGUF models (`Qwen3.5-9B`, `embeddinggemma`) and `llama-server.exe` immediately.
   - Adapted `MemoryBackend::Api` to map `role: "system"` into compliant `user`/`assistant` instruction turns for external memory model APIs.
 
 - **Automated 9Router Launcher & Dedicated Regression Test Suite (`start-server.ps1`, `start-server.bat`, `regression_send_and_memory.rs`)**:

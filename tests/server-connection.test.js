@@ -288,6 +288,20 @@ test('PC ativo: checagem periódica observa memória sem interromper inferência
   assert.equal(f.lifecycle.includes('activate'), false, 'the phone must not take over from a healthy busy PC');
 });
 
+test('PC ativo: checagem periódica com HASH_DIVERGENCE não desconecta o PC ativo', async () => {
+  let now = 0, calls = 0;
+  const f = autoFixture({ now: () => now, sync: async () => {
+    if (++calls > 1) throw Object.assign(Error('Os cofres ainda não convergiram'), { code: 'HASH_DIVERGENCE' });
+    return { converged: true };
+  } });
+  f.connection.configure({ local });
+  assert.equal((await f.connection.resolveTarget()).kind, 'pc');
+  now = 11000;
+  assert.equal((await f.connection.resolveTarget()).kind, 'pc');
+  assert.equal(f.statuses.at(-1).code, 'HASH_DIVERGENCE');
+  assert.equal(f.lifecycle.includes('activate'), false, 'o telefone não deve assumir quando o PC ativo tem divergência transitória');
+});
+
 test('auto: timer foreground 10s, visibility/offline/resume e teardown StrictMode', async () => {
   let now = 0, seq = 0, syncs = 0;
   const jobs = new Map();

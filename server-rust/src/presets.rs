@@ -7,7 +7,11 @@ pub const PRESET_VERSION: u32 = 10;
 /// Retired presets: old conversations that use them still open and generate with the current default preset.
 const RETIRED_PRESETS: &[&str] = &["space-bunny"];
 /// Routes that must not be exposed or selected (e.g. argon is excluded by request; space-bunny is retired).
-const RETIRED_ROUTE_MARKS: &[&str] = &["space-bunny", "argon"];
+const RETIRED_ROUTE_MARKS: &[&str] = &[
+    "space-bunny",
+    "argon",
+    "nvidia/z-ai/glm-5.2",
+];
 pub fn selectable_route(route: &str) -> bool {
     !route.trim().is_empty() && route.len() <= 512 && !route.chars().any(char::is_control)
         && !RETIRED_ROUTE_MARKS.iter().any(|m| route.to_lowercase().contains(m))
@@ -123,6 +127,12 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                     if let Some(u) = u.as_str().filter(|u| !route_ids.iter().any(|r| r == u)) {
                         route_ids.push(u.to_string());
                     }
+                }
+            }
+            if let Some(grp) = p["groupRoute"].as_str() {
+                if let Some(pos) = route_ids.iter().position(|r| r == grp) {
+                    let item = route_ids.remove(pos);
+                    route_ids.insert(0, item);
                 }
             }
             let routes: Vec<_> = route_ids

@@ -292,8 +292,22 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         if (m) pullBases.set(id, Object.hasOwn(state.baselines, id) ? state.baselines[id].mobileHash : m.hash);
       }
     }
-    if (pullIds.length) await transfer(pc, mobile, pcId, mobileId, pullIds, pullBases, 'mobile');
-    pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
+    if (pullIds.length) {
+      await transfer(pc, mobile, pcId, mobileId, pullIds, pullBases, 'mobile');
+      pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
+      const pushbackIds = [], pushbackBases = new Map();
+      for (const id of pullIds) {
+        const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
+        if (p && m && !p.purged && !m.purged && (compatible() ? p.hash !== m.hash : p.contentHash !== m.contentHash)) {
+          pushbackIds.push(id);
+          pushbackBases.set(id, p.hash);
+        }
+      }
+      if (pushbackIds.length) {
+        await transfer(mobile, pc, mobileId, pcId, pushbackIds, pushbackBases, 'pc');
+        pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
+      }
+    }
     if (pcState.manifests.size !== mobileState.manifests.size) fail('MISSING_CONVERSATIONS', 'A sincronização ainda não contém todas as conversas.');
     const baselines = Object.create(null);
     for (const [id, p] of pcState.manifests) {

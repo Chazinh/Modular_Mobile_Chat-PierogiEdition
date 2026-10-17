@@ -302,7 +302,10 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
   const selectedPatch = () => ({ presetId: sel.presetId, routeId: sel.routeId, effort: sel.effort, ...(cur?.thinkingCanDisable ? { settings: { thinkingEnabled: sel.thinkingEnabled } } : {}) });
 
   function choosePreset(p) {
-    const route = p.routes.find((r) => r.id === sel.routeId) || p.routes.find((r) => p.preferredRoutes?.includes(r.id)) || p.routes[0];
+    const route = (p.groupRoute && p.routes.find((r) => r.id === p.groupRoute))
+      || p.routes.find((r) => r.id === sel.routeId)
+      || p.routes.find((r) => p.preferredRoutes?.includes(r.id))
+      || p.routes[0];
     if (!route) return;
     // presets with their own default (GLM 5.2 without thinking) start at that default; leaving them turns thinking back on
     const prev = list.find((x) => x.id === sel.presetId);
@@ -341,13 +344,18 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
                 {p.thinkingCanDisable ? <button role="switch" aria-label={tr("Pensamento do modelo selecionado")} aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
                   <span>{tr("Pensamento do modelo")}</span><Switch on={sel.thinkingEnabled} />
                 </button> : <p className="mb-3 text-xs text-textMuted">{p.thinking === 'none' ? tr("Esta rota usa o menor pensamento disponível e não permite desligá-lo.") : tr("Controle de desligamento indisponível nesta rota.")}</p>}
-                <p className="mb-1 text-xs text-textMuted">{tr("Rota exata")}</p>
-                {p.routes.map((r) => (
-                  <button key={r.id} onClick={() => setSel((s) => ({ ...s, routeId: r.id, effort: p.effortByRoute?.[r.id] ?? s.effort }))} className="flex w-full items-center gap-2 py-1.5 text-left text-sm">
-                    <span className={`h-3.5 w-3.5 rounded-full border ${sel.routeId === r.id ? 'border-accentPurpleLight bg-accentPurple' : 'border-gray-500'}`} />
-                    <span className="break-all">{r.id}</span>
-                  </button>
-                ))}
+                <p className="mb-1 text-xs text-textMuted">{tr("Rota ou grupo de modelos")}</p>
+                {p.routes.map((r) => {
+                  const isGroup = r.id === p.groupRoute;
+                  return (
+                    <button key={r.id} onClick={() => setSel((s) => ({ ...s, routeId: r.id, effort: p.effortByRoute?.[r.id] ?? s.effort }))} className="flex w-full items-center gap-2 py-1.5 text-left text-sm">
+                      <span className={`h-3.5 w-3.5 rounded-full border ${sel.routeId === r.id ? 'border-accentPurpleLight bg-accentPurple' : 'border-gray-500'}`} />
+                      <span className="break-all">
+                        {r.id} {isGroup ? <span className="ml-1 text-xs text-accentPurpleLight font-medium">({tr("fallback automático 9Router")})</span> : null}
+                      </span>
+                    </button>
+                  );
+                })}
                 {p.efforts.length > 0 && (
                   <>
                     <p className="mb-1 mt-3 text-xs text-textMuted">{p.thinkingCanDisable && !sel.thinkingEnabled ? tr("Esforço guardado para quando o pensamento estiver ligado") : p.effortByRoute ? 'Esforço (cada nível é uma rota própria)' : p.efforts.length > 1 ? tr("Esforço desta conversa") : tr("Esforço (fixo neste preset)")}</p>
