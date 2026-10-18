@@ -111,6 +111,114 @@ pub enum MemoryBackend {
     },
 }
 impl MemoryBackend {
+    pub async fn resolve(
+        local: &LocalModels,
+        runtime: &RuntimeProviders,
+        policy: &MemoryPolicy,
+        client: &reqwest::Client,
+    ) -> Result<Option<Self>> {
+        if local.is_mobile() {
+            Self::mobile(local, runtime, policy, client).await
+        } else {
+            Self::desktop(local, runtime, policy, client).await
+        }
+    }
+
+    pub async fn desktop(
+        local: &LocalModels,
+        runtime: &RuntimeProviders,
+        policy: &MemoryPolicy,
+        client: &reqwest::Client,
+    ) -> Result<Option<Self>> {
+        if policy.mode == MemoryMode::Deferred {
+            return Ok(None);
+        }
+        if policy.mode == MemoryMode::Local && local.chat_available() {
+            return Ok(Some(Self::Local {
+                local: local.clone(),
+                compact: false,
+            }));
+        }
+        Self::desktop_upstream(runtime, policy, client).await
+    }
+
+    pub fn desktop_upstream_model(
+        runtime: &RuntimeProviders,
+        policy: &MemoryPolicy,
+    ) -> Option<String> {
+        if policy.mode == MemoryMode::Deferred {
+            return None;
+        }
+        let snapshot = runtime.snapshot()?;
+        if let Some(api) = &policy.api {
+            Some(api.model.clone())
+        } else {
+            let provider = snapshot.default_provider();
+            let model = std::env::var("MC_MEMORY_MODEL")
+                .or_else(|_| std::env::var("MEMORY_MODEL"))
+                .unwrap_or_else(|_| {
+                    if let Some(m) = provider.models.first() {
+                        m.clone()
+                    } else {
+                        "oc/deepseek-v4.1-flash-free".to_string()
+                    }
+                });
+            Some(model)
+        }
+    }
+
+    async fn desktop_upstream(
+        runtime: &RuntimeProviders,
+        policy: &MemoryPolicy,
+        client: &reqwest::Client,
+    ) -> Result<Option<Self>> {
+        let Some(snapshot) = runtime.snapshot() else {
+            return Ok(None);
+        };
+        let (provider, model) = if let Some(api) = &policy.api {
+            match snapshot.target(&RouteTarget {
+                provider: api.provider.clone(),
+                model: api.model.clone(),
+            }) {
+                Ok((p, m)) => (p, m),
+                Err(_) => (snapshot.default_provider().clone(), api.model.clone()),
+            }
+        } else {
+            let provider = snapshot.default_provider().clone();
+            let model = std::env::var("MC_MEMORY_MODEL")
+                .or_else(|_| std::env::var("MEMORY_MODEL"))
+                .unwrap_or_else(|_| {
+                    if let Some(m) = provider.models.first() {
+                        m.clone()
+                    } else {
+                        "oc/deepseek-v4.1-flash-free".to_string()
+                    }
+                });
+            (provider, model)
+        };
+        let mut model = model;
+        if provider.is_loopback() && !provider.preflight(&model).await {
+            if model != "Deepseek" && provider.preflight("Deepseek").await {
+                model = "Deepseek".to_string();
+            } else {
+                return Ok(None);
+            }
+        }
+        let api = MemoryApi {
+            provider: provider.id.clone(),
+            model,
+            history_consent: true,
+            max_tokens: 3000,
+            max_input_tokens: 32000,
+            timeout_seconds: 90,
+        };
+        Ok(Some(Self::Api {
+            client: client.clone(),
+            provider,
+            api,
+        }))
+    }
+
     pub async fn mobile(
         local: &LocalModels,
         runtime: &RuntimeProviders,
@@ -202,8 +310,22 @@ impl MemoryBackend {
                         }
                     })
                     .collect();
-                let body = json!({"messages":adapted_messages,"stream":false,"temperature":temperature,"max_tokens":reserve,
-                    "response_format":{"type":"json_schema","json_schema":{"name":"memory","strict":true,"schema":schema}}});
+                let body = json!({
+                    "messages": adapted_messages,
+                    "stream": false,
+                    "temperature": temperature,
+                    "max_tokens": reserve,
+                    "chat_template_kwargs": { "enable_thinking": false },
+                    "thinking": { "type": "disabled" },
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "memory",
+                            "strict": true,
+                            "schema": schema
+                        }
+                    }
+                });
                 // No retry or route fallback here: this POST may have been accepted.
                 let response = provider
                     .chat_request(
@@ -239,23 +361,7 @@ impl MemoryBackend {
                     }
                     bytes.extend_from_slice(&chunk);
                 }
-                let response: Value = serde_json::from_slice(&bytes)
-                    .map_err(|_| Error::new(502, "Envelope JSON de memória inválido."))?;
-                if matches!(
-                    response["choices"][0]["finish_reason"].as_str(),
-                    Some("length" | "max_tokens")
-                ) {
-                    return Err(Error::new(
-                        502,
-                        "JSON de memória ficou incompleto; retry necessário.",
-                    ));
-                }
-                serde_json::from_str(
-                    response["choices"][0]["message"]["content"]
-                        .as_str()
-                        .unwrap_or_default(),
-                )
-                .map_err(|_| Error::new(502, "API de memória não devolveu JSON completo."))?
+                parse_model_content(&bytes)?
             }
         };
         validate_schema(&result, &schema)?;
@@ -335,4 +441,73 @@ pub fn validate_schema(value: &Value, schema: &Value) -> Result<()> {
             "Saída de memória incompleta ou incompatível com o schema; retry necessário.",
         ))
     }
+}
+
+fn parse_model_content(bytes: &[u8]) -> Result<Value> {
+    if bytes.starts_with(b"data: ") || bytes.windows(7).any(|w| w == b"\ndata: ") {
+        let text = std::str::from_utf8(bytes).map_err(|_| Error::new(502, "Resposta de memória não é UTF-8."))?;
+        let mut combined_content = String::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(data) = line.strip_prefix("data: ") {
+                let data = data.trim();
+                if data == "[DONE]" {
+                    break;
+                }
+                if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+                    if let Some(content) = chunk["choices"][0]["delta"]["content"].as_str() {
+                        combined_content.push_str(content);
+                    } else if let Some(content) = chunk["choices"][0]["message"]["content"].as_str() {
+                        combined_content.push_str(content);
+                    }
+                }
+            }
+        }
+        if !combined_content.is_empty() {
+            return parse_json_content(&combined_content);
+        }
+    }
+
+    let response: Value = serde_json::from_slice(bytes)
+        .map_err(|_| Error::new(502, "Envelope JSON de memória inválido."))?;
+    if matches!(
+        response["choices"][0]["finish_reason"].as_str(),
+        Some("length" | "max_tokens")
+    ) {
+        return Err(Error::new(
+            502,
+            "JSON de memória ficou incompleto; retry necessário.",
+        ));
+    }
+    let content = response["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default();
+    parse_json_content(content)
+}
+
+fn parse_json_content(raw: &str) -> Result<Value> {
+    let mut text = raw.trim();
+    if let Some(pos) = text.find("</think>") {
+        text = text[pos + "</think>".len()..].trim();
+    }
+    if let Some(stripped) = text.strip_prefix("```json") {
+        text = stripped;
+    } else if let Some(stripped) = text.strip_prefix("```") {
+        text = stripped;
+    }
+    if let Some(pos) = text.rfind("```") {
+        text = text[..pos].trim();
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(text) {
+        return Ok(v);
+    }
+    if let Some(start) = text.find('{')
+        && let Some(end) = text.rfind('}')
+        && end > start
+    {
+        if let Ok(v) = serde_json::from_str::<Value>(&text[start..=end]) {
+            return Ok(v);
+        }
+    }
+    Err(Error::new(502, "API de memória não devolveu JSON completo."))
 }

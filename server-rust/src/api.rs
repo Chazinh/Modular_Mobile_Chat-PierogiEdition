@@ -106,16 +106,28 @@ impl AppState {
         } else {
             config.providers.clone()
         });
-        let memory_policy = if config.is_android() {
-            let value = store.call(Request::LoadMobilePolicy).await?;
-            if value.is_null() {
-                let policy = crate::memory_backend::MemoryPolicy::default();
-                store
-                    .call(Request::SaveMobilePolicy(policy.clone()))
-                    .await?;
-                policy
-            } else {
-                crate::memory_backend::MemoryPolicy::parse(&value)?
+        let memory_policy = if store.encrypted {
+            match store.call(Request::LoadMobilePolicy).await {
+                Ok(value) if !value.is_null() => {
+                    crate::memory_backend::MemoryPolicy::parse(&value).unwrap_or_else(|_| {
+                        crate::memory_backend::MemoryPolicy {
+                            mode: crate::memory_backend::MemoryMode::Local,
+                            api: None,
+                        }
+                    })
+                }
+                _ => {
+                    let policy = if config.is_android() {
+                        crate::memory_backend::MemoryPolicy::default()
+                    } else {
+                        crate::memory_backend::MemoryPolicy {
+                            mode: crate::memory_backend::MemoryMode::Local,
+                            api: None,
+                        }
+                    };
+                    let _ = store.call(Request::SaveMobilePolicy(policy.clone())).await;
+                    policy
+                }
             }
         } else {
             crate::memory_backend::MemoryPolicy {
@@ -225,6 +237,18 @@ impl AppState {
         if let Some(discovery) = discovery {
             status["discovery"] = json!(discovery);
         }
+        if !self.config.is_android() && !self.local.chat_available() {
+            if let Some(model) = crate::memory_backend::MemoryBackend::desktop_upstream_model(
+                &self.providers,
+                &self.policy.read().unwrap(),
+            ) {
+                status["chat"]["ok"] = json!(true);
+                status["chat"]["model"] = json!(format!("API ({})", model));
+                status["chat"]["backend"] = json!("upstream");
+                status["chat"]["reason"] =
+                    json!("Usando modelo remoto/upstream configurado no provedor.");
+            }
+        }
         status["memoryPolicy"] = json!(self.policy.read().unwrap().clone());
         status["memoryConcurrency"] = json!(1);
         status["localRoute"] = json!("mobile-local");
@@ -316,13 +340,14 @@ impl AppState {
         Ok(old.redacted())
     }
     async fn update_policy(&self, body: &Value) -> Result<Value> {
-        self.require_mobile()?;
         let _gate = self.configuration_gate.lock().await;
         let policy = crate::memory_backend::MemoryPolicy::parse(body)?;
         policy.check_destination(&self.providers)?;
-        self.store
-            .call(Request::SaveMobilePolicy(policy.clone()))
-            .await?;
+        if self.store.encrypted {
+            self.store
+                .call(Request::SaveMobilePolicy(policy.clone()))
+                .await?;
+        }
         *self.policy.write().unwrap() = policy.clone();
         self.runner.kick();
         Ok(json!({"memoryPolicy":policy,"concurrency":1}))
@@ -650,7 +675,7 @@ async fn dispatch(
         }
         ["status"] if get => {
             let models = state.fresh_models().await;
-            json!({"db":state.store.call(Request::Status).await?,"local":state.local.status().await,"jobs":state.runner.state().await,"router":match models{Ok(m)=>json!({"ok":true,"models":m.len()}),Err(e)=>json!({"ok":false,"error":e.message})},"generating":state.generation.busy_ids().await,"time":crate::now()})
+            json!({"db":state.store.call(Request::Status).await?,"local":state.local_status().await?,"jobs":state.runner.state().await,"router":match models{Ok(m)=>json!({"ok":true,"models":m.len()}),Err(e)=>json!({"ok":false,"error":e.message})},"generating":state.generation.busy_ids().await,"time":crate::now()})
         }
         ["local", "status"] if get => state.local_status().await?,
         ["local", "discovery"] if get => {
@@ -666,7 +691,6 @@ async fn dispatch(
         }
         ["local", "providers"] if put => state.update_providers(&b).await?,
         ["local", "policy"] if get => {
-            state.require_mobile()?;
             json!({"memoryPolicy":state.policy.read().unwrap().clone(),"concurrency":1})
         }
         ["local", "policy"] if put || post => state.update_policy(&b).await?,

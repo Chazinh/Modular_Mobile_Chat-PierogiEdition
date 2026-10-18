@@ -187,19 +187,11 @@ impl Runner {
         self.cycle_work(&mut pause).await
     }
     async fn cycle_work(&self, pause: &mut watch::Receiver<tokio::time::Instant>) -> Result<bool> {
-        let backend = if self.local.is_mobile() {
-            let policy = self.policy.read().unwrap().clone();
-            let Some(backend) =
-                MemoryBackend::mobile(&self.local, &self.providers, &policy, &self.client).await?
-            else {
-                return Ok(false);
-            };
-            backend
-        } else {
-            MemoryBackend::Local {
-                local: self.local.clone(),
-                compact: false,
-            }
+        let policy = self.policy.read().unwrap().clone();
+        let Some(backend) =
+            MemoryBackend::resolve(&self.local, &self.providers, &policy, &self.client).await?
+        else {
+            return Ok(false);
         };
         if !backend.available() {
             return Ok(false);
@@ -918,15 +910,45 @@ fn compact_extraction_prompt(persona: &str) -> String {
     )
 }
 pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
-    if !raw.is_object()
-        || raw["summary"].as_str().is_none_or(|s| s.trim().is_empty())
-        || !raw["facts"].is_array()
-    {
+    if !raw.is_object() {
         return Err(Error::new(
             502,
             "Extração local incompleta; turno permanece pendente.",
         ));
     }
+    let summary = raw["summary"]
+        .as_str()
+        .or_else(|| raw["resumo"].as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            let facts = raw["facts"].as_array().or_else(|| raw["fatos"].as_array())?;
+            let text = facts
+                .iter()
+                .take(2)
+                .filter_map(|f| {
+                    f["content"]
+                        .as_str()
+                        .or_else(|| f["fact"].as_str())
+                        .or_else(|| f["fato"].as_str())
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+
+    let Some(summary) = summary else {
+        return Err(Error::new(
+            502,
+            "Extração local incompleta; turno permanece pendente.",
+        ));
+    };
+
     let clean = |v: &Value, max: usize| {
         json!(rules::clip(
             &v.as_str()
@@ -937,8 +959,14 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
             max
         ))
     };
-    let mut out = json!({"summary":clean(&raw["summary"],500),"cast":[],"scene":null,"facts":[],"relationships":[],"openThreads":[],"resolvedThreads":[]});
-    for c in raw["cast"].as_array().into_iter().flatten().take(10) {
+    let mut out = json!({"summary":rules::clip(&summary,500),"cast":[],"scene":null,"facts":[],"relationships":[],"openThreads":[],"resolvedThreads":[]});
+    for c in raw["cast"]
+        .as_array()
+        .or_else(|| raw["personagens"].as_array())
+        .into_iter()
+        .flatten()
+        .take(10)
+    {
         if let Some(name) = crate::cast::name(&s(c, "name")) {
             out["cast"]
                 .as_array_mut()
@@ -946,10 +974,21 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
                 .push(json!({"name":name,"description":clean(&c["description"],300)}));
         }
     }
-    if raw["scene"].is_object() {
-        let scene = &raw["scene"];
+    let scene_val = if raw["scene"].is_object() {
+        Some(&raw["scene"])
+    } else if raw["cena"].is_object() {
+        Some(&raw["cena"])
+    } else {
+        None
+    };
+    if let Some(scene) = scene_val {
         let mut present = Vec::<String>::new();
-        for v in scene["present"].as_array().into_iter().flatten() {
+        for v in scene["present"]
+            .as_array()
+            .or_else(|| scene["presentes"].as_array())
+            .into_iter()
+            .flatten()
+        {
             if let Some(name) = crate::cast::name(v.as_str().unwrap_or_default())
                 && !present.contains(&name)
             {
@@ -962,6 +1001,7 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
         let mut holding = serde_json::Map::new();
         for c in scene["characters"]
             .as_array()
+            .or_else(|| scene["personagens"].as_array())
             .into_iter()
             .flatten()
             .take(40)
@@ -1027,14 +1067,31 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
             out["scene"] = json!({"location":location,"time":time,"mood":crate::cast::known(&s(scene,"mood"),80),"present":present,"positions":positions,"locations":locations,"holding":holding,"objects":scene["objects"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|s|crate::cast::clean(s,50)).filter(|s|!s.is_empty()).take(12).collect::<Vec<_>>()});
         }
     }
-    for f in raw["facts"].as_array().into_iter().flatten().take(14) {
-        let content = clean(&f["content"], 300);
+    let facts_arr = raw["facts"]
+        .as_array()
+        .or_else(|| raw["fatos"].as_array());
+    for f in facts_arr.into_iter().flatten().take(14) {
+        let content_val = if !f["content"].is_null() {
+            &f["content"]
+        } else if !f["fato"].is_null() {
+            &f["fato"]
+        } else {
+            &f["fact"]
+        };
+        let content = clean(content_val, 300);
         if content.as_str().unwrap().len() < 6 {
             continue;
         }
         let mut fact = f.clone();
         fact["content"] = content;
-        fact["subject"] = clean(&f["subject"], 60);
+        fact["subject"] = clean(
+            if !f["subject"].is_null() {
+                &f["subject"]
+            } else {
+                &f["sujeito"]
+            },
+            60,
+        );
         fact["replaces"] = clean(&f["replaces"], 300);
         fact["existingId"] = f["existing_id"].clone();
         fact["kind"] = json!(
@@ -1107,6 +1164,7 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
     }
     for r in raw["relationships"]
         .as_array()
+        .or_else(|| raw["relacionamentos"].as_array())
         .into_iter()
         .flatten()
         .take(8)
@@ -1115,11 +1173,15 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
             out["relationships"].as_array_mut().unwrap().push(r.clone());
         }
     }
-    for (k, source) in [
-        ("openThreads", "open_threads"),
-        ("resolvedThreads", "resolved_threads"),
+    for (k, source, alt) in [
+        ("openThreads", "open_threads", "pendencias"),
+        ("resolvedThreads", "resolved_threads", "resolvidas"),
     ] {
-        for t in raw[source].as_array().into_iter().flatten().take(5) {
+        let list = raw[source]
+            .as_array()
+            .or_else(|| raw[k].as_array())
+            .or_else(|| raw[alt].as_array());
+        for t in list.into_iter().flatten().take(5) {
             out[k].as_array_mut().unwrap().push(clean(t, 220));
         }
     }

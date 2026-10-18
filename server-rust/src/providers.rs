@@ -375,6 +375,25 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
+fn read_local_9router_key() -> Option<String> {
+    let appdata = std::env::var_os("APPDATA")?;
+    let db_path = PathBuf::from(appdata).join("9router/db/data.sqlite");
+    if !db_path.is_file() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    conn.query_row(
+        "SELECT key FROM apiKeys WHERE isActive=1 LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
 impl Providers {
     /// Loads the provider list. `fallback_url` is the URL used when neither a file nor an URL variable
     /// exists (production keeps the historical local 9Router address).
@@ -406,7 +425,8 @@ impl Providers {
                 base_url: url.trim_end_matches('/').to_owned(),
                 api_key: env("MC_UPSTREAM_API_KEY")
                     .or_else(|| env("NINEROUTER_API_KEY"))
-                    .or_else(|| env("NINEROUTER_KEY")),
+                    .or_else(|| env("NINEROUTER_KEY"))
+                    .or_else(read_local_9router_key),
                 models: Vec::new(),
                 request_log: env("NINEROUTER_DB").map(PathBuf::from),
                 reasoning_format: ReasoningFormat::Omit,
@@ -604,9 +624,14 @@ impl Providers {
         let Some((provider, model)) = target else {
             return SelectedBackend::Local;
         };
+        let timeout = if self.mobile {
+            Duration::from_millis(400)
+        } else {
+            Duration::from_millis(3000)
+        };
         if provider.is_loopback()
             && (self.mobile || self.fallbacks.contains_key(route))
-            && !provider.preflight(&model).await
+            && !provider.preflight_with_timeout(&model, timeout).await
         {
             if let Some(target) = self.fallbacks.get(route)
                 && let Ok((provider, model)) = self.target(target)
@@ -632,6 +657,10 @@ impl Provider {
         reqwest::Url::parse(&self.base_url).is_ok_and(|u| loopback_url(&u))
     }
     pub async fn preflight(&self, model: &str) -> bool {
+        self.preflight_with_timeout(model, Duration::from_millis(3000))
+            .await
+    }
+    pub async fn preflight_with_timeout(&self, model: &str, timeout: Duration) -> bool {
         if desktop_url(&self.base_url).is_err() {
             return false;
         }
@@ -648,7 +677,7 @@ impl Provider {
         let Some(client) = CLIENT.as_ref() else {
             return false;
         };
-        tokio::time::timeout(Duration::from_millis(400), async {
+        tokio::time::timeout(timeout, async {
             let mut request = client.get(format!("{}/models", self.base_url.trim_end_matches('/')));
             if let Some(key) = &self.api_key {
                 request = request.bearer_auth(key);
@@ -665,7 +694,7 @@ impl Provider {
                 let Ok(chunk) = chunk else {
                     return false;
                 };
-                if bytes.len() + chunk.len() > 128 * 1024 {
+                if bytes.len() + chunk.len() > 1024 * 1024 {
                     return false;
                 }
                 bytes.extend_from_slice(&chunk);
@@ -674,7 +703,11 @@ impl Provider {
                 .ok()
                 .is_some_and(|body| {
                     body["data"].as_array().is_some_and(|models| {
-                        models.iter().any(|m| m["id"].as_str() == Some(model))
+                        models.iter().any(|m| {
+                            m["id"]
+                                .as_str()
+                                .is_some_and(|id| id.eq_ignore_ascii_case(model))
+                        })
                     })
                 })
         })

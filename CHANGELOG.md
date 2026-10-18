@@ -5,6 +5,27 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.25: Desktop Memory Upstream Fallback, Resilient JSON Extraction, and 9Router Key Discovery — 2026-10-18
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Desktop Memory Upstream Fallback & Status Visibility (`jobs.rs`, `memory_backend.rs`, `api.rs`)**:
+  - Replaced desktop-specific local-only runner gate with dynamic backend resolution via `MemoryBackend::resolve`, enabling background memory extraction on PC using upstream models (9Router / OpenRouter) when local GGUF models are not active.
+  - Added `desktop_upstream_model` inspection and surfaced active upstream memory provider status in `/api/status` under `local.chat` on desktop environments.
+  - Enabled memory policy inspection and updates on desktop without requiring mobile mode restrictions.
+
+- **Resilient Memory Parsing & Portuguese Alias Support (`memory_backend.rs`, `jobs.rs`)**:
+  - Enhanced `parse_model_content` and `parse_json_content` in `memory_backend.rs` to support SSE stream formats (`data: ...`), automatically strip `<think>...</think>` reasoning tokens and markdown code blocks, and locate balanced JSON boundaries.
+  - Upgraded `sanitize_extraction` in `jobs.rs` to support Portuguese schema keys (`resumo`, `fatos`, `cena`, `personagens`, `relacionamentos`, `pendencias`, `resolvidas`) and synthesize summary from extracted facts when omitted, eliminating false 502 extraction errors.
+
+- **Automated 9Router Key Discovery & Preflight Expansion (`providers.rs`)**:
+  - Implemented `read_local_9router_key` in `providers.rs` to automatically discover active API keys from `%APPDATA%\9router\db\data.sqlite` when environment variables are unset.
+  - Expanded preflight models response limit to 1MB and added case-insensitive model matching to seamlessly handle large upstream catalogs.
+
+- **Dedicated Integration Test Suite (`regression_desktop_memory_fallback.rs`)**:
+  - Added comprehensive regression tests validating desktop memory upstream resolution, thinking tag filtering, JSON code block extraction, Portuguese alias normalization, and status reporting.
+
+
 ### ModularChat 3.1.24: 9Router Group Fallback Routes, Mobile Sync Pushback, and Backup Isolation — 2026-10-17
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
