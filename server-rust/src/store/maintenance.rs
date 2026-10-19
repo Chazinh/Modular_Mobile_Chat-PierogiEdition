@@ -247,6 +247,15 @@ impl Database {
                 _ => default,
             }
         };
+        let float = |v: &Value, min: f64, max: f64, default: f64| -> f64 {
+            let n = v
+                .as_f64()
+                .or_else(|| v.as_str().and_then(|t| t.trim().parse::<f64>().ok()));
+            match n {
+                Some(x) if x.is_finite() => ((x * 100.0).round() / 100.0).clamp(min, max),
+                _ => default,
+            }
+        };
         let content = raw["content"]
             .as_str()
             .map(|t| rules::clip(t.replace("\r\n", "\n").trim(), 1500).to_owned())
@@ -258,6 +267,7 @@ impl Database {
             "monologueChars": match int(&raw["monologueChars"], -1, 2000, 300) { n if n < 0 => 300, 0 => 0, n => n.max(100) },
             "turnPacing": match raw["turnPacing"].as_str() { Some("balanced") => "balanced", Some("free") => "free", _ => "interactive" },
             "content": content,
+            "temperature": float(&raw["temperature"], 0.2, 1.4, 0.8),
         })
     }
     pub(super) fn global_settings(&self) -> Result<Value> {

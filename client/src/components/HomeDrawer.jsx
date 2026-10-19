@@ -431,19 +431,67 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
         )}
 
         {page === 'trash' && (
-          <SubPage title={tr("Lixeira ({0} dias)", [trash?.days || 30])} onBack={() => setPage(null)}>
+          <SubPage
+            title={tr("Lixeira ({0} dias)", [trash?.days || 30])}
+            onBack={() => setPage(null)}
+            action={trash?.items?.length > 0 ? (
+              <button
+                onClick={async () => {
+                  if (await confirm(tr("Esvaziar a lixeira? Tudo o que está nela será apagado de vez e não poderá ser restaurado."))) {
+                    await runAction(() => api.purgeAllTrash(), tr("Lixeira esvaziada."));
+                    loadTrash();
+                  }
+                }}
+                className="shrink-0 rounded-full bg-red-500/20 px-3 py-1 text-xs font-semibold text-red-300 active:bg-red-500/30"
+              >
+                {tr("Esvaziar")}
+              </button>
+            ) : null}
+          >
             <div className="mc-bubble mx-[10px] space-y-3 rounded-[26px] p-4 text-sm">
               {trashError && <p className="text-sm text-red-300">{trashError}</p>}
               {trash?.items?.length === 0 && <p className="text-textMuted">{tr("A lixeira está vazia.")}</p>}
-              {trash?.items?.map((item) => (
-                <div key={item.id} className="flex items-center justify-between rounded-xl bg-composer px-3 py-2 text-sm">
-                  <span className="truncate pr-2">{item.name || item.id}</span>
+              {trash?.items?.length > 0 && (
+                <div className="flex items-center justify-between pb-1 border-b border-white/10 text-xs text-textMuted">
+                  <span>{tr("{0} itens na lixeira", [trash.items.length])}</span>
                   <button
-                    onClick={() => runAction(() => api.restoreTrash(item), tr("Item restaurado.")).then(loadTrash)}
-                    className="shrink-0 text-accentPurpleLight font-semibold"
+                    onClick={async () => {
+                      if (await confirm(tr("Esvaziar a lixeira? Tudo o que está nela será apagado de vez e não poderá ser restaurado."))) {
+                        await runAction(() => api.purgeAllTrash(), tr("Lixeira esvaziada."));
+                        loadTrash();
+                      }
+                    }}
+                    className="flex items-center gap-1 text-red-400 hover:text-red-300 font-medium"
                   >
-                    {tr("Restaurar")}
+                    <Trash2 size={13} />
+                    <span>{tr("Esvaziar lixeira")}</span>
                   </button>
+                </div>
+              )}
+              {trash?.items?.map((item) => (
+                <div key={item.id || item.batch || item.preview} className="flex items-center justify-between rounded-xl bg-composer px-3 py-2 text-sm gap-2">
+                  <span className="truncate pr-2">{item.name || item.preview || item.id}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => runAction(() => api.restoreTrash(item), tr("Restaurado.")).then(loadTrash)}
+                      className="text-accentPurpleLight font-semibold text-xs"
+                    >
+                      {tr("Restaurar")}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (await confirm(tr("Apagar DE VEZ? Esta ação não pode ser desfeita."))) {
+                          await runAction(() => api.purgeTrash(item), tr("Apagado definitivamente."));
+                          loadTrash();
+                        }
+                      }}
+                      className="text-red-400 hover:text-red-300 text-xs p-1"
+                      aria-label={tr("Apagar de vez")}
+                      title={tr("Apagar de vez")}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

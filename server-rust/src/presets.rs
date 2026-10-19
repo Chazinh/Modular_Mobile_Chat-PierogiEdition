@@ -368,6 +368,8 @@ pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
     controls["thinkingEnabled"] = json!(thinking_enabled);
     controls["thinkingCanDisable"] = json!(preset["thinkingCanDisable"] == true);
     controls["thinkingOffType"] = preset["thinkingOffType"].clone();
+    controls["sampling"] = preset["sampling"].clone();
+    controls["usesTemperature"] = json!(preset["sampling"] == "temperature");
     if let Some(floor) = preset["reasoningFloor"].as_u64() {
         controls["reasoningFloor"] = json!(floor);
     }

@@ -191,6 +191,15 @@ test('app character and trash flow: atualização de ficha, elenco, ciclo de lix
     const trashAfter = await api.trash();
     assert.ok(!trashAfter.items.some((item) => item.originalId === 'chat-card-1'));
 
+    // 4b. Exclusão e limpeza definitiva da lixeira (purgeAllTrash)
+    await api.deleteChat('chat-card-1');
+    const trashForPurge = await api.trash();
+    assert.equal(trashForPurge.items.length, 1);
+    const purgeAllRes = await api.purgeAllTrash();
+    assert.equal(purgeAllRes.ok, true);
+    const trashEmpty = await api.trash();
+    assert.equal(trashEmpty.items.length, 0);
+
     // 5. Exportação e Importação de backup
     const exported = await api.exportAll('chat-card-1');
     assert.equal(exported.format, 'modularchat-encrypted-export');

@@ -45,6 +45,7 @@ const SETTINGS: &[&str] = &[
     "monologueChars",
     "turnPacing",
     "content",
+    "temperature",
     "minPairs",
     "maxPairs",
     "preferredPairs",
@@ -59,6 +60,7 @@ const PUBLIC_SETTINGS: &[&str] = &[
     "monologueChars",
     "turnPacing",
     "content",
+    "temperature",
 ];
 const JOB_PAYLOAD: &[&str] = &[
     "skipReview",
@@ -1614,6 +1616,7 @@ fn validate_settings(v: &Value, global: bool) -> Result<()> {
             "lengthMode" => matches!(v.as_str(), Some("target" | "maximum")),
             "turnPacing" => matches!(v.as_str(), Some("interactive" | "balanced" | "free")),
             "thinkingEnabled" => v.is_boolean(),
+            "temperature" => v.as_f64().is_some_and(|t| t.is_finite() && (0.2..=1.4).contains(&t)),
             _ => v.as_u64().is_some_and(|n| n <= 2_000_000),
         };
         if !ok {

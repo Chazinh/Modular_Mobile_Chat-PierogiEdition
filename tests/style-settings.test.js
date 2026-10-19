@@ -76,3 +76,22 @@ test('style-settings: concorrência e preservação de pendências em caso de fa
     api.saveGlobalSettings = origSave;
   }
 });
+
+test('style-settings: enfileira e salva criatividade do modelo (temperature)', async () => {
+  const calls = [];
+  const origSave = api.saveGlobalSettings;
+  api.saveGlobalSettings = async (patch) => {
+    calls.push(patch);
+    return { ok: true, saved: patch };
+  };
+
+  try {
+    queueStyleSettings({ temperature: 1.15 });
+    const res = await flushStyleSettings();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], { temperature: 1.15 });
+    assert.equal(res.ok, true);
+  } finally {
+    api.saveGlobalSettings = origSave;
+  }
+});

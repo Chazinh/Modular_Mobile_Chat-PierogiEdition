@@ -169,6 +169,14 @@ pub fn assemble(
             "\n\nCONTEÚDO E EXPLICITUDE (definido pelo usuário; vale para toda a história):\n{content}"
         )
     };
+    let temp = gs["temperature"].as_f64().unwrap_or(0.8);
+    let creativity_rule = if temp < 0.6 {
+        "SEGUIMENTO NARRATIVO E CRIATIVIDADE: Mantenha fidelidade estrita ao rumo estabelecido da história, aos fatos consolidados e às reações esperadas dos personagens, priorizando coerência, consistência e continuidade sobre reviravoltas repentinas."
+    } else if temp > 0.95 {
+        "SEGUIMENTO NARRATIVO E CRIATIVIDADE: Explore maior liberdade narrativa e criatividade no desenvolvimento da cena, trazendo reviravoltas orgânicas, detalhes inesperados e iniciativas ricas dos personagens, mantendo a coerência do mundo."
+    } else {
+        "SEGUIMENTO NARRATIVO E CRIATIVIDADE: Equilibre fidelidade à continuidade da narrativa com criatividade espontânea nas reações e desdobramentos da cena."
+    };
     let core = include_str!("core-prompt.txt")
         .replace("{{persona}}", persona)
         .replace("{{PERSONA}}", &persona.to_uppercase())
@@ -189,6 +197,7 @@ pub fn assemble(
         .replace("{{format_rules}}", format_rules)
         .replace("{{format_example}}", style["example"].as_str().unwrap())
         .replace("{{style_detail}}", style_detail)
+        .replace("{{creativity_rule}}", creativity_rule)
         .replace("{{size_target}}", &size_target)
         .replace("{{turn_control}}", &turn_control)
         .replace("{{limit}}", &thousands(rules::reply_bounds(gs).2 as i64))

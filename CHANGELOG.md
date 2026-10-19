@@ -5,6 +5,24 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.3.0: Model Creativity Narrative Slider, Trash Purge & Clear Controls — 2026-10-19
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Model Creativity Slider & Narrative Adherence Control (`StyleForm.jsx`, `context.rs`, `presets.rs`, `maintenance.rs`)**:
+  - Added a global model creativity slider in the "Estilo" side menu to control narrative adherence ("termômetro do seguimento narrativo") ranging from strictly faithful (0.2–0.5) to balanced (0.8) and highly creative/inventive (1.0–1.4).
+  - Injected dynamic narrative guidance into `core-prompt.txt` based on the configured temperature, balancing story continuity with character spontaneity and organic scene twists.
+  - Linked global temperature settings to route sampling in `presets.rs`, dispatching temperature and `top_p: 0.95` to models when chats do not specify an individual override.
+  - Synchronized `temperature` across PC and mobile devices via `PUBLIC_SETTINGS` and `SETTINGS`.
+
+- **Trash Management & Complete Clear Functionality (`HomeDrawer.jsx`, `api.js`, `en.json`)**:
+  - Added an "Esvaziar lixeira" (Empty trash) option to permanently clear all deleted chats and messages at once with confirmation.
+  - Added per-item permanent deletion buttons alongside the restore button for selective trash cleanup.
+  - Updated English locale dictionaries in `en.json` for all new creativity and trash controls.
+
+- **Anti-Regression Unit Tests (`global-settings.test.js`, `style-settings.test.js`, `app-character-trash-backup.test.js`)**:
+  - Added automated tests covering global temperature normalization, range clamping, queue persistence, and complete trash purging.
+
 ### ModularChat 3.1.27: Coral Multi-Agent RP Dynamics, Global Safety Controls, Muse Spark & Nemotron 3.5 Presets — 2026-10-19
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

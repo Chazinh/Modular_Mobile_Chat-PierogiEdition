@@ -16,7 +16,7 @@ const CONTENT_PRESETS = [
 export default function StyleForm({ onChange }) {
   useLanguage();
   const [s, setS] = useState(null);
-  const [limits, setLimits] = useState({ botCharsMin: 500, botCharsMax: 8000, contentMax: 1500 });
+  const [limits, setLimits] = useState({ botCharsMin: 500, botCharsMax: 8000, contentMax: 1500, tempMin: 0.2, tempMax: 1.4 });
   const [error, setError] = useState('');
   const [saved, setSaved] = useState('');
   const timer = useRef(null);
@@ -26,8 +26,8 @@ export default function StyleForm({ onChange }) {
     try {
       setError('');
       const r = await api.globalSettings();
-      setS({ lengthMode: 'maximum', monologueChars: 300, turnPacing: 'interactive', ...r.settings });
-      setLimits((l) => ({ ...l, ...(r.limits || {}) }));
+      setS({ lengthMode: 'maximum', monologueChars: 300, turnPacing: 'interactive', temperature: 0.8, ...r.settings });
+      setLimits((l) => ({ tempMin: 0.2, tempMax: 1.4, ...l, ...(r.limits || {}) }));
     } catch (e) {
       setError(e.message || tr("Não foi possível carregar os ajustes."));
     }
@@ -137,6 +137,53 @@ export default function StyleForm({ onChange }) {
           className="w-full accent-[#7c3aed]" aria-label={tr("Proporção entre narração e falas dos personagens")}
         />
         <p className="text-xs text-textMuted">{tr("Proporção alvo do texto da próxima resposta. Nos extremos, 0% gera só narração e 100% só falas. Padrão: 35% narração / 65% falas.")}</p>
+      </section>
+
+      <section className="space-y-2 mc-bubble rounded-[26px] p-4 text-white">
+        <div className="flex items-center justify-between">
+          <span className="font-medium">{tr("Criatividade do modelo")}</span>
+          <span className="rounded-md bg-accentPurple/20 px-2 py-0.5 font-mono text-accentPurpleLight">
+            {Number(s.temperature ?? 0.8).toLocaleString(currentLanguage(), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-xs text-textMuted">
+          <span>{tr("Menos criativo")}</span>
+          <span>{tr("Mais criativo")}</span>
+        </div>
+        <input
+          type="range"
+          min={limits.tempMin || 0.2}
+          max={limits.tempMax || 1.4}
+          step="0.05"
+          value={s.temperature ?? 0.8}
+          onChange={(e) => change({ temperature: Number(e.target.value) })}
+          className="w-full accent-[#7c3aed]"
+          aria-label={tr("Criatividade do modelo (termômetro do seguimento narrativo)")}
+        />
+        <div className="flex flex-wrap gap-2">
+          {[
+            ['Fiel', 0.4],
+            ['Equilibrado', 0.8],
+            ['Criativo', 1.1],
+          ].map(([label, val]) => (
+            <button
+              key={val}
+              onClick={() => change({ temperature: val })}
+              aria-pressed={(s.temperature ?? 0.8) === val}
+              className={`mc-bubble rounded-full px-3 py-1 text-xs ${(s.temperature ?? 0.8) === val ? 'bg-accentPurple/30 ring-1 ring-accentPurpleLight' : 'bg-composer'}`}
+            >
+              {tr(label)} ({val.toFixed(1)})
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-textMuted">
+          {(s.temperature ?? 0.8) < 0.6
+            ? tr("Menor criatividade: segue a narrativa com fidelidade estrita, consistência e previsibilidade.")
+            : (s.temperature ?? 0.8) > 0.95
+            ? tr("Maior criatividade: mais liberdade e iniciativa narrativa, desdobramentos surpreendentes e reviravoltas na cena.")
+            : tr("Equilibrado: combina fidelidade ao rumo da história com criatividade espontânea nas reações.")}
+          {tr(" Controla o termômetro (temperatura) do seguimento narrativo para as respostas.")}
+        </p>
       </section>
 
       <section className="space-y-2 mc-bubble rounded-[26px] p-4 text-white">

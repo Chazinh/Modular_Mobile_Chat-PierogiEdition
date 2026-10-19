@@ -4,22 +4,25 @@ import { tempStore, newConv, turn } from './helpers.js';
 
 // Global settings persisted in the Rust Store. The presence of the limit, the ratio and the content in the assembled prompt
 // is verified in server-rust/tests/legacy_ports.rs (global_settings_reach_the_system_prompt_and_the_anchor).
-const DEFAULTS = { botChars: 8000, dialoguePct: 65, content: '', lengthMode: 'maximum', monologueChars: 300, turnPacing: 'interactive' };
+const DEFAULTS = { botChars: 8000, dialoguePct: 65, content: '', lengthMode: 'maximum', monologueChars: 300, turnPacing: 'interactive', temperature: 0.8 };
 
 test('normalização: limites seguros, padrões e conteúdo aparado', async () => {
   const t = await tempStore();
   try {
     assert.deepEqual(await t.store.call('getGlobalSettings'), DEFAULTS);
-    const n = await t.store.call('setGlobalSettings', { botChars: 99999, dialoguePct: -20, content: `  proibido +18\r\nsem violência gráfica  ` });
+    const n = await t.store.call('setGlobalSettings', { botChars: 99999, dialoguePct: -20, content: `  proibido +18\r\nsem violência gráfica  `, temperature: 5.0 });
     assert.equal(n.botChars, 8000, 'o teto duro continua 8.000');
     assert.equal(n.dialoguePct, 0);
     assert.equal(n.content, 'proibido +18\nsem violência gráfica');
-    assert.equal((await t.store.call('setGlobalSettings', { botChars: 10 })).botChars, 500, 'mínimo 500');
-    const strings = await t.store.call('setGlobalSettings', { botChars: '3000', dialoguePct: '40' });
+    assert.equal(n.temperature, 1.4, 'temperatura máxima 1.4');
+    assert.equal((await t.store.call('setGlobalSettings', { botChars: 10, temperature: 0.05 })).temperature, 0.2, 'mínimo 0.2');
+    const strings = await t.store.call('setGlobalSettings', { botChars: '3000', dialoguePct: '40', temperature: '1.1' });
     assert.equal(strings.botChars, 3000);
     assert.equal(strings.dialoguePct, 40);
-    const bad = await t.store.call('setGlobalSettings', { botChars: 'abc' });
+    assert.equal(strings.temperature, 1.1);
+    const bad = await t.store.call('setGlobalSettings', { botChars: 'abc', temperature: 'invalido' });
     assert.equal(bad.botChars, 8000);
+    assert.equal(bad.temperature, 0.8, 'temperatura inválida volta ao padrão');
     assert.equal((await t.store.call('setGlobalSettings', { content: 'x'.repeat(5000) })).content.length, 1500);
   } finally {
     await t.cleanup();

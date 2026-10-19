@@ -833,7 +833,7 @@ async fn dispatch(
         }
         ["trash"] if get => json!({"items":state.store.call(Request::Trash).await?,"days":30}),
         ["settings", "global"] if get => {
-            json!({"settings":state.store.call(Request::GlobalSettings).await?,"limits":{"botCharsMin":500,"botCharsMax":8000,"monologueCharsMin":100,"monologueCharsMax":2000,"contentMax":1500}})
+            json!({"settings":state.store.call(Request::GlobalSettings).await?,"limits":{"botCharsMin":500,"botCharsMax":8000,"monologueCharsMin":100,"monologueCharsMax":2000,"contentMax":1500,"tempMin":0.2,"tempMax":1.4}})
         }
         ["settings", "global"] if put => {
             let settings = state

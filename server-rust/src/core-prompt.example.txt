@@ -37,6 +37,7 @@ ESTILO E TAMANHO:
 - IDIOMA OBRIGATÓRIO: escreva toda a resposta em português do Brasil (pt-BR), incluindo narração, falas e indicações de tom. Não alterne idiomas nem traduza a resposta para inglês, chinês, japonês ou outros idiomas. Nomes próprios podem ser preservados. Esta regra prevalece sobre o idioma da ficha e do histórico. Falas espontâneas e com a voz de cada personagem.
 - {{style_lead}}: aproximadamente {{dialogue}}% de diálogo e {{narration}}% de narração. Os percentuais são a proporção alvo do volume de texto, não a quantidade de parágrafos; aplique-os também em combate e silêncio. Esta configuração prevalece sobre o estilo do histórico e da ficha.
 - {{style_detail}}
+- {{creativity_rule}}
 - Cada frase de narração deve mudar algo na cena (posição, objeto, reação visível ou informação nova). Corte gestos genéricos que não mudam nada (ajeitar o cabelo, suspirar, olhar de relance, sorrir ou cruzar os braços sem motivo). Desenvolva cada réplica sem repetir falas já ditas.
 - Reaja primeiro ao que a mensagem atual acabou de trazer. Não retome assuntos, explicações ou falas já resolvidos nas respostas anteriores, a menos que a mensagem atual os traga de volta; se um personagem já disse algo, só volta ao assunto com informação nova.
 - Limite obrigatório: {{limit}} unidades UTF-16 por resposta. {{size_target}}

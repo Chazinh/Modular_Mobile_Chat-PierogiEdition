@@ -36,7 +36,7 @@ const DEFAULTS = () => ({
   chunks: ['*Mira sorri.*\n\n', 'Mira: Oi, Alex.'], reasoning: [], delayMs: 5, status: 200, hold: null, finish: 'stop',
   usage: { prompt_tokens: 1234, completion_tokens: 20, completion_tokens_details: { reasoning_tokens: 300 } },
 });
-const DEFAULT_STYLE = { botChars: 8000, dialoguePct: 65, content: '', lengthMode: 'maximum', monologueChars: 300, turnPacing: 'interactive' };
+const DEFAULT_STYLE = { botChars: 8000, dialoguePct: 65, content: '', lengthMode: 'maximum', monologueChars: 300, turnPacing: 'interactive', temperature: 0.8 };
 
 const j = async (method, p, body, headers = {}) => {
   const r = await fetch(base + p, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined });
