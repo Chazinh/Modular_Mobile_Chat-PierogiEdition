@@ -109,3 +109,29 @@ fn test_multiagent_and_natural_tone_in_system_prompt() {
         );
     }
 }
+
+#[test]
+fn test_nemotron_and_muse_spark_presets_available_in_catalog() {
+    let nemotron = presets::by_id("nemotron-35");
+    assert_eq!(nemotron["id"], "nemotron-35");
+    assert_eq!(nemotron["selectable"], true);
+    assert_eq!(nemotron["groupRoute"], "Nemotron");
+    assert_eq!(presets::for_route("Nemotron")["id"], "nemotron-35");
+
+    let muse = presets::by_id("muse-spark-13");
+    assert_eq!(muse["id"], "muse-spark-13");
+    assert_eq!(muse["selectable"], true);
+    assert_eq!(muse["groupRoute"], "Muse");
+    assert_eq!(presets::for_route("Muse")["id"], "muse-spark-13");
+
+    // Test public listing with routes discovered or active
+    let routes = vec!["Nemotron".to_string(), "Muse".to_string()];
+    let public_catalog = presets::public(&routes, &json!({}));
+    let pub_nemotron = public_catalog.iter().find(|p| p["id"] == "nemotron-35").expect("nemotron-35 in public");
+    assert_eq!(pub_nemotron["available"], true);
+    assert_eq!(pub_nemotron["selectable"], true);
+
+    let pub_muse = public_catalog.iter().find(|p| p["id"] == "muse-spark-13").expect("muse-spark-13 in public");
+    assert_eq!(pub_muse["available"], true);
+    assert_eq!(pub_muse["selectable"], true);
+}
