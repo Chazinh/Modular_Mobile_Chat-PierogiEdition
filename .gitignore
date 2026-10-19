@@ -68,6 +68,9 @@ route-validation.json
 jwt-secret
 model-catalog*.json
 .env
+core-prompt.txt
+server-rust/src/core-prompt.txt
+*.user_backup
 *.keystore
 *.jks
 keystore.properties

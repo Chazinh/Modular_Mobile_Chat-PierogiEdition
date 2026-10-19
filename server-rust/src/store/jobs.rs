@@ -328,11 +328,12 @@ impl Database {
     }
     pub(super) fn queue_episodes(&self, c: &str) -> Result<Value> {
         let path=self.rows(&format!("{PATH_CTE} SELECT i.id,i.seq,n.summary,n.version_ids_json FROM p JOIN interactions i ON i.id=p.id LEFT JOIN interaction_notes n ON n.interaction_id=i.id WHERE i.deleted_at IS NULL ORDER BY i.seq"),&[json!(c)])?;
+        // Memória de curto prazo: preserva as 5 mensagens mais recentes com detalhes integrais
         let cutoff = path
-            .get(path.len().saturating_sub(30))
+            .get(path.len().saturating_sub(5))
             .map(|i| n(i, "seq"))
             .unwrap_or(-1);
-        if path.len() <= 30 {
+        if path.len() <= 5 {
             return Ok(json!(0));
         }
         let mut covered = HashSet::new();
@@ -365,7 +366,8 @@ impl Database {
                     &crate::rules::tokens(&s(i, "summary")),
                     &crate::rules::tokens(&s(group.last().unwrap(), "summary")),
                 ) < 0.12;
-            if !group.is_empty() && (group.len() >= 10 || scene_changed || topic_changed) {
+            // Memória de longo prazo: agrupa e classifica a cada 15 mensagens passadas
+            if !group.is_empty() && (group.len() >= 15 || scene_changed || topic_changed) {
                 groups.push(std::mem::take(&mut group));
             }
             group.push(i.clone());
@@ -373,7 +375,7 @@ impl Database {
                 previous_scene = location;
             }
         }
-        if group.len() >= 10 {
+        if group.len() >= 15 {
             groups.push(group);
         }
         let mut queued = 0;

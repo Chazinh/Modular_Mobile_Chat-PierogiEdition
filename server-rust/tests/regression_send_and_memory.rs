@@ -259,3 +259,112 @@ fn regression_screenshot_model_routes_and_argon_exclusion() {
         assert!(!routes.iter().any(|r| r.to_lowercase().contains("argon")), "Preset {} não pode conter rota argon", p["id"]);
     }
 }
+
+#[test]
+fn regression_memory_dynamics_and_anti_metagaming() {
+    // 1. Testa que pair_limits permite janela mínima de 3 pares (5 mensagens)
+    let conv = json!({
+        "settings": {
+            "context": {
+                "minPairs": 3,
+                "preferredPairs": 3,
+                "maxPairs": 10,
+                "adaptiveHistory": true
+            }
+        }
+    });
+    let (min, max, pref) = context::pair_limits(&conv);
+    assert_eq!(min, 3, "Mínimo deve permitir 3 pares (~5 mensagens)");
+    assert_eq!(pref, 3, "Preferencial deve aceitar 3 pares");
+    assert_eq!(max, 10);
+
+    // 2. Testa isolamento anti-metagaming: EVENT com visibility=public NÃO deve tornar personagem ausente conhecedor
+    let data = json!({
+        "conv": {
+            "persona": "Alex",
+            "prompt": "História de teste.",
+            "settings": {
+                "context": {
+                    "preferredPairs": 3,
+                    "minPairs": 3,
+                    "maxPairs": 10,
+                    "adaptiveHistory": true
+                }
+            }
+        },
+        "pairs": (1..=3).map(|i| json!({
+            "id": format!("p{i}"),
+            "seq": i,
+            "user": format!("Pergunta {i}"),
+            "assistant": format!("Carlos: Resposta {i}"),
+            "complete": true
+        })).collect::<Vec<_>>(),
+        "totalPairs": 3,
+        "beforeSeq": 4,
+        "pathLength": 3,
+        "cast": [{"name": "Carlos"}, {"name": "Sofia"}],
+        "scene": {
+            "location": "Corredor",
+            "present": ["Alex", "Carlos"]
+        },
+        "pinned": [],
+        "relationships": [],
+        "threads": [],
+        "notes": [],
+        "episodes": [],
+        "timeline": {"current": null},
+        "sync": {"lag": 0, "synced": true},
+        "unprocessed": [],
+        "current": {
+            "interactionId": null,
+            "seq": 4,
+            "userText": "Oi Carlos",
+            "priorParts": []
+        }
+    });
+
+    let retrieval = json!({
+        "candidates": [
+            {
+                "id": "mem-1",
+                "type": "memory",
+                "kind": "EVENT",
+                "subject": "Sofia",
+                "content": "Sofia revelou que escondeu o mapa na biblioteca.",
+                "visibility": "public",
+                "sourceSeq": 0,
+                "knowledge": [
+                    {
+                        "name": "Sofia",
+                        "state": "knows"
+                    }
+                ]
+            }
+        ],
+        "privateMemories": [],
+        "raw": []
+    });
+
+    let p = presets::request(
+        &json!({"presetId":"claude-sonnet-5-5","routeId":"cc/claude-sonnet-5-5"}),
+        vec![],
+        &json!({}),
+    );
+
+    let ctx = context::assemble(&data, &retrieval, "send", &p, None).unwrap();
+
+    // Carlos está presente na cena atual, mas o EVENT não tem Carlos no knowledge
+    // O sistema DEVE classificar Carlos como UNAWARE (NÃO sabe e não pode agir sobre), impedindo metagaming
+    let last_user_msg = ctx.messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(
+        last_user_msg.contains("Carlos: NÃO sabe e não pode agir sobre [M1]"),
+        "Carlos não testemunhou o EVENT mem-1 e deve ser classificado como NÃO sabe: {last_user_msg}"
+    );
+
+    // O tail deve conter o lembrete anti-metagaming para personagens ausentes
+    assert!(
+        last_user_msg.contains("sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem"),
+        "O tail deve reforçar que ausentes nos turnos anteriores não sabem o ocorrido"
+    );
+}
+

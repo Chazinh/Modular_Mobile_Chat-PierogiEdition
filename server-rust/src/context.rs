@@ -9,14 +9,14 @@ pub struct Context {
     pub report: Value,
     pub raw_estimate: usize,
 }
-/// (minimum, maximum, preferred) recent history pairs, already clamped (20–50).
+/// (minimum, maximum, preferred) recent history pairs, clamped (3–50).
 pub fn pair_limits(conv: &Value) -> (usize, usize, usize) {
     let settings = &conv["settings"]["context"];
-    let maximum = settings["maxPairs"].as_u64().unwrap_or(50).clamp(20, 50) as usize;
+    let maximum = settings["maxPairs"].as_u64().unwrap_or(50).clamp(3, 50) as usize;
     let minimum = settings["minPairs"]
         .as_u64()
         .unwrap_or(20)
-        .clamp(20, maximum as u64) as usize;
+        .clamp(3, maximum as u64) as usize;
     let preferred = settings["preferredPairs"]
         .as_u64()
         .unwrap_or(30)
@@ -35,7 +35,7 @@ pub fn retrieval_window_start(data: &Value) -> i64 {
     let pairs = array(&data["pairs"]);
     let minimum = pair_limits(&data["conv"]).0;
     let take = if data["conv"]["settings"]["context"]["adaptiveHistory"] != false {
-        [6, 8, 10]
+        [3, 6, 8, 10]
             .into_iter()
             .find(|take| *take < minimum && summarized_before(data, pairs, *take))
             .unwrap_or(30)
@@ -94,7 +94,7 @@ pub fn assemble(
     ];
     ladder.dedup();
     if !compact && settings["adaptiveHistory"] != false {
-        let summarized = [10, 8, 6]
+        let summarized = [10, 8, 6, 3]
             .into_iter()
             .filter(|take| *take < minimum && summarized_before(data, available, *take))
             .collect::<Vec<_>>();
@@ -221,8 +221,9 @@ pub fn assemble(
         "tudo na mensagem acima já aconteceu como escrito: comece DEPOIS dela, sem reescrevê-la"
     };
     // Size, ratio, examples and turn pacing are already in the stable system prefix.
-    let tail =
-        format!("[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}.]");
+    let tail = format!(
+        "[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem o que foi dito ou ocorrido fora de sua presença.]"
+    );
     let mut pinned_ids = HashSet::new();
     let pinned = array(&data["pinned"])
         .iter()
@@ -354,8 +355,9 @@ pub fn assemble(
                         .into_iter()
                         .flatten()
                         .find(|k| rules::key(k["name"].as_str().unwrap_or_default()) == name_key);
+                    let kind = m["kind"].as_str().unwrap_or_default();
                     let state = k.and_then(|k| k["state"].as_str()).unwrap_or(
-                        if m["visibility"] == "public" {
+                        if m["visibility"] == "public" && kind != "SECRET" && kind != "EVENT" {
                             "knows"
                         } else {
                             "unaware"
