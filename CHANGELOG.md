@@ -5,6 +5,24 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.26: Mobile Sync Conflict Resolution, UI Recovery, and Runner Test Isolation — 2026-10-18
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Mobile Sync Conflict Resolution & UI Recovery (`mobile-sync.js`, `private-storage.js`, `server-connection.js`, `PcConnectionButton.jsx`, `ServerSetup.jsx`, `api.js`)**:
+  - Implemented client-side conflict resolution handling for mobile synchronization divergences (`resolveConflict`, `clearConflict`, `resolveStrategy: 'prefer-pc'`).
+  - Added `clearPrivateConflicts()` to purge persisted conflict batches from secure local storage upon resolution.
+  - Added user-facing recovery banner and conflict resolution action in `PcConnectionButton.jsx` and `ServerSetup.jsx`, enabling one-click divergence recovery directly on mobile devices without manual data wipes.
+  - Propagated conflict resolution parameters through `switchToPc` and `switchToLocal` connection transitions.
+
+- **Integration Test Runner Isolation & Fallback Claiming (`server-rust/src/jobs.rs`, `server-rust/src/memory_backend.rs`)**:
+  - Added explicit check for empty `MC_TEST_LOCAL_URL` in `memory_backend.rs` so integration tests isolating unavailable local models do not fall back to router mocks.
+  - Updated desktop runner cycle in `jobs.rs` to fall back to `MemoryBackend::Local` when no upstream backend is resolved, enabling jobs to be claimed and deferred with "indisponível" as expected by runner integration tests.
+
+- **Automated Anti-Regression Unit Tests (`tests/mobile-sync.test.js`)**:
+  - Added automated test suite verifying conflict batch detection, resolution strategy execution, private storage cleanup, and store synchronization.
+
+
 ### ModularChat 3.1.25: Desktop Memory Upstream Fallback, Resilient JSON Extraction, and 9Router Key Discovery — 2026-10-18
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

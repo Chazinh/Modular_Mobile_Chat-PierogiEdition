@@ -188,12 +188,15 @@ impl Runner {
     }
     async fn cycle_work(&self, pause: &mut watch::Receiver<tokio::time::Instant>) -> Result<bool> {
         let policy = self.policy.read().unwrap().clone();
-        let Some(backend) =
-            MemoryBackend::resolve(&self.local, &self.providers, &policy, &self.client).await?
-        else {
-            return Ok(false);
+        let backend = match MemoryBackend::resolve(&self.local, &self.providers, &policy, &self.client).await? {
+            Some(b) => b,
+            None if !self.local.is_mobile() => MemoryBackend::Local {
+                local: self.local.clone(),
+                compact: false,
+            },
+            None => return Ok(false),
         };
-        if !backend.available() {
+        if self.local.is_mobile() && !backend.available() {
             return Ok(false);
         }
         let job = self.store.call(Request::ClaimJob).await?;

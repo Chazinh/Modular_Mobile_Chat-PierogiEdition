@@ -594,6 +594,8 @@
   "Sincronizando com o PC…": "Syncing with PC…",
   "BUSY · aguardando operação terminar": "BUSY · waiting for operation to finish",
   "Conflito de sincronização · dados preservados": "Sync conflict · data preserved",
+  "Resolver conflito e conectar": "Resolve conflict and connect",
+  "Resolvendo e conectando…": "Resolving and connecting…",
   "Android em standby · descarregando modelos": "Android on standby · unloading models",
   "Android em standby · nenhum modelo residente": "Android on standby · no resident model",
   "Modelo de conversa": "Chat model",

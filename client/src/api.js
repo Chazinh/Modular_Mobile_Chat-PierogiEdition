@@ -1,6 +1,6 @@
 // Browser requests keep their same origin. Native requests capture a PC or embedded target and its credential.
 import { kv } from './kv.js';
-import { privateGet, privateSet, initializePrivacy, privacyNeedsPairing } from './private-storage.js';
+import { privateGet, privateSet, initializePrivacy, privacyNeedsPairing, clearPrivateConflicts } from './private-storage.js';
 import { DEFAULT_PRESETS } from './default-presets.js';
 import { createCacheWriter } from './storage-writes.js';
 import { createLatestRequest } from './connection-lifetime.js';
@@ -229,6 +229,7 @@ export const api = {
     if(needsPairing) await initializePrivacy(pc,r.token);
     await privateSet(LS_TOKEN,r.token);
     if(needsPairing) await kv.migratePrivacy();
+    await clearPrivateConflicts().catch(() => {});
     invalidateConnection();
     return r;
   },
@@ -422,9 +423,13 @@ export const api = {
     }
   },
 
-  switchToLocal: signal => switchToLocal(signal),
-  switchToPc: signal => switchToPc(signal),
+  switchToLocal: (signal, options) => switchToLocal(signal, options),
+  switchToPc: (signal, options) => switchToPc(signal, options),
   probePc: signal => probePc(signal),
+  resolveSyncConflict: async (strategy = 'prefer-pc') => {
+    await clearPrivateConflicts().catch(() => {});
+    return switchToPc(undefined, { resolveConflict: true, resolveStrategy: strategy });
+  },
 };
 
 export { switchToLocal, switchToPc, probePc };

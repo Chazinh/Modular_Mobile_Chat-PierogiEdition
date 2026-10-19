@@ -111,7 +111,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
       if (--job.consumers === 0 && !job.settled) job.controller.abort(error('STALE_CONNECTION', 'A seleção foi cancelada.'));
     }
   }
-  async function resolveTarget(signal, { fresh = false, requiredKind } = {}) {
+  async function resolveTarget(signal, { fresh = false, requiredKind, resolveConflict = false, resolveStrategy = 'prefer-pc' } = {}) {
     signal?.throwIfAborted();
     if (!native()) return captured({ server: current() ? normalizeServer(current(), mode === 'auto') : '', kind: 'browser' });
     if (pending?.epoch === epoch && !pending.controller.signal.aborted) {
@@ -178,7 +178,8 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
           await embedded.standby(controller.signal);
           check();
           syncResult = await sync({ pc: { ...selected, token: pcToken }, mobile: host, signal: controller.signal, pauseMemory: !wasPc || requiredKind === 'pc',
-            isCurrent: () => startedAt === epoch && !controller.signal.aborted });
+            isCurrent: () => startedAt === epoch && !controller.signal.aborted,
+            resolveConflict, resolveStrategy });
           check();
           if (syncResult?.converged !== true) throw error('INCOMPLETE_SYNC', 'Os cofres ainda não convergiram.');
           syncedUntil = now() + 10000;
@@ -313,15 +314,15 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     stopWatching = stop;
     return stop;
   }
-  function switchKind(requiredKind, signal) {
+  function switchKind(requiredKind, signal, options = {}) {
     signal?.throwIfAborted();
     if (leases.size) return Promise.reject(error('ORIGIN_BUSY', 'Aguarde a operação do servidor de origem antes de trocar de host.'));
     if (!native()) return Promise.reject(error('HOST_UNAVAILABLE', 'A troca de host exige o aplicativo Android.'));
     if (pending?.requiredKind !== requiredKind || pending.controller.signal.aborted) invalidate();
-    return resolveTarget(signal, { fresh: true, requiredKind });
+    return resolveTarget(signal, { fresh: true, requiredKind, ...options });
   }
-  const switchToLocal = signal => switchKind('local', signal);
-  const switchToPc = signal => switchKind('pc', signal);
+  const switchToLocal = (signal, options) => switchKind('local', signal, options);
+  const switchToPc = (signal, options) => switchKind('pc', signal, options);
   async function probePc(signal) {
     signal?.throwIfAborted();
     const saved = configured();
@@ -379,6 +380,6 @@ export const connectionFailed = target => {
     connection.invalidate();
   }
 };
-export const switchToLocal = signal => connection.switchToLocal(signal);
-export const switchToPc = signal => connection.switchToPc(signal);
+export const switchToLocal = (signal, options) => connection.switchToLocal(signal, options);
+export const switchToPc = (signal, options) => connection.switchToPc(signal, options);
 export const probePc = signal => connection.probePc(signal);

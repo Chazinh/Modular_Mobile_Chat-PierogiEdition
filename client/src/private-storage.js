@@ -75,3 +75,35 @@ export async function initializePrivacy(server = '', pairingToken) {
     for(const k of legacy)localStorage.removeItem(k);
   }
 }
+
+export async function clearPrivateConflicts(prefix = 'mc.sync.') {
+  let changed = false;
+  for (const k of Object.keys(state)) {
+    if (k.startsWith(prefix)) {
+      try {
+        const val = typeof state[k] === 'string' ? JSON.parse(state[k]) : state[k];
+        if (val?.pending?.code === 'CONFLICT') {
+          val.pending = null;
+          state[k] = JSON.stringify(val);
+          changed = true;
+        }
+      } catch {}
+    }
+  }
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(prefix)) {
+      try {
+        const raw = localStorage.getItem(k);
+        const val = JSON.parse(raw);
+        if (val?.pending?.code === 'CONFLICT') {
+          val.pending = null;
+          localStorage.setItem(k, JSON.stringify(val));
+        }
+      } catch {}
+    }
+  }
+  if (changed) {
+    await writes.save(true);
+  }
+}

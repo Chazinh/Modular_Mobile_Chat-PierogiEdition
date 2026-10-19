@@ -139,6 +139,11 @@ impl MemoryBackend {
                 compact: false,
             }));
         }
+        if let Ok(val) = std::env::var("MC_TEST_LOCAL_URL") {
+            if val.trim().is_empty() {
+                return Ok(None);
+            }
+        }
         Self::desktop_upstream(runtime, policy, client).await
     }
 
@@ -148,6 +153,11 @@ impl MemoryBackend {
     ) -> Option<String> {
         if policy.mode == MemoryMode::Deferred {
             return None;
+        }
+        if let Ok(val) = std::env::var("MC_TEST_LOCAL_URL") {
+            if val.trim().is_empty() {
+                return None;
+            }
         }
         let snapshot = runtime.snapshot()?;
         if let Some(api) = &policy.api {

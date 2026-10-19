@@ -19,7 +19,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
   const fail = (code, message) => { throw new SyncError(code, message); };
   const envelope = (peerId, convIds = []) => ({ format: 'modularchat-sync', version: 1, peerId, known: [], convIds, after: 0, limit: 4 });
 
-  async function run({ pc, mobile, signal, isCurrent = () => true, pauseMemory = true }) {
+  async function run({ pc, mobile, signal, isCurrent = () => true, pauseMemory = true, resolveConflict = false, resolveStrategy = 'prefer-pc' }) {
     const check = () => {
       signal?.throwIfAborted();
       if (!isCurrent()) fail('STALE_CONNECTION', 'A configuração mudou durante a sincronização.');
@@ -187,35 +187,54 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
     // Only metadata is persisted. Recover exact source snapshots from the encrypted Store.
     if (state.pending) {
       const pending = state.pending;
-      const toPc = pending.to === 'pc';
-      const source = toPc ? mobile : pc, dest = toPc ? pc : mobile;
-      const sourceId = toPc ? mobileId : pcId, destId = toPc ? pcId : mobileId;
-      const destState = toPc ? pcState : mobileState;
-      const isRecordResolved = r => {
-        const manifest = destState.manifests.get(r.convId);
-        if (!manifest) return false;
-        if (manifest.purged) {
-          const srcManifest = (toPc ? mobileState : pcState).manifests.get(r.convId);
-          if (srcManifest?.purged) return true;
+      if (resolveConflict && pending.code === 'CONFLICT') {
+        const strategy = resolveStrategy || 'prefer-pc';
+        for (const r of pending.records || []) {
+          const p = pcState.manifests.get(r.convId);
+          const m = mobileState.manifests.get(r.convId);
+          if (p && m) {
+            state.baselines[r.convId] = strategy === 'prefer-pc'
+              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash }
+              : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash };
+          }
         }
-        return compatible() ? manifest.hash === r.hash : manifest.contentHash === r.contentHash;
-      };
-      const alreadyApplied = pending.records.every(isRecordResolved);
-      const rejectedJobMetadata = pending.code === 'CONFLICT' && pending.conflicts?.length > 0
-        && pending.conflicts.every(c => c.reason?.startsWith('ROW_DIVERGED:jobs:') || c.reason?.startsWith('TERMINAL_JOB:'));
-      if (alreadyApplied || rejectedJobMetadata) {
-        // Only a previously rejected queue-metadata conflict can be replanned.
-        // No generation/write receipt with uncertain acceptance is discarded.
         state.pending = null;
         await persist();
       } else {
-        if (pending.code === 'CONFLICT' && (pending.records.length < 2 || pending.conflicts !== undefined)) {
-          throw new SyncError('CONFLICT', 'Um lote conflitante foi preservado; resolva o conflito antes de promover o PC.');
+        const toPc = pending.to === 'pc';
+        const source = toPc ? mobile : pc, dest = toPc ? pc : mobile;
+        const sourceId = toPc ? mobileId : pcId, destId = toPc ? pcId : mobileId;
+        const destState = toPc ? pcState : mobileState;
+        const isRecordResolved = r => {
+          const manifest = destState.manifests.get(r.convId);
+          if (!manifest) return false;
+          if (manifest.purged) {
+            const srcManifest = (toPc ? mobileState : pcState).manifests.get(r.convId);
+            if (srcManifest?.purged) return true;
+          }
+          return compatible() ? manifest.hash === r.hash : manifest.contentHash === r.contentHash;
+        };
+        const alreadyApplied = pending.records.every(isRecordResolved);
+        const rejectedJobMetadata = pending.code === 'CONFLICT' && pending.conflicts?.length > 0
+          && pending.conflicts.every(c => c.reason?.startsWith('ROW_DIVERGED:jobs:') || c.reason?.startsWith('TERMINAL_JOB:'));
+        if (alreadyApplied || rejectedJobMetadata) {
+          // Only a previously rejected queue-metadata conflict can be replanned.
+          // No generation/write receipt with uncertain acceptance is discarded.
+          state.pending = null;
+          await persist();
+        } else {
+          if (pending.code === 'CONFLICT' && (pending.records.length < 2 || pending.conflicts !== undefined)) {
+            throw new SyncError('CONFLICT', 'Um lote conflitante foi preservado; resolva o conflito antes de promover o PC.', {
+              conflicts: pending.conflicts,
+              records: pending.records,
+              canResolve: true,
+            });
+          }
+          const entries = await offer(source, sourceId, destId, pending.records.map(r => r.convId));
+          // Legacy multi-conversation conflicts did not save reasons. An exact idempotent replay
+          // retrieves the recorded rejection so only PUBLIC_SETTINGS_BATCH can be separated.
+          await commit(dest, sourceId, destId, pending.records, entries, pending.to, pending.batchId);
         }
-        const entries = await offer(source, sourceId, destId, pending.records.map(r => r.convId));
-        // Legacy multi-conversation conflicts did not save reasons. An exact idempotent replay
-        // retrieves the recorded rejection so only PUBLIC_SETTINGS_BATCH can be separated.
-        await commit(dest, sourceId, destId, pending.records, entries, pending.to, pending.batchId);
       }
       pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
     }
@@ -261,21 +280,42 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         if (p.hash !== pcState.manifests.get(id).hash || m.hash !== mobileState.manifests.get(id).hash) fail('STALE_SYNC', 'O cofre mudou durante a recuperação do checkpoint.');
         const retained = new Set(m.checkpointHashes || []);
         const common = (p.checkpointHashes || []).find(hash => retained.has(hash));
-        if (!common) fail('CONFLICT', 'As duas versões foram preservadas. Nenhum checkpoint comum foi encontrado para recuperar a comparação desta conversa.');
-        state.baselines[id] = { pcHash: common, mobileHash: common, contentHash: null };
+        if (!common) {
+          if (resolveConflict) {
+            const strategy = resolveStrategy || 'prefer-pc';
+            state.baselines[id] = strategy === 'prefer-pc'
+              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash }
+              : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash };
+          } else {
+            fail('CONFLICT', 'As duas versões foram preservadas. Nenhum checkpoint comum foi encontrado para recuperar a comparação desta conversa.');
+          }
+        } else {
+          state.baselines[id] = { pcHash: common, mobileHash: common, contentHash: null };
+        }
       }
       await persist();
     }
     const pushIds = [], pushBases = new Map();
     for (const id of ids) {
-      const p = pcState.manifests.get(id), m = mobileState.manifests.get(id), base = Object.hasOwn(state.baselines, id) ? state.baselines[id] : null;
+      const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
+      let base = Object.hasOwn(state.baselines, id) ? state.baselines[id] : null;
       if (base && (!p || !m)) fail('MISSING_CONVERSATIONS', 'Uma conversa da baseline desapareceu de um dos cofres.');
       if (!m) continue;
       if (!p) { pushIds.push(id); continue; }
       if (p.purged && m.purged) continue;
       const equal = compatible() ? p.hash === m.hash : p.contentHash === m.contentHash;
       if (equal) continue;
-      if (!base) fail('CONFLICT', 'Há conversas diferentes com o mesmo ID e nenhuma baseline compartilhada.');
+      if (!base) {
+        if (resolveConflict) {
+          const strategy = resolveStrategy || 'prefer-pc';
+          base = state.baselines[id] = strategy === 'prefer-pc'
+            ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash }
+            : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash };
+          await persist();
+        } else {
+          fail('CONFLICT', 'Há conversas diferentes com o mesmo ID e nenhuma baseline compartilhada.');
+        }
+      }
       const mobileChanged = compatible() ? m.hash !== base.mobileHash : m.contentHash !== base.contentHash;
       if (mobileChanged) { pushIds.push(id); pushBases.set(id, base.pcHash); }
     }
@@ -330,6 +370,19 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       const task = queue.catch(() => {}).then(() => run(options));
       queue = task;
       return task;
+    },
+    async clearConflict(pcId, mobileId) {
+      const key = `mc.sync.${pcId}.${mobileId}`;
+      const saved = await store.get(key);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed?.pending?.code === 'CONFLICT') {
+            parsed.pending = null;
+            await store.set(key, JSON.stringify(parsed));
+          }
+        } catch {}
+      }
     },
   };
 }

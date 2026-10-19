@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createMobileSync } from '../client/src/mobile-sync.js';
 import { createServerConnection } from '../client/src/server-connection.js';
+import { clearPrivateConflicts } from '../client/src/private-storage.js';
 import { RustStore } from './rust-store.js';
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -427,3 +428,89 @@ for (const loseCheckpoint of [false, true]) test(loseCheckpoint
     rmSync(resolved, { recursive: true, force: true });
   }
 });
+
+test('sync: resolveConflict desfaz lote pendente CONFLICT, recalcula baselines e converge sem deadlocks', async () => {
+  const f = fixture();
+  f.put('pc', 'queue', 'inicial');
+  await f.sync.synchronize(f.options);
+  f.put('mobile', 'queue', 'texto móvel preservado');
+  const [key, value] = [...f.store.values][0];
+  const state = JSON.parse(value);
+  state.pending = {
+    to: 'pc',
+    batchId: randomUUID(),
+    code: 'CONFLICT',
+    conflicts: [{ convId: 'queue', reason: 'CONVERSATION_DIVERGED:head_interaction_id' }],
+    records: [{
+      convId: 'queue',
+      hash: f.states.mobile.rows.get('queue').hash,
+      baseHash: state.baselines.queue.pcHash
+    }]
+  };
+  const oldBatch = state.pending.batchId;
+  f.store.values.set(key, JSON.stringify(state));
+
+  // Without resolveConflict, sync throws CONFLICT with resolution metadata and preserves pending batch
+  let caught;
+  try { await f.sync.synchronize(f.options); } catch (e) { caught = e; }
+  assert.equal(caught?.code, 'CONFLICT');
+  assert.equal(caught?.data?.canResolve, true);
+  assert.equal(JSON.parse(f.store.values.get(key)).pending.batchId, oldBatch);
+
+  // With resolveConflict: true, sync unlocks, clears pending batch, and converges
+  const result = await f.sync.synchronize({ ...f.options, resolveConflict: true });
+  assert.equal(result.converged, true);
+  assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
+});
+
+test('sync: resolveConflict com prefer-pc adota hash do PC quando não há checkpoint comum', async () => {
+  const f = fixture();
+  f.put('pc', 'diverged-conv', 'versao pc');
+  f.put('mobile', 'diverged-conv', 'versao mobile');
+
+  // Without resolveConflict, missing baseline without common checkpoint fails with CONFLICT
+  await assert.rejects(f.sync.synchronize(f.options), { code: 'CONFLICT' });
+
+  // With resolveConflict: true and prefer-pc, baseline is established and sync converges
+  const res = await f.sync.synchronize({ ...f.options, resolveConflict: true, resolveStrategy: 'prefer-pc' });
+  assert.equal(res.converged, true);
+  const [key, value] = [...f.store.values][0];
+  const state = JSON.parse(value);
+  assert.ok(state.baselines['diverged-conv']);
+});
+
+test('sync: clearConflict no createMobileSync limpa lote CONFLICT preservado', async () => {
+  const f = fixture();
+  f.put('pc', 'c1', 'inicial');
+  await f.sync.synchronize(f.options);
+  const [key, value] = [...f.store.values][0];
+  const state = JSON.parse(value);
+  state.pending = { to: 'pc', batchId: randomUUID(), code: 'CONFLICT', conflicts: [{ convId: 'c1', reason: 'CONVERSATION_DIVERGED:head_interaction_id' }], records: [] };
+  f.store.values.set(key, JSON.stringify(state));
+
+  assert.equal(JSON.parse(f.store.values.get(key)).pending?.code, 'CONFLICT');
+  await f.sync.clearConflict(state.pcId, state.mobileId);
+  assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
+});
+
+test('sync: clearPrivateConflicts limpa pendências CONFLICT do armazenamento protegido', async () => {
+  const store = new Map();
+  globalThis.localStorage = {
+    get length() { return store.size; },
+    key(i) { return [...store.keys()][i]; },
+    getItem(k) { return store.get(k) ?? null; },
+    setItem(k, v) { store.set(k, String(v)); },
+    removeItem(k) { store.delete(k); },
+    clear() { store.clear(); },
+  };
+  const pcId = randomUUID(), mobileId = randomUUID();
+  const syncKey = `mc.sync.${pcId}.${mobileId}`;
+  localStorage.setItem(syncKey, JSON.stringify({
+    version: 1, pcId, mobileId, baselines: {}, pending: { code: 'CONFLICT', batchId: 'b1' }
+  }));
+
+  await clearPrivateConflicts();
+  const parsed = JSON.parse(localStorage.getItem(syncKey));
+  assert.equal(parsed.pending, null);
+});
+

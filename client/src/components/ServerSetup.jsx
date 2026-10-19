@@ -79,12 +79,13 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
       }
       // Pairing has committed the credential. Keep its matching endpoint if sync needs another attempt.
       rollback = undefined;
-      if (isNative()) await synchronizePairedPc({ connect: signal => api.switchToPc(signal), signal: controller.signal,
+      if (isNative()) await synchronizePairedPc({ connect: signal => api.switchToPc(signal, { resolveConflict: true }), signal: controller.signal,
         onWaiting: () => { if (!controller.signal.aborted) setWaiting(true); } });
       if (controller.signal.aborted) return;
       onDone();
     } catch (err) {
       rollback?.();
+      if (err.status === 401 || err.code === 'UNPAIRED' || err.data?.code === 'UNPAIRED') setPairedPc('');
       if (controller.signal.aborted) return;
       setError(err.status === 0 ? 'Não consegui falar com o PC. Confira os endereços, a porta e o firewall.' : err.message);
     } finally {
@@ -165,7 +166,10 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
             aria-label={tr('Código de pareamento (6 dígitos)')}
             value={code}
             disabled={busy}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            onChange={(e) => {
+              setCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+              setPairedPc('');
+            }}
             inputMode="numeric"
             className="mt-1 w-full rounded-xl bg-composer px-4 py-3 text-center text-[22px] tracking-[0.4em] outline-none"
             placeholder="000000"
