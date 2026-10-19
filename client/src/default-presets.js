@@ -99,6 +99,36 @@ export const DEFAULT_PRESETS = {
       thinkingDefault: false,
       thinking: "enabled",
       available: true
+    },
+    {
+      id: "muse-spark-13",
+      groupRoute: "Muse",
+      selectable: true,
+      label: "Muse Spark",
+      family: "muse",
+      preferredRoutes: ["Muse", "oc-router/meta/muse-spark-open", "oc/muse-spark-1.3-contributor-free"],
+      routes: [{ id: "Muse" }, { id: "oc-router/meta/muse-spark-open" }, { id: "oc/muse-spark-1.3-contributor-free" }],
+      efforts: ["high"],
+      defaultEffort: "high",
+      thinkingCanDisable: true,
+      thinkingDefault: false,
+      thinking: "enabled",
+      available: true
+    },
+    {
+      id: "nemotron-35",
+      groupRoute: "Nemotron",
+      selectable: true,
+      label: "Nemotron 3.5 Super",
+      family: "nemotron",
+      preferredRoutes: ["Nemotron", "oc-router/nvidia/nemotron-3.5-super-v1:free", "nvidia/nemotron-3.5-super-v1:free"],
+      routes: [{ id: "Nemotron" }, { id: "oc-router/nvidia/nemotron-3.5-super-v1:free" }, { id: "nvidia/nemotron-3.5-super-v1:free" }],
+      efforts: ["high"],
+      defaultEffort: "high",
+      thinkingCanDisable: true,
+      thinkingDefault: false,
+      thinking: "enabled",
+      available: true
     }
   ]
 };

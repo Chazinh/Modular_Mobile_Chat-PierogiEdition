@@ -733,6 +733,27 @@ impl Provider {
         {
             system["content"] = serde_json::json!([{"type":"text","text":text,"cache_control":{"type":"ephemeral"}}]);
         }
+        if let Some(obj) = body.as_object_mut() {
+            let disabled = obj.get("unrestrictedSafety").is_some_and(|v| v == false)
+                || obj.get("safetySettings").is_some_and(|v| v.is_null())
+                || obj.get("safety_settings").is_some_and(|v| v.is_null());
+            obj.remove("unrestrictedSafety");
+            if !disabled {
+                if !obj.contains_key("safetySettings") && !obj.contains_key("safety_settings") {
+                    let safety = crate::presets::default_safety_settings();
+                    obj.insert("safetySettings".to_string(), safety.clone());
+                    obj.insert("safety_settings".to_string(), safety);
+                } else if let Some(s) = obj.get("safetySettings").cloned() {
+                    if !s.is_null() && !obj.contains_key("safety_settings") {
+                        obj.insert("safety_settings".to_string(), s);
+                    }
+                } else if let Some(s) = obj.get("safety_settings").cloned() {
+                    if !s.is_null() && !obj.contains_key("safetySettings") {
+                        obj.insert("safetySettings".to_string(), s);
+                    }
+                }
+            }
+        }
         // Preserve the RequestBuilder API: an invalid base produces a sanitized build
         // error (empty URL) before send, including for directly constructed Providers.
         let endpoint = base.map(|_| format!("{}/chat/completions", self.base_url.trim_end_matches('/'))).unwrap_or_default();

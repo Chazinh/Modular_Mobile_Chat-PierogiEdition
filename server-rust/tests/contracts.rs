@@ -409,9 +409,11 @@ fn new_presets_routes_thinking_and_unlisted_routes() {
         .is_err()
     );
     // shared 9Router aliases are not presets
-    for alias in ["Kimi", "Muse", "SpaceBunny", "Step5-preview"] {
+    for alias in ["Kimi", "SpaceBunny", "Step5-preview"] {
         assert_eq!(presets::for_route(alias)["id"], "generic");
     }
+    assert_eq!(presets::for_route("Muse")["id"], "muse-spark-13");
+    assert_eq!(presets::for_route("Nemotron")["id"], "nemotron-35");
     // thinking turned on by the fixed effort
     for (preset, route) in [
         ("kimi-k3", "nvidia/moonshotai/kimi-k3"),
@@ -425,7 +427,11 @@ fn new_presets_routes_thinking_and_unlisted_routes() {
                 &json!({}),
             );
             assert_eq!(p.body["reasoning_effort"], "high");
-            assert!(p.body.get("temperature").is_none());
+            if preset == "muse-spark-13" {
+                assert_eq!(p.body["temperature"], 0.7);
+            } else {
+                assert!(p.body.get("temperature").is_none());
+            }
             assert!(p.body["max_tokens"].as_u64().unwrap() >= 16384);
         }
     }
@@ -455,6 +461,10 @@ fn new_presets_routes_thinking_and_unlisted_routes() {
     assert_eq!(muse["available"], true);
     assert_eq!(
         muse["routes"][0]["id"],
+        "Muse"
+    );
+    assert_eq!(
+        muse["routes"][1]["id"],
         "oc/muse-spark-1.3-contributor-free"
     );
     let kimi = pub_list.iter().find(|p| p["id"] == "kimi-k3").unwrap();
@@ -993,7 +1003,11 @@ fn adapters_preserve_defaults_sampling_and_sonnet_low_option() {
             };
             assert_eq!(p.body["reasoning_effort"], expected);
             assert_eq!(p.body["max_tokens"], max);
-            assert!(p.body.get("temperature").is_none());
+            if preset == "deepseek-v41-flash" {
+                assert_eq!(p.body["temperature"], 0.8);
+            } else {
+                assert!(p.body.get("temperature").is_none());
+            }
             assert_eq!(p.controls["confirmation"], "not_validated");
         }
         let defaults = presets::request(

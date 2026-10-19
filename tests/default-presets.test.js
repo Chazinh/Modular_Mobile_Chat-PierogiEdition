@@ -51,10 +51,11 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.ok(ids.has('claude-sonnet-5-5'));
   assert.ok(ids.has('gemini-38-flash'));
   assert.ok(ids.has('glm-52'));
+  assert.ok(ids.has('muse-spark-13'));
+  assert.ok(ids.has('nemotron-35'));
 
   // Modelos mortos/desligados devem ser removidos da lista ativa
   assert.ok(!ids.has('kimi-k3'), 'kimi-k3 desligado deve ser removido');
-  assert.ok(!ids.has('muse-spark-13'), 'muse-spark-13 desligado deve ser removido');
   assert.ok(!ids.has('step-5-preview'), 'step-5-preview desligado deve ser removido');
 
   // Regressão: rotas ativas do DeepSeek
@@ -78,6 +79,12 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.ok(gemini.routes.some(r => r.id === 'Gemini'), 'Gemini deve expor a rota do grupo Gemini');
   assert.equal(glm.groupRoute, 'GLM');
   assert.ok(glm.routes.some(r => r.id === 'GLM'), 'GLM deve expor a rota do grupo GLM');
+  const muse = DEFAULT_PRESETS.presets.find(p => p.id === 'muse-spark-13');
+  assert.equal(muse.groupRoute, 'Muse');
+  assert.ok(muse.routes.some(r => r.id === 'Muse'), 'Muse deve expor a rota do grupo Muse');
+  const nemotron = DEFAULT_PRESETS.presets.find(p => p.id === 'nemotron-35');
+  assert.equal(nemotron.groupRoute, 'Nemotron');
+  assert.ok(nemotron.routes.some(r => r.id === 'Nemotron'), 'Nemotron deve expor a rota do grupo Nemotron');
 
   // Regressão: Argon EXPLICITAMENTE excluído ("menos o argon")
   for (const preset of DEFAULT_PRESETS.presets) {

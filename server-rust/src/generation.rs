@@ -415,6 +415,14 @@ impl Manager {
                 }
             }
         }
+        if !presets::unrestricted_safety_enabled(&conv) {
+            plan.controls["unrestrictedSafety"] = json!(false);
+            if let Some(obj) = plan.body.as_object_mut() {
+                obj.remove("safetySettings");
+                obj.remove("safety_settings");
+                obj.insert("unrestrictedSafety".into(), json!(false));
+            }
+        }
         let length = presets::apply_length(&mut plan, &data["globalSettings"]);
         let calibration = self
             .store

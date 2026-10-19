@@ -5,6 +5,26 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.1.27: Coral Multi-Agent RP Dynamics, Global Safety Controls, Muse Spark & Nemotron 3.5 Presets — 2026-10-19
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Multi-Agent Roleplay Pacing & Coral Dynamics (`core-prompt.txt`, `presets.json`, `presets.rs`)**:
+  - Adopted optimized multi-agent roleplay parameters for conversational fluidity and pacing (`temperature: 1.0` dynamic, `top_p: 0.95`, non-thinking mode for RP dialogue).
+  - Switched `deepseek-v41-flash` and `glm-52` from `"sampling": "default"` to `"sampling": "temperature"`, activating real-time temperature slider controls in the UI and transmitting `top_p: 0.95`.
+  - Injected global `ELENCO E MULTI-AGENTES` narrative guidelines into `core-prompt.txt`, ensuring vocal distinctiveness, authentic cross-character interaction, and natural colloquial prose across all models.
+
+- **Muse Spark & Nemotron 3.5 Super Presets with 9Router Group Routes (`presets.json`, `default-presets.js`, `api.js`)**:
+  - Added `nemotron-35` preset with 9Router combo fallback route `Nemotron`, upstream route `oc-router/nvidia/nemotron-3.5-super-v1:free`, 128k context, 64k max output, and temperature sampling.
+  - Reactivated `muse-spark-13` as a selectable preset with 9Router combo fallback route `Muse`, upstream route `oc-router/meta/muse-spark-open`, 1.0M context, 131k max output, and temperature sampling.
+  - Updated `PUBLIC_PRESETS` in `api.js` and `DEFAULT_PRESETS` in `default-presets.js` to surface both models in the UI model picker.
+
+- **Global Unrestricted Safety Policy Forwarding (`generation.rs`, `presets.rs`, `providers.rs`)**:
+  - Injected global safety configuration (`BLOCK_NONE` across harassment, hate speech, sexual content, and dangerous content) into model generation plans and chat requests across all compatible providers, preventing spurious content policy blocks in benign creative roleplay.
+
+- **Automated Anti-Regression Unit Tests (`multiagent_rp_config.rs`, `unrestricted_safety.rs`, `contracts.rs`, `default-presets.test.js`)**:
+  - Added test suites verifying temperature and top_p sampling propagation, system prompt multi-agent injection, unrestricted safety controls, and client default preset route ordering.
+
 ### ModularChat 3.1.26: Mobile Sync Conflict Resolution, UI Recovery, and Runner Test Isolation — 2026-10-18
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

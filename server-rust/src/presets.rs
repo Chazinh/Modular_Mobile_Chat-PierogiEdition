@@ -260,6 +260,34 @@ pub fn apply_length(plan: &mut Plan, settings: &Value) -> Value {
     plan.controls["length"] = length.clone();
     length
 }
+pub fn default_safety_settings() -> Value {
+    json!([
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE"
+        }
+    ])
+}
+pub fn unrestricted_safety_enabled(conv: &Value) -> bool {
+    if std::env::var("MC_UNRESTRICTED_SAFETY").as_deref() == Ok("0") {
+        return false;
+    }
+    conv["settings"]["unrestrictedSafety"]
+        .as_bool()
+        .unwrap_or(true)
+}
 pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
     let preset = by_id(&s(conv, "presetId"));
     let route = alias_route(&preset, &s(conv, "routeId"));
@@ -268,6 +296,16 @@ pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
     let thinking_enabled = thinking_enabled(&preset, &conv["settings"]);
     let shape = rv["shape"].as_str().unwrap_or("reasoning_effort");
     let mut body = json!({"model":route,"messages":messages,"stream":true,"stream_options":{"include_usage":true}});
+    let unrestricted = unrestricted_safety_enabled(conv);
+    if unrestricted {
+        let safety = conv["settings"]["safetySettings"]
+            .as_array()
+            .cloned()
+            .map(Value::Array)
+            .unwrap_or_else(default_safety_settings);
+        body["safetySettings"] = safety.clone();
+        body["safety_settings"] = safety;
+    }
     if !thinking_enabled {
         // 9Router converts none into the native control: disabled on DeepSeek
         // and between_tools on Sonnet 5.5. The chosen effort is kept.
@@ -294,6 +332,8 @@ pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
     let temperature_sent = preset["sampling"] == "temperature" && conv["temperature"].is_number();
     if temperature_sent {
         body["temperature"] = conv["temperature"].clone();
+        let top_p = conv["settings"]["top_p"].as_f64().unwrap_or(0.95);
+        body["top_p"] = json!(top_p);
     }
     let max_output = rv["maxOutput"]
         .as_u64()
@@ -331,6 +371,7 @@ pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
     if let Some(floor) = preset["reasoningFloor"].as_u64() {
         controls["reasoningFloor"] = json!(floor);
     }
+    controls["unrestrictedSafety"] = json!(unrestricted);
     Plan {
         body,
         controls,
