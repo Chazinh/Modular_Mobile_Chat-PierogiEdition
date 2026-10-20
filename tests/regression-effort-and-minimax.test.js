@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_PRESETS } from '../client/src/default-presets.js';
-import { mergeWithDefaults } from '../client/src/api.js';
+import { mergeWithDefaults, normalizeChatPreset } from '../client/src/api.js';
 
 test('Regressão: MiniMax M3.1 deve estar completo com rotas 9Router e controle de esforço', () => {
   const minimax = DEFAULT_PRESETS.presets.find((p) => p.id === 'minimax-m31');
@@ -36,7 +36,7 @@ test('Regressão: Gemini 3.8 Flash deve suportar low, medium, high e rota de gru
 });
 
 test('Regressão: mergeWithDefaults recupera modelos novos e atualiza cache desatualizado do IndexedDB', () => {
-  // Simula cache antigo do IndexedDB sem minimax e com deepseek contendo apenas high
+  // Simula cache antigo do IndexedDB sem minimax e com generic já no final
   const staleCached = {
     presets: [
       {
@@ -52,6 +52,11 @@ test('Regressão: mergeWithDefaults recupera modelos novos e atualiza cache desa
         efforts: ['low', 'medium', 'high'],
         routes: [{ id: 'Gemini' }],
         preferredRoutes: ['Gemini']
+      },
+      {
+        id: 'generic',
+        label: 'Outro modelo (sem controle de esforço)',
+        routes: []
       }
     ]
   };
@@ -62,3 +67,32 @@ test('Regressão: mergeWithDefaults recupera modelos novos e atualiza cache desa
   assert.deepEqual(ds.efforts, ['low', 'medium', 'high'], 'mergeWithDefaults deve atualizar lista de esforços');
   assert.ok(ds.routes.some((r) => r.id === 'oc/deepseek-v4.1-flash-free'), 'mergeWithDefaults deve sincronizar rotas');
 });
+
+test('Regressão: Outro modelo (generic) SEMPRE deve ficar em último lugar na lista de presets', () => {
+  const staleServerData = {
+    presets: [
+      { id: 'deepseek-v41-flash', label: 'DeepSeek' },
+      { id: 'generic', label: 'Outro modelo' }
+    ]
+  };
+
+  const merged = mergeWithDefaults(staleServerData);
+  const lastPreset = merged.presets[merged.presets.length - 1];
+  assert.equal(lastPreset.id, 'generic', '"generic" (Outro modelo) deve ser obrigatoriamente o último item da lista');
+
+  const minimaxIndex = merged.presets.findIndex(p => p.id === 'minimax-m31');
+  const genericIndex = merged.presets.findIndex(p => p.id === 'generic');
+  assert.ok(minimaxIndex !== -1, 'minimax-m31 deve estar presente');
+  assert.ok(minimaxIndex < genericIndex, 'minimax-m31 deve aparecer antes de "generic" (Outro modelo)');
+});
+
+test('Regressão: normalizeChatPreset normaliza chats com rota minimax mesmo com preset genérico', () => {
+  const genericChat = { id: 'c1', name: 'Chat', presetId: 'generic', routeId: 'MiniMaxM3.1' };
+  const normalized = normalizeChatPreset(genericChat);
+  assert.equal(normalized.presetId, 'minimax-m31', 'Deve normalizar para minimax-m31');
+
+  const openrouterChat = { id: 'c2', name: 'Chat 2', presetId: null, routeId: 'openrouter/minimax/minimax-m3.1-flash:free' };
+  const normalized2 = normalizeChatPreset(openrouterChat);
+  assert.equal(normalized2.presetId, 'minimax-m31', 'Deve normalizar rota openrouter minimax');
+});
+

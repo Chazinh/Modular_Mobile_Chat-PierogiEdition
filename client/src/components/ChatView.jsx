@@ -600,7 +600,9 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     return () => window.removeEventListener('mc:event', on);
   }, [chatId, loadCast]);
 
-  const presetInfo = presets?.presets?.find((p) => p.id === chat?.presetId);
+  const presetInfo = presets?.presets?.find((p) => p.id === chat?.presetId)
+    || presets?.presets?.find((p) => p.groupRoute && p.groupRoute === chat?.routeId)
+    || presets?.presets?.find((p) => p.routes?.some((r) => r.id === chat?.routeId));
   const recentReply = history.at(-1);
   const recoveredOnline = recentReply?.role === 'assistant' && recentReply.status !== 'error'
     && (!recentReply.model || recentReply.model === chat?.routeId)

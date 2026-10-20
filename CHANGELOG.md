@@ -5,6 +5,25 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.3.3: Preset Ordering, Native MiniMax Host Resolution & Kinship Perspective Memory Isolation — 2026-10-20
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Model Preset Ordering ("Outro modelo" Always Last) (`SettingsDrawer.jsx`, `api.js`)**:
+  - Enforced that "Outro modelo" (`generic`) is strictly sorted to the very end of the model list across both the API data merger (`mergeWithDefaults`) and the drawer UI (`ModelPage`).
+  - Placed `minimax-m31` above `generic` among standard models.
+- **Embedded ARM64 Host MiniMax Resolution & Client Fallback (`libmodularchat_server.so`, `api.js`, `SettingsDrawer.jsx`, `ChatView.jsx`)**:
+  - Embedded `minimax-m31` into the native ARM64 Android host (`libmodularchat_server.so`) `presets.json` table, resolving `400 "Preset desconhecido."` natively.
+  - Implemented automatic fallback retry in `createChat` and `updateChat` to handle older server runtimes transparently.
+  - Normalized loaded chat presets via `normalizeChatPreset` so MiniMax routes display with their canonical label and full controls.
+- **Kinship & Pronoun Perspective Memory Isolation ("sua mãe" vs "minha mãe") (`core-prompt.txt`, `extraction-prompt.txt`, `context.rs`, `jobs.rs`)**:
+  - Added strict `DISTINÇÃO DE PARENTESCO E POSSE (MINHA / SUA)` to core prompts, forbidding characters from confusing the user's family with their own.
+  - Updated memory extraction instructions to convert 1st/2nd person possessives into explicit subject names (e.g. "a mãe de {{persona}}"), preventing ambiguous pronouns in stored facts.
+  - Injected kinship distinction reminders in the prompt tail immediately prior to generation.
+  - Increased short-term memory verbatim cutoff from 5 to 15 interactions, preventing premature history truncation and conversational amnesia.
+- **Anti-Regression Unit Tests (`tests/regression-effort-and-minimax.test.js`)**:
+  - Added tests verifying generic preset terminal ordering and chat normalization.
+
 ### ModularChat 3.3.2: MiniMax Discovery, Deep Thinking Controls & Gemini Effort Fix — 2026-10-20
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

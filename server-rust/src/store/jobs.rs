@@ -328,12 +328,12 @@ impl Database {
     }
     pub(super) fn queue_episodes(&self, c: &str) -> Result<Value> {
         let path=self.rows(&format!("{PATH_CTE} SELECT i.id,i.seq,n.summary,n.version_ids_json FROM p JOIN interactions i ON i.id=p.id LEFT JOIN interaction_notes n ON n.interaction_id=i.id WHERE i.deleted_at IS NULL ORDER BY i.seq"),&[json!(c)])?;
-        // Memória de curto prazo: preserva as 5 mensagens mais recentes com detalhes integrais
+        // Memória de curto prazo: preserva as 15 mensagens mais recentes com detalhes integrais
         let cutoff = path
-            .get(path.len().saturating_sub(5))
+            .get(path.len().saturating_sub(15))
             .map(|i| n(i, "seq"))
             .unwrap_or(-1);
-        if path.len() <= 5 {
+        if path.len() <= 15 {
             return Ok(json!(0));
         }
         let mut covered = HashSet::new();

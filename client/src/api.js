@@ -194,6 +194,17 @@ export const publicPresets = data => data ? {
     .map(p => p.id === 'glm-52' ? { ...p, label: 'GLM' } : p),
 } : null;
 
+export function normalizeChatPreset(chat) {
+  if (!chat) return chat;
+  if ((!chat.presetId || chat.presetId === 'generic') && chat.routeId) {
+    const r = String(chat.routeId).toLowerCase();
+    if (r.includes('minimax') || r === 'minimaxm3.1') {
+      return { ...chat, presetId: 'minimax-m31' };
+    }
+  }
+  return chat;
+}
+
 export function mergeWithDefaults(data) {
   const defaults = publicPresets(DEFAULT_PRESETS);
   if (!data?.presets?.length) return defaults;
@@ -225,13 +236,25 @@ export function mergeWithDefaults(data) {
       }
     }
   }
+  // Ensure 'generic' ("Outro modelo") is always at the very end of presets
+  const genericIndex = data.presets.findIndex(p => p.id === 'generic');
+  if (genericIndex !== -1 && genericIndex !== data.presets.length - 1) {
+    const [genericPreset] = data.presets.splice(genericIndex, 1);
+    data.presets.push(genericPreset);
+  }
   return data;
 }
 
 export const api = {
   // ----- cache local (IndexedDB) -----
-  cachedChats: () => cacheGet(CACHE_LIST, []),
-  cachedChat: (id) => cacheGet(CACHE_CHAT(id), null),
+  cachedChats: async () => {
+    const list = await cacheGet(CACHE_LIST, []);
+    return (list || []).map(normalizeChatPreset);
+  },
+  cachedChat: async (id) => {
+    const c = await cacheGet(CACHE_CHAT(id), null);
+    return normalizeChatPreset(c);
+  },
   saveChatCache: (chat) => queueCache(CACHE_CHAT(chat.id), chat),
   flushCache,
   cachedPresets: async () => {
@@ -292,15 +315,35 @@ export const api = {
     return chat;
   },
   async createChat(data = {}) {
-    const chat = await request('POST', '/api/chats', data);
-    queueCache(CACHE_CHAT(chat.id), chat);
-    return chat;
+    let chat;
+    try {
+      chat = await request('POST', '/api/chats', data);
+    } catch (err) {
+      if (err.status === 400 && String(err.message).includes('Preset desconhecido') && data?.presetId && data.presetId !== 'generic') {
+        chat = await request('POST', '/api/chats', { ...data, presetId: 'generic' });
+      } else {
+        throw err;
+      }
+    }
+    const result = normalizeChatPreset({ ...chat, ...(data?.presetId ? { presetId: data.presetId } : {}) });
+    queueCache(CACHE_CHAT(result.id), result);
+    return result;
   },
   async updateChat(id, patch) {
-    const updated = await request('PUT', `/api/chats/${id}`, patch);
+    let updated;
+    try {
+      updated = await request('PUT', `/api/chats/${id}`, patch);
+    } catch (err) {
+      if (err.status === 400 && String(err.message).includes('Preset desconhecido') && patch?.presetId && patch.presetId !== 'generic') {
+        updated = await request('PUT', `/api/chats/${id}`, { ...patch, presetId: 'generic' });
+      } else {
+        throw err;
+      }
+    }
     const prev = (await cacheGet(CACHE_CHAT(id), {})) || {};
-    queueCache(CACHE_CHAT(id), { ...prev, ...updated });
-    return updated;
+    const result = normalizeChatPreset({ ...prev, ...updated, ...(patch?.presetId ? { presetId: patch.presetId } : {}) });
+    queueCache(CACHE_CHAT(id), result);
+    return result;
   },
   duplicateChat: (id) => request('POST', `/api/chats/${id}/duplicate`),
   deleteChat: async (id) => {

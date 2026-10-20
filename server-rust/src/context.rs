@@ -9,14 +9,14 @@ pub struct Context {
     pub report: Value,
     pub raw_estimate: usize,
 }
-/// (minimum, maximum, preferred) recent history pairs, clamped (3–50).
+/// (minimum, maximum, preferred) recent history pairs, clamped (8–50).
 pub fn pair_limits(conv: &Value) -> (usize, usize, usize) {
     let settings = &conv["settings"]["context"];
-    let maximum = settings["maxPairs"].as_u64().unwrap_or(50).clamp(3, 50) as usize;
+    let maximum = settings["maxPairs"].as_u64().unwrap_or(50).clamp(8, 50) as usize;
     let minimum = settings["minPairs"]
         .as_u64()
         .unwrap_or(20)
-        .clamp(3, maximum as u64) as usize;
+        .clamp(8, maximum as u64) as usize;
     let preferred = settings["preferredPairs"]
         .as_u64()
         .unwrap_or(30)
@@ -35,7 +35,7 @@ pub fn retrieval_window_start(data: &Value) -> i64 {
     let pairs = array(&data["pairs"]);
     let minimum = pair_limits(&data["conv"]).0;
     let take = if data["conv"]["settings"]["context"]["adaptiveHistory"] != false {
-        [3, 6, 8, 10]
+        [8, 10, 12, 16]
             .into_iter()
             .find(|take| *take < minimum && summarized_before(data, pairs, *take))
             .unwrap_or(30)
@@ -94,7 +94,7 @@ pub fn assemble(
     ];
     ladder.dedup();
     if !compact && settings["adaptiveHistory"] != false {
-        let summarized = [10, 8, 6, 3]
+        let summarized = [16, 12, 10, 8]
             .into_iter()
             .filter(|take| *take < minimum && summarized_before(data, available, *take))
             .collect::<Vec<_>>();
@@ -231,7 +231,7 @@ pub fn assemble(
     };
     // Size, ratio, examples and turn pacing are already in the stable system prefix.
     let tail = format!(
-        "[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem o que foi dito ou ocorrido fora de sua presença.]"
+        "[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem o que foi dito ou ocorrido fora de sua presença; distinção de parentesco: familiares relatados por {persona} pertencem a {persona} (trate como 'sua mãe/família', nunca como 'minha').]"
     );
     let mut pinned_ids = HashSet::new();
     let pinned = array(&data["pinned"])

@@ -84,7 +84,9 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
 
   useLayer(page !== null, () => setPage(null));
 
-  const preset = presets?.presets?.find((p) => p.id === chat.presetId);
+  const preset = presets?.presets?.find((p) => p.id === chat.presetId)
+    || presets?.presets?.find((p) => p.groupRoute && p.groupRoute === chat.routeId)
+    || presets?.presets?.find((p) => p.routes?.some((r) => r.id === chat.routeId));
   const thinkingOn = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
 
   async function save(patch) {
@@ -292,9 +294,14 @@ const thinkingText = (p) => p.thinkingCanDisable ? 'pensamento: você pode ligar
 function ModelPage({ chat, presets, error, onBack, onPick }) {
   useLanguage();
   const isPc = config.kind === 'pc';
-  const list = (presets?.presets || [])
+  const rawList = (presets?.presets || [])
     .filter(p => p.selectable !== false)
     .filter(p => !isPc || (p.id !== 'mobile-local' && p.id !== 'mobile-api'));
+  const list = [...rawList].sort((a, b) => {
+    if (a.id === 'generic') return 1;
+    if (b.id === 'generic') return -1;
+    return 0;
+  });
   const savedThinking = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
   const [sel, setSel] = useState({ presetId: chat.presetId, routeId: chat.routeId, effort: chat.effort, thinkingEnabled: savedThinking });
   const cur = list.find((p) => p.id === sel.presetId);
@@ -325,7 +332,7 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
       footer={dirty ? <button onClick={() => onPick(selectedPatch())} className="mc-bubble mc-glass-accent w-full rounded-full px-4 py-3.5 font-semibold">{tr("Usar ")}{cur?.label}</button> : null}
     >
       {list.length === 0 && <p className="px-5 text-sm text-textMuted">{tr("Carregando presets do servidor ativo…")}</p>}
-      <p className="mc-bubble mx-[10px] mb-[10px] rounded-[22px] px-4 py-2.5 text-xs text-textMuted">{tr("Em uso: ")}{list.find(p => p.id === chat.presetId)?.label || chat.routeId}{tr(". Selecione abaixo e salve para aplicar às próximas respostas.")}</p>
+      <p className="mc-bubble mx-[10px] mb-[10px] rounded-[22px] px-4 py-2.5 text-xs text-textMuted">{tr("Em uso: ")}{(list.find(p => p.id === chat.presetId) || list.find(p => p.groupRoute && p.groupRoute === chat.routeId) || list.find(p => p.routes?.some(r => r.id === chat.routeId)))?.label || chat.routeId}{tr(". Selecione abaixo e salve para aplicar às próximas respostas.")}</p>
       {error && <p role="alert" className="mx-5 mb-3 text-sm text-red-400">{tr(error)}</p>}
       {list.map((p) => {
         const usable = p.available !== false && p.routes.length > 0;
