@@ -162,6 +162,28 @@ async fn turn(f: &Fixture, c: &str, text: &str, op: &str) -> Value {
         .unwrap();
     g
 }
+/// Saves one character of the cast. Two devices that save the same name end up
+/// with two rows and the same (conv_id, name_key).
+async fn cast(f: &Fixture, c: &str, name: &str, description: &str, kind: &str) -> Value {
+    f.store
+        .call(Request::SaveCast {
+            conv_id: c.into(),
+            value: json!({"name": name, "description": description, "kind": kind}),
+        })
+        .await
+        .unwrap()
+}
+fn characters(snapshot: &Value) -> Vec<Value> {
+    snapshot["characters"].as_array().unwrap().clone()
+}
+fn conflict_reasons(out: &Value) -> Vec<String> {
+    out["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["reason"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
 async fn memory(f: &Fixture, c: &str, text: &str) -> Value {
     f.store
         .call(Request::AddMemory {
@@ -2011,6 +2033,125 @@ async fn deleted_memory_tombstone_blocks_resurrection_after_a_new_checkpoint() {
         .unwrap();
     assert_eq!(out["code"], "CONFLICT");
     assert_eq!(offer(&pc, &phone.server, &c).await["hash"], removed["hash"]);
+    pc.close().await;
+    phone.close().await;
+}
+
+#[tokio::test]
+async fn duplicated_character_key_converges_and_keeps_the_newest_content() {
+    let pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let c = pc.create().await;
+    let first = mirror(&pc, &phone, &c).await;
+    // The same character is created on both sides with different row ids: the two
+    // rows share (conv_id, name_key) and SQLite refuses the second one.
+    let pc_cast = cast(&pc, &c, "lia", "Descricao antiga do PC", "npc").await;
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let phone_cast = cast(&phone, &c, "lia", "Descricao nova do celular", "npc").await;
+    assert_ne!(pc_cast["id"], phone_cast["id"]);
+    let incoming = offer(&phone, &pc.server, &c).await;
+    let applied = pc
+        .delta(batch(
+            &phone.server,
+            vec![push(&incoming, first["hash"].clone())],
+        ))
+        .await
+        .unwrap();
+    assert!(applied["conflicts"].as_array().unwrap().is_empty(), "{applied}");
+    // The oldest record keeps the identity and the newest record brings the text.
+    let pc_rows = characters(&offer(&pc, &phone.server, &c).await["snapshot"]);
+    assert_eq!(pc_rows.len(), 1, "{pc_rows:?}");
+    assert_eq!(pc_rows[0]["id"], pc_cast["id"], "{pc_rows:?}");
+    assert_eq!(pc_rows[0]["description"], "Descricao nova do celular", "{pc_rows:?}");
+    // The phone converges to the same row and keeps the text.
+    let merged = offer(&pc, &phone.server, &c).await;
+    let pulled = phone
+        .delta(batch(
+            &pc.server,
+            vec![push(&merged, first["hash"].clone())],
+        ))
+        .await
+        .unwrap();
+    assert!(pulled["conflicts"].as_array().unwrap().is_empty(), "{pulled}");
+    let phone_rows = characters(&offer(&phone, &pc.server, &c).await["snapshot"]);
+    assert_eq!(phone_rows.len(), 1, "{phone_rows:?}");
+    assert_eq!(phone_rows[0]["id"], pc_rows[0]["id"], "{phone_rows:?}");
+    assert_eq!(phone_rows[0]["description"], "Descricao nova do celular", "{phone_rows:?}");
+    pc.close().await;
+    phone.close().await;
+}
+
+#[tokio::test]
+async fn duplicated_character_key_from_the_peer_replaces_the_local_row_that_holds_it() {
+    let pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let c = pc.create().await;
+    let first = mirror(&pc, &phone, &c).await;
+    // The phone creates the character first: the peer keeps the identity of the
+    // oldest row and the destination must release the key its own row still holds.
+    let phone_cast = cast(&phone, &c, "lia", "Descricao antiga do celular", "npc").await;
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let pc_cast = cast(&pc, &c, "lia", "Descricao nova do PC", "npc").await;
+    assert_ne!(pc_cast["id"], phone_cast["id"]);
+    let incoming = offer(&phone, &pc.server, &c).await;
+    let applied = pc
+        .delta(batch(
+            &phone.server,
+            vec![push(&incoming, first["hash"].clone())],
+        ))
+        .await
+        .unwrap();
+    assert!(applied["conflicts"].as_array().unwrap().is_empty(), "{applied}");
+    // The destination keeps one row, with the peer identity and the newest text.
+    let pc_rows = characters(&offer(&pc, &phone.server, &c).await["snapshot"]);
+    assert_eq!(pc_rows.len(), 1, "{pc_rows:?}");
+    assert_eq!(pc_rows[0]["id"], phone_cast["id"], "{pc_rows:?}");
+    assert_eq!(pc_rows[0]["description"], "Descricao nova do PC", "{pc_rows:?}");
+    // The phone converges to the same row.
+    let merged = offer(&pc, &phone.server, &c).await;
+    let pulled = phone
+        .delta(batch(
+            &pc.server,
+            vec![push(&merged, first["hash"].clone())],
+        ))
+        .await
+        .unwrap();
+    assert!(pulled["conflicts"].as_array().unwrap().is_empty(), "{pulled}");
+    let phone_rows = characters(&offer(&phone, &pc.server, &c).await["snapshot"]);
+    assert_eq!(phone_rows.len(), 1, "{phone_rows:?}");
+    assert_eq!(phone_rows[0]["id"], phone_cast["id"], "{phone_rows:?}");
+    pc.close().await;
+    phone.close().await;
+}
+#[tokio::test]
+async fn duplicated_character_key_with_another_kind_reports_a_named_conflict() {
+    let pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let c = pc.create().await;
+    let first = mirror(&pc, &phone, &c).await;
+    // The user persona and the cast cannot share one row: joining them would change
+    // who the user is, so the batch is refused by name.
+    cast(&pc, &c, "lia", "Guarda da estacao", "main").await;
+    cast(&phone, &c, "lia", "Guarda da estacao", "user").await;
+    let incoming = offer(&phone, &pc.server, &c).await;
+    let before = offer(&pc, &phone.server, &c).await["hash"].clone();
+    let out = pc
+        .delta(batch(
+            &phone.server,
+            vec![push(&incoming, first["hash"].clone())],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(out["code"], "CONFLICT", "{out}");
+    assert_eq!(out["conflicts"][0]["convId"], c, "{out}");
+    assert!(
+        conflict_reasons(&out)
+            .iter()
+            .any(|r| r.starts_with("UNIQUE_KEY_CONFLICT:characters:")),
+        "{out}"
+    );
+    // Nothing was written on the destination.
+    assert_eq!(offer(&pc, &phone.server, &c).await["hash"], before);
     pc.close().await;
     phone.close().await;
 }

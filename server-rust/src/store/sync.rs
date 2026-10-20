@@ -35,6 +35,24 @@ const TABLES: &[(&str, &[&str])] = &[
     ("personas", &["id"]),
     ("embeddings", &["owner_type", "owner_id"]),
 ];
+/// Secondary UNIQUE keys declared by schema.sql that the primary key does not
+/// cover. Two devices can create the same logical row with different ids, and
+/// SQLite refuses the whole row when the merged snapshot carries both.
+const SECONDARY_KEYS: &[(&str, &[&str])] = &[
+    ("characters", &["conv_id", "name_key"]),
+    ("parts", &["interaction_id", "idx"]),
+    ("generations", &["conv_id", "op_id"]),
+];
+/// Columns that point to a row of another table. The row that wins a secondary
+/// key absorbs the references of the row it replaces.
+const REFERENCES: &[(&str, &str, &str)] = &[
+    ("versions", "part_id", "parts"),
+    ("generations", "part_id", "parts"),
+    ("versions", "generation_id", "generations"),
+];
+/// Reason reported when two rows share a secondary key and cannot be joined.
+/// The clients keep the reason verbatim, so the name belongs to the sync contract.
+pub const SYNC_CONFLICT_UNIQUE_KEY: &str = "UNIQUE_KEY_CONFLICT";
 const SETTINGS: &[&str] = &[
     "personaId",
     "personaNotes",
@@ -808,7 +826,11 @@ impl Database {
         out["ignoredEmbeddings"] = json!([]);
         out["hasMore"] = json!(false);
         out["nextCursor"] = json!(after);
-        out["conflicts"] = json!([{"convId":error.extra["convId"],"reason":"CONSTRAINT_OR_OWNERSHIP",
+        let reason = match error.extra.get("reason") {
+            Some(Value::String(reason)) => reason.clone(),
+            _ => "CONSTRAINT_OR_OWNERSHIP".to_owned(),
+        };
+        out["conflicts"] = json!([{"convId":error.extra["convId"],"reason":reason,
             "table":error.extra["table"],"constraint":error.extra["constraint"]}]);
         self.exec(
             "INSERT INTO sync_batches VALUES(?,?,?,?)",
@@ -1412,6 +1434,26 @@ impl Database {
         Ok(out)
     }
 
+    /// Points the stored references of a replaced row at the surviving row, so the
+    /// text that pointed at it stays reachable.
+    fn repoint_stored(&self, table: &str, discarded: &str, survivor: &str) -> Result<()> {
+        for (holder, column, target) in REFERENCES {
+            if *target != table {
+                continue;
+            }
+            self.exec(
+                &format!("UPDATE {holder} SET {column}=? WHERE {column}=?"),
+                &[json!(survivor), json!(discarded)],
+            )?;
+        }
+        if table == "parts" {
+            self.exec(
+                "UPDATE operations SET result_json=json_set(result_json,'$.message.id',?) WHERE CASE WHEN json_valid(result_json) THEN json_extract(result_json,'$.message.id') END=?",
+                &[json!(survivor), json!(discarded)],
+            )?;
+        }
+        Ok(())
+    }
     fn sync_apply(&self, c: &str, data: &Value, ours: Option<&Value>) -> Result<()> {
         if data["purged"] == true {
             self.exec(
@@ -1526,6 +1568,50 @@ impl Database {
                 if !existing.is_null() && cols.iter().all(|k| existing[k] == row[k]) {
                     continue;
                 }
+                // The merged snapshot keeps one row per secondary unique key, but the
+                // local copy of a row the peer replaced is still stored and its key is
+                // taken: the row goes before the insert. The references that pointed at
+                // it follow the surviving row, so no text is lost.
+                if let Some(keys) = secondary_key(table)
+                    && keys.iter().all(|k| !row[*k].is_null())
+                {
+                    let where_key = keys
+                        .iter()
+                        .map(|k| format!("{k}=?"))
+                        .collect::<Vec<_>>()
+                        .join(" AND ");
+                    let mut args = keys.iter().map(|k| row[*k].clone()).collect::<Vec<_>>();
+                    args.push(row["id"].clone());
+                    for stale in self.rows(
+                        &format!("SELECT * FROM {table} WHERE {where_key} AND id!=?"),
+                        &args,
+                    )? {
+                        let owner = match table {
+                            "parts" => self
+                                .one(
+                                    "SELECT conv_id FROM interactions WHERE id=?",
+                                    &[stale["interaction_id"].clone()],
+                                )?["conv_id"]
+                                .clone(),
+                            _ => stale["conv_id"].clone(),
+                        };
+                        if !owner.is_null() && owner != c {
+                            return Err(Error::new(
+                                409,
+                                "Linha de outra conversa ocupa a chave única.",
+                            )
+                            .extra("code", "CONFLICT")
+                            .extra("convId", c)
+                            .extra("reason", SYNC_CONFLICT_UNIQUE_KEY)
+                            .extra("table", table));
+                        }
+                        self.repoint_stored(table, &s(&stale, "id"), &s(&row, "id"))?;
+                        self.exec(
+                            &format!("DELETE FROM {table} WHERE id=?"),
+                            &[stale["id"].clone()],
+                        )?;
+                    }
+                }
                 let updates = cols
                     .iter()
                     .filter(|k| !pk.contains(&k.as_str()))
@@ -1547,6 +1633,7 @@ impl Database {
                         Error::new(409, "Colisão de IDs/chaves únicas.")
                             .extra("code", "CONFLICT")
                             .extra("convId", c)
+                            .extra("reason", SYNC_CONFLICT_UNIQUE_KEY)
                             .extra("table", table)
                             .extra("constraint", e.message)
                     } else {
@@ -2097,6 +2184,211 @@ fn merge_job_runtime(ours: &Value, theirs: &Value) -> Option<Value> {
     merged["updated_at"] = json!(s(ours, "updated_at").max(s(theirs, "updated_at")));
     Some(merged)
 }
+/// Secondary unique key of a table, if it declares one.
+fn secondary_key(table: &str) -> Option<&'static [&'static str]> {
+    SECONDARY_KEYS
+        .iter()
+        .find(|(name, _)| *name == table)
+        .map(|(_, keys)| *keys)
+}
+/// Empty means "nothing to keep": null, blank text or an empty JSON array.
+fn empty_field(row: &Value, field: &str) -> bool {
+    match &row[field] {
+        Value::Null => true,
+        Value::String(text) => {
+            text.is_empty()
+                || (field.ends_with("_json")
+                    && parsed(row, field, json!([]))
+                        .as_array()
+                        .is_some_and(|items| items.is_empty()))
+        }
+        Value::Array(items) => items.is_empty(),
+        _ => false,
+    }
+}
+/// Alias lists are sets: the union keeps every alias of both rows.
+fn merge_aliases(winner: &Value, loser: &Value) -> Value {
+    let mut aliases = parsed(winner, "aliases_json", json!([]))
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for alias in parsed(loser, "aliases_json", json!([]))
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        if !aliases.contains(&alias) {
+            aliases.push(alias);
+        }
+    }
+    json!(json!(aliases).to_string())
+}
+/// Identity order: the oldest record keeps the row id the other rows point at.
+fn identity_order(table: &str, row: &Value) -> (String, String) {
+    let time = if table == "generations" {
+        s(row, "started_at")
+    } else {
+        s(row, "created_at")
+    };
+    (time, s(row, "id"))
+}
+/// Content order: the newest record contributes the content. A generation that
+/// already produced a result beats one that is still running.
+fn content_order(table: &str, row: &Value) -> (String, String) {
+    match table {
+        "characters" => (s(row, "updated_at"), s(row, "id")),
+        "generations" => {
+            let rank = if row["status"].as_str() == Some("running") { "0" } else { "1" };
+            (format!("{rank}:{}", s(row, "started_at")), s(row, "id"))
+        }
+        _ => (s(row, "created_at"), s(row, "id")),
+    }
+}
+/// Rows of one table grouped by their secondary unique key.
+fn secondary_groups(data: &Value, table: &str) -> BTreeMap<String, Vec<Value>> {
+    let Some(keys) = secondary_key(table) else {
+        return BTreeMap::new();
+    };
+    let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for row in data[table].as_array().map(|v| v.as_slice()).unwrap_or(&[]) {
+        if keys.iter().any(|k| row[*k].is_null()) {
+            continue;
+        }
+        groups.entry(key(row, keys)).or_default().push(row.clone());
+    }
+    groups
+}
+/// Named conflict: the peer sees which table and key could not be joined.
+fn unique_conflict(table: &str, row: &Value, keys: &[&str]) -> String {
+    format!(
+        "{SYNC_CONFLICT_UNIQUE_KEY}:{table}:{}",
+        keys.iter().map(|k| s(row, k)).collect::<Vec<_>>().join(":")
+    )
+}
+/// The surviving row of a group that shares a secondary unique key: the oldest record
+/// keeps the identity, the newest record contributes the content and the remaining
+/// rows only fill what the winner left empty.
+fn secondary_winner(table: &str, group: &[Value]) -> Value {
+    let mut by_identity = group.to_vec();
+    by_identity.sort_by(|a, b| identity_order(table, a).cmp(&identity_order(table, b)));
+    let oldest = by_identity[0].clone();
+    let mut by_content = group.to_vec();
+    by_content.sort_by(|a, b| content_order(table, a).cmp(&content_order(table, b)));
+    let content = by_content.pop().unwrap();
+    let content_id = s(&content, "id");
+    let mut winner = content.clone();
+    winner["id"] = oldest["id"].clone();
+    if let Some(created) = oldest.get("created_at") {
+        winner["created_at"] = created.clone();
+    }
+    for other in by_identity.iter() {
+        if s(other, "id") == content_id {
+            continue;
+        }
+        match table {
+            "characters" => {
+                for field in ["name", "description", "avatar", "first_interaction_id"] {
+                    if empty_field(&winner, field) && !empty_field(other, field) {
+                        winner[field] = other[field].clone();
+                    }
+                }
+                winner["aliases_json"] = merge_aliases(&winner, other);
+                if n(other, "confirmed") != 0 {
+                    winner["confirmed"] = json!(1);
+                }
+                if s(other, "kind") == "user" {
+                    winner["kind"] = json!("user");
+                }
+            }
+            "parts" => {
+                if empty_field(&winner, "selected_version_id")
+                    && !empty_field(other, "selected_version_id")
+                {
+                    winner["selected_version_id"] = other["selected_version_id"].clone();
+                }
+            }
+            _ => {}
+        }
+    }
+    if table == "characters" {
+        winner["updated_at"] = json!(
+            by_identity
+                .iter()
+                .map(|r| s(r, "updated_at"))
+                .max()
+                .unwrap_or_default()
+        );
+    }
+    winner
+}
+/// Points the references of a replaced row at the surviving row, so no version,
+/// generation or operation keeps a pointer to a row that is gone.
+fn repoint_rows(data: &mut Value, table: &str, discarded: &str, survivor: &str) {
+    for (holder, column, target) in REFERENCES {
+        if *target != table {
+            continue;
+        }
+        if let Some(rows) = data[*holder].as_array_mut() {
+            for row in rows {
+                if s(row, column) == discarded {
+                    row[*column] = json!(survivor);
+                }
+            }
+        }
+    }
+    if table == "parts"
+        && let Some(rows) = data["operations"].as_array_mut()
+    {
+        for row in rows {
+            let mut result = parsed(row, "result_json", json!({}));
+            if s(&result["message"], "id") == discarded {
+                result["message"]["id"] = json!(survivor);
+                row["result_json"] = json!(result.to_string());
+            }
+        }
+    }
+}
+/// Keeps one row per secondary unique key, so applying the merged snapshot can never
+/// break a UNIQUE constraint declared by schema.sql. Nothing is discarded: the
+/// surviving row carries the newest text and the references of the row it replaces.
+fn resolve_secondary_keys(merged: &mut Value) -> std::result::Result<(), String> {
+    for (table, keys) in SECONDARY_KEYS {
+        let mut keep: Vec<Value> = Vec::new();
+        for row in merged[*table].as_array().map(|v| v.as_slice()).unwrap_or(&[]) {
+            if keys.iter().any(|k| row[*k].is_null()) {
+                keep.push(row.clone());
+            }
+        }
+        for (_, group) in secondary_groups(merged, table) {
+            if group.len() == 1 {
+                keep.push(group[0].clone());
+                continue;
+            }
+            if *table == "characters" {
+                let kind = s(&group[0], "kind");
+                if group.iter().any(|r| s(r, "kind") != kind) {
+                    // Two rows for one name that disagree about what the character is
+                    // cannot be joined without losing meaning.
+                    return Err(unique_conflict(table, &group[0], keys));
+                }
+            }
+            let winner = secondary_winner(table, &group);
+            for loser in group.iter() {
+                if s(loser, "id") != s(&winner, "id") {
+                    repoint_rows(merged, table, &s(loser, "id"), &s(&winner, "id"));
+                }
+            }
+            tracing::warn!(
+                table = %table,
+                "linhas duplicadas unificadas na mescla"
+            );
+            keep.push(winner);
+        }
+        keep.sort_by(|a, b| s(a, "id").cmp(&s(b, "id")));
+        merged[*table] = json!(keep);
+    }
+    Ok(())
+}
 pub(super) fn merge_snapshot(
     base: Option<&Value>,
     ours: Option<&Value>,
@@ -2104,7 +2396,9 @@ pub(super) fn merge_snapshot(
     model: &str,
 ) -> std::result::Result<Value, String> {
     let Some(ours) = ours else {
-        return Ok(theirs.clone());
+        let mut merged = theirs.clone();
+        resolve_secondary_keys(&mut merged)?;
+        return Ok(canonical(&merged));
     };
     if ours == theirs {
         return Ok(ours.clone());
@@ -2259,6 +2553,10 @@ pub(super) fn merge_snapshot(
             .retain(|r| r["id"] != tomb["id"]);
     }
     merged["removed"] = json!(removed.into_values().collect::<Vec<_>>());
+    // Two devices can create the same logical row with different ids. The merged
+    // snapshot must carry one row per secondary unique key or SQLite refuses it.
+    // The tombstones are applied first: a row that one side deleted cannot win.
+    resolve_secondary_keys(&mut merged)?;
     filter_removed_dependents(&mut merged);
     merged["conversation"] = merge_object(
         base.map(|b| &b["conversation"]),
