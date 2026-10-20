@@ -2258,6 +2258,26 @@ fn secondary_groups(data: &Value, table: &str) -> BTreeMap<String, Vec<Value>> {
     }
     groups
 }
+/// The ancestor does not know this logical row: no row of the table shares the
+/// secondary unique key of the row.
+fn base_knows_secondary_key(base: Option<&Value>, table: &str, keys: &[&str], row: &Value) -> bool {
+    base.and_then(|b| b[table].as_array())
+        .map(|rows| {
+            rows.iter()
+                .any(|r| keys.iter().all(|k| r[*k] == row[*k]))
+        })
+        .unwrap_or(false)
+}
+/// The row that carries the newest content of a logical row. The order is
+/// deterministic and symmetric, so both sides pick the same content.
+fn newest_content(table: &str, local: &Value, remote: &Value) -> Value {
+    let order = |row: &Value| (content_order(table, row), row.to_string());
+    if order(local) >= order(remote) {
+        local.clone()
+    } else {
+        remote.clone()
+    }
+}
 /// Named conflict: the peer sees which table and key could not be joined.
 fn unique_conflict(table: &str, row: &Value, keys: &[&str]) -> String {
     format!(
@@ -2473,6 +2493,25 @@ pub(super) fn merge_snapshot(
                 continue;
             }
             if !base_row_same(old, local.unwrap()) {
+                // Both sides changed the same row since the last common ancestor. A row
+                // with a secondary unique key is one logical record (a character, a
+                // message part): the newest content wins, symmetrically, so both sides
+                // converge on the same row. The identity of the record is immutable.
+                if let Some(keys) = secondary_key(table)
+                    && !matches!(table, "versions" | "character_revisions" | "generations")
+                    && !base_knows_secondary_key(base, table, keys, local.unwrap())
+                {
+                    if table == "characters" {
+                        let kind = s(local.unwrap(), "kind");
+                        if s(&remote, "kind") != kind {
+                            // Two rows for one name that disagree about what the
+                            // character is cannot be joined without losing meaning.
+                            return Err(unique_conflict(table, local.unwrap(), keys));
+                        }
+                    }
+                    rows.insert(id, newest_content(table, local.unwrap(), &remote));
+                    continue;
+                }
                 return Err(format!("ROW_DIVERGED:{table}:{id}"));
             }
             // Completed messages/recovery identities are immutable; edits must have new IDs.

@@ -5,6 +5,19 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.5.0: Secondary Unique Key Convergence in Sync — 2026-10-20
+
+- **Duplicate Logical Rows No Longer Break the Sync (`server-rust/src/store/sync.rs`)**:
+  - Fixed the 409 `Colisão de IDs/chaves únicas.` that blocked the Android connection when both devices had created the same logical row with different ids (cast character by `(conv_id, name_key)`, message part by `(interaction_id, idx)` or generation by `(conv_id, op_id)`).
+  - The merge now keeps one row per secondary unique key: the oldest record keeps the identity, the newest contributes the content and the replaced row only fills what the winner left empty (aliases are unioned and the confirmation flag is preserved).
+  - The references of the replaced row (version, generation and operation) follow the surviving row, so no message, memory or checkpoint is lost.
+  - The destination releases the key its own stale row still holds before applying the peer row; a row of another conversation that owns the key is refused by name.
+  - When both sides changed the same logical row since the last common ancestor, the newest content wins in a deterministic and symmetric order, so both stores converge on the same row instead of refusing the batch.
+  - Two rows that disagree about what the character is (`kind`) cannot be joined without changing who the user is: the batch is refused with the named reason `UNIQUE_KEY_CONFLICT:characters:<conv_id>:<name_key>` and nothing is overwritten.
+- **Anti-Regression Coverage (`server-rust/tests/sync_contracts.rs`)**:
+  - Added regressions for a duplicated character key converging with the newest text, for a duplicated key whose peer row replaces the local one, and for the named conflict when the two rows have different kinds.
+  - Rust suite: **271 passed**, 5 explicitly ignored, 0 failed (25 targets, `sync_contracts` 35 passed).
+  - JavaScript suite: 347 passed, 3 explicitly skipped, 0 failed.
 ### ModularChat 3.4.2: Pending Sync Receipt Recovery — 2026-10-20
 
 - **Pending Receipt Recovery on the Android Client (`client/src/mobile-sync.js`)**:
