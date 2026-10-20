@@ -19,7 +19,7 @@ export const DEFAULT_PRESETS = {
         { id: "cbai/deepseek-v4.1-flash" },
         { id: "nvidia/deepseek-ai/deepseek-v4.1-flash" }
       ],
-      efforts: ["high"],
+      efforts: ["low", "medium", "high"],
       defaultEffort: "high",
       thinking: "enabled",
       available: true
@@ -93,7 +93,7 @@ export const DEFAULT_PRESETS = {
       family: "glm",
       preferredRoutes: ["GLM", "cbai/glm-5.2"],
       routes: [{ id: "GLM" }, { id: "cbai/glm-5.2" }],
-      efforts: ["high"],
+      efforts: ["low", "medium", "high"],
       defaultEffort: "high",
       thinkingCanDisable: true,
       thinkingDefault: false,
@@ -108,10 +108,9 @@ export const DEFAULT_PRESETS = {
       family: "muse",
       preferredRoutes: ["Muse", "oc-router/meta/muse-spark-open", "oc/muse-spark-1.3-contributor-free"],
       routes: [{ id: "Muse" }, { id: "oc-router/meta/muse-spark-open" }, { id: "oc/muse-spark-1.3-contributor-free" }],
-      efforts: ["high"],
+      efforts: ["low", "medium", "high"],
       defaultEffort: "high",
       thinkingCanDisable: true,
-      thinkingDefault: false,
       thinking: "enabled",
       available: true
     },
@@ -123,10 +122,9 @@ export const DEFAULT_PRESETS = {
       family: "nemotron",
       preferredRoutes: ["Nemotron", "oc-router/nvidia/nemotron-3.5-super-v1:free", "nvidia/nemotron-3.5-super-v1:free"],
       routes: [{ id: "Nemotron" }, { id: "oc-router/nvidia/nemotron-3.5-super-v1:free" }, { id: "nvidia/nemotron-3.5-super-v1:free" }],
-      efforts: ["high"],
+      efforts: ["low", "medium", "high"],
       defaultEffort: "high",
       thinkingCanDisable: true,
-      thinkingDefault: false,
       thinking: "enabled",
       available: true
     },
@@ -139,17 +137,18 @@ export const DEFAULT_PRESETS = {
       preferredRoutes: [
         "MiniMaxM3.1",
         "openrouter/minimax/minimax-m3.1-flash:free",
+        "oc/minimax-m3.1-flash-free",
         "minimax/minimax-m3.1-flash:free"
       ],
       routes: [
         { id: "MiniMaxM3.1" },
         { id: "openrouter/minimax/minimax-m3.1-flash:free" },
+        { id: "oc/minimax-m3.1-flash-free" },
         { id: "minimax/minimax-m3.1-flash:free" }
       ],
-      efforts: ["high"],
+      efforts: ["low", "medium", "high"],
       defaultEffort: "high",
       thinkingCanDisable: true,
-      thinkingDefault: false,
       thinking: "enabled",
       available: true
     }

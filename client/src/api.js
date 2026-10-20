@@ -194,6 +194,40 @@ export const publicPresets = data => data ? {
     .map(p => p.id === 'glm-52' ? { ...p, label: 'GLM' } : p),
 } : null;
 
+export function mergeWithDefaults(data) {
+  const defaults = publicPresets(DEFAULT_PRESETS);
+  if (!data?.presets?.length) return defaults;
+  const hasStandardPresets = data.presets.some(p => p.id === 'deepseek-v41-flash' || p.id === 'gemini-38-flash');
+  if (!hasStandardPresets) return data;
+
+  const map = new Map(data.presets.map((p) => [p.id, p]));
+  for (const dp of (defaults?.presets || [])) {
+    const existing = map.get(dp.id);
+    if (!existing) {
+      data.presets.push({ ...dp });
+    } else {
+      if (dp.groupRoute && !existing.groupRoute) existing.groupRoute = dp.groupRoute;
+      if (dp.thinkingCanDisable && !existing.thinkingCanDisable) existing.thinkingCanDisable = true;
+      if (Array.isArray(dp.efforts) && (!Array.isArray(existing.efforts) || existing.efforts.length < dp.efforts.length)) {
+        existing.efforts = [...dp.efforts];
+      }
+      if (Array.isArray(dp.routes) && Array.isArray(existing.routes)) {
+        const routeIds = new Set(existing.routes.map((r) => r.id));
+        for (const dr of dp.routes) {
+          if (!routeIds.has(dr.id)) existing.routes.push({ ...dr });
+        }
+      }
+      if (Array.isArray(dp.preferredRoutes) && Array.isArray(existing.preferredRoutes)) {
+        const prefSet = new Set(existing.preferredRoutes);
+        for (const pr of dp.preferredRoutes) {
+          if (!prefSet.has(pr)) existing.preferredRoutes.push(pr);
+        }
+      }
+    }
+  }
+  return data;
+}
+
 export const api = {
   // ----- cache local (IndexedDB) -----
   cachedChats: () => cacheGet(CACHE_LIST, []),
@@ -202,12 +236,8 @@ export const api = {
   flushCache,
   cachedPresets: async () => {
     const raw = await kv.get('presets', null);
-    const cached = publicPresets(raw);
-    if (config.kind !== 'pc' && cached?.presets?.some(p => p.id === 'mobile-local' || p.id === 'mobile-api')) return cached;
-    if (!cached?.presets?.length) {
-      await kv.set('presets', DEFAULT_PRESETS).catch(() => {});
-      return DEFAULT_PRESETS;
-    }
+    const cached = mergeWithDefaults(publicPresets(raw));
+    await kv.set('presets', cached).catch(() => {});
     return cached;
   },
 
@@ -355,7 +385,8 @@ export const api = {
 
   // ----- modelos / presets -----
   async presets(options = {}) {
-    const data = publicPresets(await request('GET', '/api/presets', undefined, options));
+    const raw = await request('GET', '/api/presets', undefined, options);
+    const data = mergeWithDefaults(publicPresets(raw));
     options.signal?.throwIfAborted();
     if (options.isCurrent && !options.isCurrent()) throw Object.assign(Error('Catálogo de uma conexão anterior.'), { code: 'STALE_CONNECTION' });
     await kv.set('presets', data).catch(() => {});

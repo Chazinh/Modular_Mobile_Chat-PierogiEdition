@@ -317,6 +317,7 @@
   "Controle de desligamento indisponível nesta rota.": "Disabling thinking is unavailable on this route.",
   "Rota exata": "Exact route",
   "Esforço guardado para quando o pensamento estiver ligado": "Effort saved for when thinking is on",
+  "Esforço (cada nível é uma rota própria)": "Effort (each level is its own route)",
   "Esforço (cada nível é uma rota do 9Router)": "Effort (each level is a 9Router route)",
   "Esforço desta conversa": "Reasoning effort for this chat",
   "Esforço (fixo neste preset)": "Effort (fixed in this preset)",

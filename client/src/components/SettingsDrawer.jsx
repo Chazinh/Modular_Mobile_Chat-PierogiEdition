@@ -169,7 +169,7 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
                   <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && pickAvatar(e.target.files[0])} />
                 </div>
                 <Row lead={<Cpu size={20} />} label={tr("Modelo e esforço")} value={`${preset?.label || chat.routeId}${chat.effort ? ` · ${chat.effort}` : ''}`} onClick={() => setPage('model')} />
-                {preset?.thinkingCanDisable && <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-[18px] py-3.5">
+                {(preset?.thinkingCanDisable || (preset?.thinking && preset.thinking !== 'none')) && <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-[18px] py-3.5">
                   <button role="switch" aria-label={tr("Pensamento do modelo")} aria-checked={thinkingOn} disabled={busy || thinkingSaving} onClick={async () => { setThinkingSaving(true); try { await save({ settings: { thinkingEnabled: !thinkingOn } }); } finally { setThinkingSaving(false); } }} className="flex w-full items-center justify-between gap-3 text-left disabled:opacity-50">
                     <span><span className="block font-medium">{tr("Pensamento do modelo")}</span><span className="block text-xs text-textMuted">{thinkingSaving ? tr("Salvando…") : thinkingOn ? tr("Ligado") : tr("Desligado")}{tr(" · nesta conversa")}</span></span>
                     <Switch on={thinkingOn} />
@@ -298,8 +298,9 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
   const savedThinking = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
   const [sel, setSel] = useState({ presetId: chat.presetId, routeId: chat.routeId, effort: chat.effort, thinkingEnabled: savedThinking });
   const cur = list.find((p) => p.id === sel.presetId);
-  const dirty = sel.presetId !== chat.presetId || sel.routeId !== chat.routeId || sel.effort !== chat.effort || cur?.thinkingCanDisable && sel.thinkingEnabled !== savedThinking;
-  const selectedPatch = () => ({ presetId: sel.presetId, routeId: sel.routeId, effort: sel.effort, ...(cur?.thinkingCanDisable ? { settings: { thinkingEnabled: sel.thinkingEnabled } } : {}) });
+  const curCanDisable = cur?.thinkingCanDisable || (cur?.thinking && cur.thinking !== 'none');
+  const dirty = sel.presetId !== chat.presetId || sel.routeId !== chat.routeId || sel.effort !== chat.effort || (curCanDisable && sel.thinkingEnabled !== savedThinking);
+  const selectedPatch = () => ({ presetId: sel.presetId, routeId: sel.routeId, effort: sel.effort, ...(curCanDisable ? { settings: { thinkingEnabled: sel.thinkingEnabled } } : {}) });
 
   function choosePreset(p) {
     const route = (p.groupRoute && p.routes.find((r) => r.id === p.groupRoute))
@@ -341,7 +342,7 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
             </button>
             {sel.presetId === p.id && (
               <div className="border-t border-borderDark px-4 pb-3 pt-2">
-                {p.thinkingCanDisable ? <button role="switch" aria-label={tr("Pensamento do modelo selecionado")} aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
+                {p.thinkingCanDisable || (p.thinking && p.thinking !== 'none') ? <button role="switch" aria-label={tr("Pensamento do modelo selecionado")} aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
                   <span>{tr("Pensamento do modelo")}</span><Switch on={sel.thinkingEnabled} />
                 </button> : <p className="mb-3 text-xs text-textMuted">{p.thinking === 'none' ? tr("Esta rota usa o menor pensamento disponível e não permite desligá-lo.") : tr("Controle de desligamento indisponível nesta rota.")}</p>}
                 <p className="mb-1 text-xs text-textMuted">{tr("Rota ou grupo de modelos")}</p>
@@ -358,20 +359,32 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
                 })}
                 {p.efforts.length > 0 && (
                   <>
-                    <p className="mb-1 mt-3 text-xs text-textMuted">{p.thinkingCanDisable && !sel.thinkingEnabled ? tr("Esforço guardado para quando o pensamento estiver ligado") : p.effortByRoute ? 'Esforço (cada nível é uma rota própria)' : p.efforts.length > 1 ? tr("Esforço desta conversa") : tr("Esforço (fixo neste preset)")}</p>
+                    <p className="mb-1 mt-3 text-xs text-textMuted">{curCanDisable && !sel.thinkingEnabled ? tr("Esforço guardado para quando o pensamento estiver ligado") : (p.effortByRoute && sel.routeId !== p.groupRoute) ? tr("Esforço (cada nível é uma rota própria)") : p.efforts.length > 1 ? tr("Esforço desta conversa") : tr("Esforço (fixo neste preset)")}</p>
                     <div className="flex flex-wrap gap-2">
                       {p.efforts.map((e) => {
-                        if (!p.effortByRoute && p.efforts.length === 1) return <span key={e} className="mc-bubble mc-glass-accent rounded-full px-3 py-1.5 text-sm">{e}</span>;
-                        if (!p.effortByRoute) return <button key={e} aria-pressed={sel.effort === e} onClick={() => setSel(s => ({ ...s, effort: e }))} className={`rounded-full px-3 py-1.5 text-sm text-white ${sel.effort === e ? 'mc-bubble mc-glass-accent' : 'bg-composer'}`}>{e}</button>;
-                        const route = p.routes.find((r) => p.effortByRoute[r.id] === e);
+                        const isGroup = p.groupRoute && sel.routeId === p.groupRoute;
+                        const targetSubroute = p.effortByRoute ? p.routes.find((r) => p.effortByRoute[r.id] === e) : null;
+                        const hasGroupRoute = p.groupRoute && p.routes.some((r) => r.id === p.groupRoute);
+                        const canSelect = !p.effortByRoute || isGroup || targetSubroute || hasGroupRoute;
                         const on = sel.effort === e;
+
+                        const handleEffortClick = () => {
+                          if (!p.effortByRoute || isGroup) {
+                            setSel((s) => ({ ...s, effort: e }));
+                          } else if (targetSubroute) {
+                            setSel((s) => ({ ...s, routeId: targetSubroute.id, effort: e }));
+                          } else if (hasGroupRoute) {
+                            setSel((s) => ({ ...s, routeId: p.groupRoute, effort: e }));
+                          }
+                        };
+
                         return (
                           <button
                             key={e}
-                            disabled={!route}
+                            disabled={!canSelect}
                             aria-pressed={on}
-                            title={route ? route.id : tr('rota não exposta pelos provedores')}
-                            onClick={() => route && setSel((s) => ({ ...s, routeId: route.id, effort: e }))}
+                            title={targetSubroute ? targetSubroute.id : isGroup ? p.groupRoute : e}
+                            onClick={handleEffortClick}
                             className={`rounded-full px-3 py-1.5 text-sm text-white disabled:opacity-40 ${on ? 'mc-bubble mc-glass-accent' : 'bg-composer'}`}
                           >
                             {e}
