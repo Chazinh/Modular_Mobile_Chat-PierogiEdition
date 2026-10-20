@@ -174,7 +174,16 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
           for (const record of ordered) await commit(dest, sourceId, destId, [record], entries, to);
           return;
         }
-        if (error.code === 'CONFLICT') {
+        // Deterministic atomic rejection: the payload was never applied, so the receipt
+        // cannot be reproduced and would block every later attempt.
+        const status = error.status;
+        const rejected = (status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 409 && status !== 429)
+          || (status === 409 && error.code === 'BATCH_REUSE');
+        if (rejected) {
+          // The receipt is not reproducible; the source keeps the data and the next attempt replans.
+          state.pending = null;
+          await persist();
+        } else if (error.code === 'CONFLICT') {
           state.pending.code = 'CONFLICT';
           state.pending.conflicts = (data?.conflicts || []).map(c => ({ convId: c.convId, reason: c.reason }));
           await persist();
@@ -233,7 +242,27 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
           const entries = await offer(source, sourceId, destId, pending.records.map(r => r.convId));
           // Legacy multi-conversation conflicts did not save reasons. An exact idempotent replay
           // retrieves the recorded rejection so only PUBLIC_SETTINGS_BATCH can be separated.
-          await commit(dest, sourceId, destId, pending.records, entries, pending.to, pending.batchId);
+          // A legacy receipt without a recorded outcome may describe a batch the destination never
+          // applied. Only a destination still holding the receipt's base version proves that; an
+          // absent conversation is indistinguishable from a lost ack and keeps the exact replay.
+          const provablyUnapplied = !pending.code && pending.records.every(r => {
+            const manifest = destState.manifests.get(r.convId);
+            return !!manifest && manifest.hash === r.baseHash;
+          });
+          if (provablyUnapplied) {
+            state.pending = null;
+            await persist();
+          } else {
+            try {
+              await commit(dest, sourceId, destId, pending.records, entries, pending.to, pending.batchId);
+            } catch (error) {
+              // A receipt whose source snapshot changed (e.g. an app update) can never be replayed:
+              // discard it and let the fresh manifests reconcile instead of dead-ending the sync.
+              if (error.code !== 'PENDING_BATCH_CHANGED') throw error;
+              state.pending = null;
+              await persist();
+            }
+          }
         }
       }
       pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);

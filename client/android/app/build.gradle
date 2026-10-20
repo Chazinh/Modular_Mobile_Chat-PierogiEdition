@@ -36,8 +36,8 @@ android {
         applicationId mcBuild['applicationId'] ?: "io.github.modularchat.pierogiedition"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode((mcBuild['versionCode'] ?: '83') as int)
-        versionName mcBuild['versionName'] ?: "3.4.1"
+        versionCode((mcBuild['versionCode'] ?: '84') as int)
+        versionName mcBuild['versionName'] ?: "3.4.2"
         manifestPlaceholders = [mcNetworkSecurityConfig: mcNetworkConfig]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters 'arm64-v8a' }

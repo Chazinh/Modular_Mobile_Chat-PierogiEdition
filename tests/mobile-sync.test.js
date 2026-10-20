@@ -299,16 +299,103 @@ test('sync: não separa resposta de conflito sem confirmação de rejeição at�
   }
 });
 
-test('sync: snapshot alterado não reutiliza batchId nem perde pendência', async () => {
+test('sync: recibo obsoleto não reutiliza batchId e entrega o snapshot novo', async () => {
   let lost = true;
   const f = fixture({ onCall: ({ body }) => { if (body?.pushes && lost) { lost = false; throw Error('lost'); } } });
   f.put('pc', 'c', 'primeiro');
   await assert.rejects(f.sync.synchronize(f.options));
-  const marker = [...f.store.values.values()][0];
+  const stale = JSON.parse([...f.store.values.values()][0]).pending;
+  assert.equal(stale.records[0].convId, 'c', 'a falha de rede preserva o recibo pendente');
   f.put('pc', 'c', 'segundo');
-  await assert.rejects(f.sync.synchronize(f.options), { code: 'PENDING_BATCH_CHANGED' });
-  assert.equal([...f.store.values.values()][0], marker);
-  assert.equal(f.calls.filter(c => c.body?.pushes).length, 1);
+  const result = await f.sync.synchronize(f.options);
+  assert.equal(result.converged, true, 'recibo obsoleto não trava mais a sincronização');
+  assert.equal(f.states.mobile.rows.get('c').snapshot.conversation.name, 'segundo', 'o snapshot novo chega ao destino');
+  const pushes = f.calls.filter(c => c.body?.pushes);
+  assert.equal(pushes.length, 2);
+  assert.notEqual(pushes[1].body.batchId, stale.batchId, 'o recibo obsoleto não é reenviado com o batchId antigo');
+  assert.equal(JSON.parse([...f.store.values.values()][0]).pending, null);
+});
+
+test('sync: recibo pendente com hash divergente da origem converge e o PC recebe o snapshot móvel novo', async () => {
+  const f = fixture();
+  f.put('pc', 'base', 'conversa sincronizada');
+  await f.sync.synchronize(f.options);
+  const intermediate = f.put('mobile', 'novo', 'texto móvel antigo');
+  f.put('mobile', 'novo', 'texto móvel novo');
+  const [key, value] = [...f.store.values][0];
+  const state = JSON.parse(value);
+  const batchId = randomUUID();
+  state.pending = { to: 'pc', batchId, records: [{
+    convId: 'novo', hash: intermediate.hash, contentHash: intermediate.contentHash, baseHash: null,
+  }] };
+  f.store.values.set(key, JSON.stringify(state));
+  const result = await f.sync.synchronize(f.options);
+  assert.equal(result.converged, true, 'recibo com hash obsoleto não trava mais a reconexão');
+  assert.equal(f.states.pc.rows.get('novo').snapshot.conversation.name, 'texto móvel novo');
+  assert.equal(f.states.mobile.rows.get('novo').snapshot.conversation.name, 'texto móvel novo', 'o texto móvel é preservado');
+  assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
+  const push = f.calls.filter(c => c.body?.pushes?.length).at(-1);
+  assert.equal(push.body.pushes[0].convId, 'novo');
+  assert.notEqual(push.body.batchId, batchId, 'recibo obsoleto não é reenviado com o batchId antigo');
+});
+
+test('sync: mudança concorrente durante o envio normal não engole o erro e preserva o recibo', async () => {
+  let f;
+  f = fixture({ onCall: ({ kind, body }) => {
+    if (kind === 'pc' && body?.pushes?.length) f.put('pc', 'c', 'PC alterado concorrentemente');
+    return null;
+  } });
+  f.put('pc', 'c', 'base');
+  await f.sync.synchronize(f.options);
+  f.put('mobile', 'c', 'texto móvel novo');
+  await assert.rejects(f.sync.synchronize(f.options), { code: 'CONFLICT' });
+  const pending = JSON.parse([...f.store.values.values()][0]).pending;
+  assert.equal(pending.code, 'CONFLICT');
+  assert.equal(pending.records[0].convId, 'c');
+  assert.equal(f.states.mobile.rows.get('c').snapshot.conversation.name, 'texto móvel novo', 'nenhum dado é apagado');
+});
+
+test('sync: rejeição 4xx atômica descarta recibo irrepetível e a próxima tentativa converge', async () => {
+  let rejected = false;
+  const f = fixture({ onCall: ({ body }) => {
+    if (!body?.pushes || rejected) return null;
+    rejected = true;
+    return Response.json({ error: 'Settings públicos fora dos limites do Store.', code: 'INVALID_SYNC' }, { status: 400 });
+  } });
+  f.put('mobile', 'settings-conv', 'do Android');
+  await assert.rejects(f.sync.synchronize(f.options),
+    { code: 'INVALID_SYNC', message: 'Settings públicos fora dos limites do Store.' });
+  const [key, value] = [...f.store.values][0];
+  assert.equal(JSON.parse(value).pending, null, 'recibo de rejeição atômica não é reproduzível e não pode ser preservado');
+  const result = await f.sync.synchronize(f.options);
+  assert.equal(result.converged, true);
+  assert.equal(f.states.pc.rows.get('settings-conv').snapshot.conversation.name, 'do Android');
+});
+
+test('sync: recibo antigo provadamente não aplicado não bloqueia a reconexão', async () => {
+  const f = fixture();
+  f.put('pc', 'c', 'base');
+  await f.sync.synchronize(f.options);
+  const baseHash = f.states.pc.rows.get('c').hash;
+  // Snapshot do lote rejeitado; o destino permanece na versão base e o mobile já avançou.
+  const rejectedRow = f.put('mobile', 'c', 'rejeitado');
+  const [key, value] = [...f.store.values][0];
+  const state = JSON.parse(value);
+  const oldBatch = randomUUID();
+  state.pending = { to: 'pc', batchId: oldBatch, records: [{
+    convId: 'c', hash: rejectedRow.hash, contentHash: rejectedRow.contentHash, baseHash,
+  }] };
+  f.store.values.set(key, JSON.stringify(state));
+  f.put('mobile', 'c', 'novo');
+
+  const result = await f.sync.synchronize(f.options);
+  assert.equal(result.converged, true);
+  assert.equal(f.states.pc.rows.get('c').snapshot.conversation.name, 'novo');
+  assert.equal(f.states.pc.rows.get('c').hash, f.states.mobile.rows.get('c').hash);
+  assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
+  const pushes = f.calls.filter(c => c.body?.pushes?.length);
+  assert.ok(pushes.length > 0);
+  assert.notEqual(pushes.at(-1).body.batchId, oldBatch, 'recibo descartado não é reenviado com o batchId antigo');
 });
 
 test('sync: embeddings incompatíveis convergem por contentHash e reportam vetores ignorados', async () => {

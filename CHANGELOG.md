@@ -5,6 +5,17 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.4.2: Pending Sync Receipt Recovery — 2026-10-20
+
+- **Pending Receipt Recovery on the Android Client (`client/src/mobile-sync.js`)**:
+  - Fixed the dead-end `PENDING_BATCH_CHANGED` ("O snapshot de um lote pendente mudou") that blocked reconnection after the 3.4.1 upgrade, when the stored pending receipt referenced a snapshot that no longer exists.
+  - A deterministic atomic rejection (HTTP 4xx other than auth/conflict/rate-limit, and `BATCH_REUSE`) now discards the irreproducible receipt instead of blocking every later attempt; the source keeps the data and the next attempt replans the batch.
+  - A legacy receipt without a recorded outcome is discarded only when the destination still holds the receipt's base version, which proves the batch was never applied; an absent conversation keeps the exact replay.
+  - A receipt whose source snapshot changed is discarded so the fresh manifests reconcile; no conversation, memory or checkpoint is discarded.
+- **Anti-Regression Coverage (`tests/mobile-sync.test.js`)**:
+  - Added regressions for a stale receipt delivering the new snapshot with a new `batchId`, for a pending receipt with a divergent source hash, for a concurrent change during a normal transfer, for an atomic 4xx rejection and for a provably unapplied legacy receipt.
+  - JavaScript suite: **347 passed**, 3 explicitly skipped, 0 failed.
+
 ### ModularChat 3.4.1: Public Settings Temperature Sync Hotfix — 2026-10-20
 
 - **Android Sync Public Settings Validation (`server-rust/src/store/sync.rs`)**:
