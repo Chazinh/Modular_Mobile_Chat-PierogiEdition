@@ -194,8 +194,8 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
           const m = mobileState.manifests.get(r.convId);
           if (p && m) {
             state.baselines[r.convId] = strategy === 'prefer-pc'
-              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash }
-              : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash };
+              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash, preferred: 'pc' }
+              : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash, preferred: 'mobile' };
           }
         }
         state.pending = null;
@@ -216,7 +216,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         };
         const alreadyApplied = pending.records.every(isRecordResolved);
         const rejectedJobMetadata = pending.code === 'CONFLICT' && pending.conflicts?.length > 0
-          && pending.conflicts.every(c => c.reason?.startsWith('ROW_DIVERGED:jobs:') || c.reason?.startsWith('TERMINAL_JOB:'));
+          && pending.conflicts.every(c => c.reason?.startsWith('ROW_DIVERGED:jobs:') || c.reason?.startsWith('TERMINAL_JOB:') || c.reason?.startsWith('JOB_DEFINITION_DIVERGED:') || c.reason?.startsWith('MERGE_VALIDATE:') || c.reason === 'MERGED_REFERENCES_OR_UNIQUE_KEYS');
         if (alreadyApplied || rejectedJobMetadata) {
           // Only a previously rejected queue-metadata conflict can be replanned.
           // No generation/write receipt with uncertain acceptance is discarded.
@@ -337,6 +337,8 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
       const pushbackIds = [], pushbackBases = new Map();
       for (const id of pullIds) {
+        if (resolveConflict && resolveStrategy === 'prefer-pc') continue;
+        if (state.baselines[id]?.preferred === 'pc') continue;
         const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
         if (p && m && !p.purged && !m.purged && (compatible() ? p.hash !== m.hash : p.contentHash !== m.contentHash)) {
           pushbackIds.push(id);

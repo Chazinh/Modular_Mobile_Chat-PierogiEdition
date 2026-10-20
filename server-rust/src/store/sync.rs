@@ -104,13 +104,16 @@ fn json_string(s: &str) -> Value {
     json!(s)
 }
 fn object_keys(v: &Value, allowed: &[&str]) -> Result<()> {
-    if !v
-        .as_object()
-        .is_some_and(|o| o.keys().all(|k| allowed.contains(&k.as_str())))
-    {
-        return Err(invalid("Campos/tabelas não permitidos no sync."));
+    if let Some(o) = v.as_object() {
+        for k in o.keys() {
+            if !allowed.contains(&k.as_str()) {
+                return Err(invalid(&format!("Campo/tabela não permitido no sync: {k}")));
+            }
+        }
+        Ok(())
+    } else {
+        Err(invalid("Valor não é objeto."))
     }
-    Ok(())
 }
 fn identifier(v: &Value) -> Result<&str> {
     v.as_str()
@@ -574,7 +577,7 @@ impl Database {
         }
         Ok(row)
     }
-    fn sync_snapshot(&self, c: &str) -> Result<Value> {
+    pub(super) fn sync_snapshot(&self, c: &str) -> Result<Value> {
         let tomb = self.one("SELECT * FROM sync_tombstones WHERE conv_id=?", &[json!(c)])?;
         if !tomb.is_null() {
             return Ok(
@@ -818,7 +821,7 @@ impl Database {
         )?;
         Ok(out)
     }
-    fn sync_validate(&self, data: &Value) -> Result<()> {
+    pub(super) fn sync_validate(&self, data: &Value) -> Result<()> {
         if data.to_string().len() > MAX_BYTES {
             return Err(sized(data["convId"].as_str(), data.to_string().len()));
         }
@@ -1275,10 +1278,11 @@ impl Database {
                         else { None };
                     if let Some(reason)=reason { ignored.push(json!({"convId":c,"ownerType":row["owner_type"],"ownerId":row["owner_id"],"reason":reason}));false } else {true}
                 });
-                if self.sync_validate(&merge).is_err() {
+                if let Err(err) = self.sync_validate(&merge) {
+                    tracing::warn!(conv_id = %c, error = ?err, "sync_validate failed on merged snapshot");
                     conflicts.push(conflict(
                         &c,
-                        "MERGED_REFERENCES_OR_UNIQUE_KEYS",
+                        &format!("MERGE_VALIDATE:{}", err.message),
                         None,
                         push,
                         &local,
@@ -2065,21 +2069,33 @@ fn row_map(data: Option<&Value>, table: &str, pk: &[&str]) -> BTreeMap<String, V
 fn merge_job_runtime(ours: &Value, theirs: &Value) -> Option<Value> {
     let mut a = ours.clone();
     let mut b = theirs.clone();
-    for k in ["status", "attempts", "updated_at"] {
-        a.as_object_mut()?.remove(k); b.as_object_mut()?.remove(k);
+    for k in ["status", "attempts", "updated_at", "error"] {
+        a.as_object_mut()?.remove(k);
+        b.as_object_mut()?.remove(k);
     }
-    if a != b { return None; }
+    if a != b {
+        return None;
+    }
     let rank = |v: &Value| match v.as_str() {
-        Some("skipped") => 5, Some("done") => 4, Some("blocked") => 3,
-        Some("pending") => 2, Some("failed") => 1, _ => 0,
+        Some("skipped") => 5,
+        Some("done") => 4,
+        Some("blocked") => 3,
+        Some("pending") => 2,
+        Some("failed") => 1,
+        _ => 0,
     };
     let mut merged = ours.clone();
-    if rank(&theirs["status"]) > rank(&ours["status"]) { merged["status"] = theirs["status"].clone(); }
-    merged["attempts"] = json!(n(ours,"attempts").max(n(theirs,"attempts")));
-    merged["updated_at"] = json!(s(ours,"updated_at").max(s(theirs,"updated_at")));
+    if rank(&theirs["status"]) > rank(&ours["status"]) {
+        merged["status"] = theirs["status"].clone();
+    }
+    if let Some(obj) = merged.as_object_mut() {
+        obj.remove("error");
+    }
+    merged["attempts"] = json!(n(ours, "attempts").max(n(theirs, "attempts")));
+    merged["updated_at"] = json!(s(ours, "updated_at").max(s(theirs, "updated_at")));
     Some(merged)
 }
-fn merge_snapshot(
+pub(super) fn merge_snapshot(
     base: Option<&Value>,
     ours: Option<&Value>,
     theirs: &Value,
@@ -2192,11 +2208,26 @@ fn merge_snapshot(
                     return Err(format!("IMMUTABLE_ROW:{table}:{id}"));
                 }
             }
-            if table == "jobs"
-                && matches!(local.unwrap()["status"].as_str(), Some("done" | "skipped"))
-                && local.unwrap()["status"] != remote["status"]
-            {
-                return Err(format!("JOB_DEFINITION_DIVERGED:{id}"));
+            if table == "jobs" {
+                let rank = |v: &Value| match v.as_str() {
+                    Some("skipped") => 5,
+                    Some("done") => 4,
+                    Some("blocked") => 3,
+                    Some("pending") => 2,
+                    Some("failed") => 1,
+                    _ => 0,
+                };
+                if matches!(local.unwrap()["status"].as_str(), Some("done" | "skipped"))
+                    || matches!(remote["status"].as_str(), Some("done" | "skipped"))
+                {
+                    let winning = if rank(&local.unwrap()["status"]) >= rank(&remote["status"]) {
+                        local.unwrap().clone()
+                    } else {
+                        remote.clone()
+                    };
+                    rows.insert(id, winning);
+                    continue;
+                }
             }
             rows.insert(id, remote);
         }
@@ -2231,7 +2262,7 @@ fn merge_snapshot(
         base.map(|b| &b["conversation"]),
         &ours["conversation"],
         &theirs["conversation"],
-        &["revision", "updated_at"],
+        &["revision", "updated_at", "character_rev"],
         Some(&merged),
     )
     .map_err(|k| format!("CONVERSATION_DIVERGED:{k}"))?;
@@ -2242,6 +2273,14 @@ fn merge_snapshot(
         json!(n(&ours["conversation"], "revision").max(n(&theirs["conversation"], "revision")));
     merged["conversation"]["updated_at"] =
         json!(s(&ours["conversation"], "updated_at").max(s(&theirs["conversation"], "updated_at")));
+    let max_char_rev = merged["character_revisions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| n(r, "rev"))
+        .max()
+        .unwrap_or(0);
+    merged["conversation"]["character_rev"] = json!(max_char_rev);
     Ok(canonical(&merged))
 }
 fn merge_object(
@@ -2326,3 +2365,149 @@ fn page(p: &Value, default: usize, max: usize) -> Result<(u64, usize)> {
     };
     Ok((after, limit))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_job_runtime_handles_error_divergence_and_rank() {
+        let ours = json!({
+            "id": "job-1",
+            "conv_id": "conv-1",
+            "kind": "turn",
+            "status": "failed",
+            "error": "API de memória recusou o schema ou a entrada (HTTP 400 Bad Request): Upstream request failed",
+            "attempts": 3,
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:05:00Z",
+            "payload_json": "{\"interactionIds\":[\"int-1\"]}"
+        });
+        let theirs = json!({
+            "id": "job-1",
+            "conv_id": "conv-1",
+            "kind": "turn",
+            "status": "done",
+            "error": null,
+            "attempts": 1,
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:02:00Z",
+            "payload_json": "{\"interactionIds\":[\"int-1\"]}"
+        });
+        let merged = merge_job_runtime(&ours, &theirs).expect("merge_job_runtime should succeed when only runtime metadata differs");
+        assert_eq!(merged["status"], "done");
+        assert!(merged.get("error").is_none());
+        assert_eq!(merged["attempts"], 3);
+        assert_eq!(merged["updated_at"], "2026-10-20T00:05:00Z");
+    }
+
+    #[test]
+    fn test_merge_job_runtime_keeps_local_terminal_status() {
+        let ours = json!({
+            "id": "job-2",
+            "conv_id": "conv-1",
+            "kind": "turn",
+            "status": "done",
+            "error": null,
+            "attempts": 1,
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:02:00Z",
+            "payload_json": "{\"interactionIds\":[\"int-2\"]}"
+        });
+        let theirs = json!({
+            "id": "job-2",
+            "conv_id": "conv-1",
+            "kind": "turn",
+            "status": "failed",
+            "error": "Timeout",
+            "attempts": 2,
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:03:00Z",
+            "payload_json": "{\"interactionIds\":[\"int-2\"]}"
+        });
+        let merged = merge_job_runtime(&ours, &theirs).expect("merge_job_runtime should succeed");
+        assert_eq!(merged["status"], "done");
+        assert!(merged.get("error").is_none());
+        assert_eq!(merged["attempts"], 2);
+    }
+
+    #[test]
+    fn test_merge_snapshot_character_rev_calculation() {
+        let cr1 = json!({
+            "conv_id": "conv-test",
+            "rev": 1,
+            "hash": "h1",
+            "created_at": "2026-10-20T00:00:00Z",
+            "text": "text 1"
+        });
+        let cr2 = json!({
+            "conv_id": "conv-test",
+            "rev": 2,
+            "hash": "h2",
+            "created_at": "2026-10-20T00:01:00Z",
+            "text": "text 2"
+        });
+        let cr3 = json!({
+            "conv_id": "conv-test",
+            "rev": 3,
+            "hash": "h3",
+            "created_at": "2026-10-20T00:02:00Z",
+            "text": "text 3"
+        });
+
+        let base_conv = json!({
+            "id": "conv-test",
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:00:00Z",
+            "revision": 1,
+            "character_rev": 1,
+            "head_interaction_id": null,
+            "title": "Test",
+            "route_id": "Gemini",
+            "preset_id": "gemini-flash",
+            "deleted_at": null,
+            "deleted_batch": null
+        });
+
+        let base = json!({
+            "full": true,
+            "purged": false,
+            "convId": "conv-test",
+            "conversation": base_conv,
+            "publicSettings": {},
+            "removed": [],
+            "character_revisions": [cr1],
+            "interactions": [],
+            "parts": [],
+            "versions": [],
+            "generations": [],
+            "operations": [],
+            "memories": [],
+            "memory_knowledge": [],
+            "relationships": [],
+            "scene_states": [],
+            "character_states": [],
+            "interaction_notes": [],
+            "jobs": [],
+            "review_flags": [],
+            "personas": [],
+            "embeddings": []
+        });
+
+        let mut ours = base.clone();
+        ours["character_revisions"] = json!([cr1.clone(), cr2.clone()]);
+        ours["conversation"]["character_rev"] = json!(2);
+        ours["conversation"]["revision"] = json!(2);
+
+        let mut theirs = base.clone();
+        theirs["character_revisions"] = json!([cr1.clone(), cr3.clone()]);
+        theirs["conversation"]["character_rev"] = json!(3);
+        theirs["conversation"]["revision"] = json!(3);
+
+        let merged = merge_snapshot(Some(&base), Some(&ours), &theirs, "test-model").expect("merge_snapshot should succeed");
+        assert_eq!(merged["conversation"]["character_rev"], 3);
+        let merged_crs = merged["character_revisions"].as_array().unwrap();
+        assert_eq!(merged_crs.len(), 3);
+    }
+}
+

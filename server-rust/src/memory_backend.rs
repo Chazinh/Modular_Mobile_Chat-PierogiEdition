@@ -337,7 +337,7 @@ impl MemoryBackend {
                     }
                 });
                 // No retry or route fallback here: this POST may have been accepted.
-                let response = provider
+                let mut response = provider
                     .chat_request(
                         client,
                         &api.model,
@@ -347,7 +347,51 @@ impl MemoryBackend {
                     .send()
                     .await
                     .map_err(|_| unavailable())?;
-                let status = response.status();
+                let mut status = response.status();
+                if status.as_u16() == 400 {
+                    let err_text = response.text().await.unwrap_or_default();
+                    if err_text.contains("response_format") || err_text.contains("json_schema") || err_text.contains("unavailable") {
+                        tracing::warn!("Upstream rejected json_schema; retrying with json_object fallback: {}", err_text);
+                        let mut fallback_body = body.clone();
+                        fallback_body["response_format"] = json!({ "type": "json_object" });
+                        let fb_response = provider
+                            .chat_request(
+                                client,
+                                &api.model,
+                                &fallback_body,
+                                Duration::from_secs(api.timeout_seconds),
+                            )
+                            .send()
+                            .await
+                            .map_err(|_| unavailable())?;
+                        if fb_response.status().as_u16() == 400 {
+                            let fb_err = fb_response.text().await.unwrap_or_default();
+                            tracing::warn!("Upstream also rejected json_object; retrying without response_format: {}", fb_err);
+                            let mut unconstrained_body = fallback_body.clone();
+                            unconstrained_body.as_object_mut().unwrap().remove("response_format");
+                            response = provider
+                                .chat_request(
+                                    client,
+                                    &api.model,
+                                    &unconstrained_body,
+                                    Duration::from_secs(api.timeout_seconds),
+                                )
+                                .send()
+                                .await
+                                .map_err(|_| unavailable())?;
+                            status = response.status();
+                        } else {
+                            response = fb_response;
+                            status = response.status();
+                        }
+                    } else {
+                        tracing::warn!(status = status.as_u16(), body = %err_text, "API de memória recusou requisição");
+                        return Err(Error::new(
+                            502,
+                            format!("API de memória recusou o schema ou a entrada (HTTP {status}): {err_text}"),
+                        ));
+                    }
+                }
                 if matches!(status.as_u16(), 401 | 403 | 404 | 408 | 429)
                     || status.is_server_error()
                     || status.is_redirection()
