@@ -10,6 +10,7 @@ implemented features.
 - **Duplicate Logical Rows No Longer Break the Sync (`server-rust/src/store/sync.rs`)**:
   - Fixed the 409 `Colisão de IDs/chaves únicas.` that blocked the Android connection when both devices had created the same logical row with different ids (cast character by `(conv_id, name_key)`, message part by `(interaction_id, idx)` or generation by `(conv_id, op_id)`).
   - The merge now keeps one row per secondary unique key: the oldest record keeps the identity, the newest contributes the content and the replaced row only fills what the winner left empty (aliases are unioned and the confirmation flag is preserved).
+  - A row that both sides changed since the last common ancestor is now converged by the same deterministic rule (newest content, immutable identity) instead of being refused as a generic divergence, so the phone and the PC reach the same record.
   - The references of the replaced row (version, generation and operation) follow the surviving row, so no message, memory or checkpoint is lost.
   - The destination releases the key its own stale row still holds before applying the peer row; a row of another conversation that owns the key is refused by name.
   - When both sides changed the same logical row since the last common ancestor, the newest content wins in a deterministic and symmetric order, so both stores converge on the same row instead of refusing the batch.
@@ -18,6 +19,10 @@ implemented features.
   - Added regressions for a duplicated character key converging with the newest text, for a duplicated key whose peer row replaces the local one, and for the named conflict when the two rows have different kinds.
   - Rust suite: **271 passed**, 5 explicitly ignored, 0 failed (25 targets, `sync_contracts` 35 passed).
   - JavaScript suite: 347 passed, 3 explicitly skipped, 0 failed.
+- **Release Artifacts**:
+  - Signed ARM64 APK `versionName 3.5.0 / versionCode 89`, SHA-256 `C4ED250A1B00D542ABA02875AE0D8B6EAFEEE7BABBA88BA5E22BCB3D845DA0F7`, installed over the previous build with `adb install -r` (no uninstall, no data loss).
+  - The PC server runs the new release binary (`7dda61d7a3d81514d26d005f4b7cf5a0430df4fae4971dbad25cf8bccd808e8e`); the encrypted vault was snapshotted and verified before the restart.
+
 ### ModularChat 3.4.2: Pending Sync Receipt Recovery — 2026-10-20
 
 - **Pending Receipt Recovery on the Android Client (`client/src/mobile-sync.js`)**:
