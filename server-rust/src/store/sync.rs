@@ -876,7 +876,9 @@ impl Database {
         }
         object_keys(&data["publicSettings"], PUBLIC_SETTINGS)?;
         validate_settings(&data["publicSettings"], true)?;
-        if Self::normalize_global_settings(&data["publicSettings"]) != data["publicSettings"] {
+        if canonical(&Self::normalize_global_settings(&data["publicSettings"]))
+            != canonical(&data["publicSettings"])
+        {
             return Err(invalid("Settings públicos fora dos limites do Store."));
         }
         for table in std::iter::once("conversations").chain(TABLES.iter().map(|t| t.0)) {

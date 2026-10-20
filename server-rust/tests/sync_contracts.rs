@@ -200,6 +200,137 @@ fn manifest(status: &Value, c: &str) -> Value {
 }
 
 #[tokio::test]
+async fn public_settings_temperature_roundtrip_preserves_hashes_and_receipts() {
+    for temperature in [1.0, 0.8, 0.2, 1.4] {
+        let pc = Fixture::new().await;
+        let phone = Fixture::new().await;
+        let conv_id = pc.create().await;
+        let settings = pc
+            .store
+            .call(Request::SetGlobalSettings(json!({"temperature": temperature})))
+            .await
+            .unwrap();
+        let first = mirror(&pc, &phone, &conv_id).await;
+        assert_eq!(
+            first["snapshot"]["publicSettings"]["temperature"].as_f64(),
+            Some(temperature)
+        );
+        if temperature == 1.0 {
+            assert_eq!(settings["temperature"], json!(1.0));
+            assert_eq!(first["snapshot"]["publicSettings"]["temperature"], json!(1));
+        }
+        let mut float_snapshot = first["snapshot"].clone();
+        float_snapshot["publicSettings"]["temperature"] = json!(temperature);
+        assert_eq!(json!(snapshot_hash(&float_snapshot)), first["hash"]);
+        assert_eq!(
+            phone.store.call(Request::GlobalSettings).await.unwrap(),
+            settings
+        );
+        memory(&phone, &conv_id, "Memória criada no Android").await;
+        let incoming = offer(&phone, &pc.server, &conv_id).await;
+        let request = batch(&phone.server, vec![push(&incoming, first["hash"].clone())]);
+        let receipt = pc.delta(request.clone()).await.unwrap();
+        assert!(receipt["conflicts"].as_array().unwrap().is_empty(), "{receipt}");
+        assert_eq!(receipt["accepted"][0]["hash"], incoming["hash"]);
+        assert_eq!(receipt["ackBatch"], request["batchId"]);
+        assert_eq!(offer(&pc, &phone.server, &conv_id).await, incoming);
+        assert_eq!(pc.delta(request.clone()).await.unwrap(), receipt);
+        let mut reused = request;
+        reused["limit"] = json!(1);
+        let error = pc.delta(reused).await.unwrap_err();
+        assert_eq!(error.status, 409);
+        assert_eq!(error.extra["code"], "BATCH_REUSE");
+        pc.close().await;
+        phone.close().await;
+    }
+}
+
+#[tokio::test]
+async fn public_settings_all_store_temperatures_produce_valid_snapshots() {
+    let pc = Fixture::new().await;
+    let conv_id = pc.create().await;
+    let peer = json!(id());
+    for hundredths in 20..=140 {
+        let temperature = f64::from(hundredths) / 100.0;
+        pc.store
+            .call(Request::SetGlobalSettings(json!({"temperature": temperature})))
+            .await
+            .unwrap();
+        let entry = offer(&pc, &peer, &conv_id).await;
+        assert_eq!(
+            entry["snapshot"]["publicSettings"]["temperature"].as_f64(),
+            Some(temperature)
+        );
+        assert_eq!(json!(snapshot_hash(&entry["snapshot"])), entry["hash"]);
+    }
+    pc.close().await;
+}
+
+#[tokio::test]
+async fn public_settings_invalid_limits_private_fields_and_missing_temperature_are_rejected() {
+    let pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let conv_id = pc.create().await;
+    let first = mirror(&pc, &phone, &conv_id).await;
+    let before = phone.status().await;
+    let settings_before = phone.store.call(Request::GlobalSettings).await.unwrap();
+    let mut invalid = Vec::new();
+    for patch in [
+        json!({"temperature": 0.19}),
+        json!({"temperature": 1.41}),
+        json!({"temperature": 0.805}),
+        json!({"temperature": "1.0"}),
+        json!({"temperature": null}),
+        json!({"botChars": 499}),
+        json!({"botChars": rules::BOT_LIMIT + 1}),
+        json!({"dialoguePct": 101}),
+        json!({"monologueChars": 99}),
+        json!({"monologueChars": 2001}),
+        json!({"content": "x".repeat(1501)}),
+        json!({"lengthMode": "invalid"}),
+        json!({"turnPacing": "invalid"}),
+        json!({"apiKey": "PRIVATE"}),
+        json!({"deviceToken": "PRIVATE"}),
+    ] {
+        let mut entry = first.clone();
+        entry["snapshot"]["publicSettings"]
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        invalid.push(entry);
+    }
+    let mut missing_temperature = first.clone();
+    missing_temperature["snapshot"]["publicSettings"]
+        .as_object_mut()
+        .unwrap()
+        .remove("temperature");
+    invalid.push(missing_temperature);
+    for mut entry in invalid {
+        rehash(&mut entry);
+        let error = phone
+            .delta(batch(&pc.server, vec![push(&entry, first["hash"].clone())]))
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, 400, "{entry}: {error}");
+    }
+    let mut wrong_hash = first.clone();
+    wrong_hash["snapshot"]["publicSettings"]["temperature"] = json!(1.0);
+    let error = phone
+        .delta(batch(&pc.server, vec![push(&wrong_hash, first["hash"].clone())]))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, 400);
+    assert_eq!(error.message, "Hash do snapshot não confere.");
+    assert_eq!(phone.status().await, before);
+    assert_eq!(
+        phone.store.call(Request::GlobalSettings).await.unwrap(),
+        settings_before
+    );
+    pc.close().await;
+    phone.close().await;
+}
+
+#[tokio::test]
 async fn mirror_offline_phone_pc_curation_embedding_pull_and_idempotent_recovery() {
     let pc = Fixture::new().await;
     let phone = Fixture::new().await;

@@ -414,19 +414,24 @@ fn new_presets_routes_thinking_and_unlisted_routes() {
     }
     assert_eq!(presets::for_route("Muse")["id"], "muse-spark-13");
     assert_eq!(presets::for_route("Nemotron")["id"], "nemotron-35");
-    // thinking turned on by the fixed effort
     for (preset, route) in [
         ("kimi-k3", "nvidia/moonshotai/kimi-k3"),
         ("muse-spark-13", "oc/muse-spark-1.3-contributor-free"),
         ("step-5-preview", "oc/step-5-preview-free"),
     ] {
-        for asked in ["max", "none", "low"] {
+        for (asked, expected) in [
+            ("max", "high"),
+            ("none", "high"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+        ] {
             let p = presets::request(
                 &json!({"presetId":preset,"routeId":route,"effort":asked,"temperature":0.7}),
                 vec![],
                 &json!({}),
             );
-            assert_eq!(p.body["reasoning_effort"], "high");
+            assert_eq!(p.body["reasoning_effort"], expected, "{preset}: {asked}");
             if preset == "muse-spark-13" {
                 assert_eq!(p.body["temperature"], 0.7);
             } else {
@@ -996,12 +1001,12 @@ fn adapters_preserve_defaults_sampling_and_sonnet_low_option() {
                 vec![json!({"role":"user","content":"Oi"})],
                 &json!({}),
             );
-            let expected = if preset == "claude-sonnet-5-5" && asked == "low" {
-                "low"
-            } else {
-                effort
+            let expected = match (preset, asked) {
+                ("deepseek-v41-flash", "low" | "medium" | "high")
+                | ("claude-sonnet-5-5", "low" | "medium") => asked,
+                _ => effort,
             };
-            assert_eq!(p.body["reasoning_effort"], expected);
+            assert_eq!(p.body["reasoning_effort"], expected, "{preset}: {asked}");
             assert_eq!(p.body["max_tokens"], max);
             if preset == "deepseek-v41-flash" {
                 assert_eq!(p.body["temperature"], 0.8);

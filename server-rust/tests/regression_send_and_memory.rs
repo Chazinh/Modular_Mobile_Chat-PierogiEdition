@@ -262,7 +262,6 @@ fn regression_screenshot_model_routes_and_argon_exclusion() {
 
 #[test]
 fn regression_memory_dynamics_and_anti_metagaming() {
-    // 1. Testa que pair_limits permite janela mínima de 3 pares (5 mensagens)
     let conv = json!({
         "settings": {
             "context": {
@@ -274,8 +273,8 @@ fn regression_memory_dynamics_and_anti_metagaming() {
         }
     });
     let (min, max, pref) = context::pair_limits(&conv);
-    assert_eq!(min, 3, "Mínimo deve permitir 3 pares (~5 mensagens)");
-    assert_eq!(pref, 3, "Preferencial deve aceitar 3 pares");
+    assert_eq!(min, 8, "Mínimo deve elevar 3 pares ao limite de 8");
+    assert_eq!(pref, 8, "Preferencial deve respeitar o mínimo de 8 pares");
     assert_eq!(max, 10);
 
     // 2. Testa isolamento anti-metagaming: EVENT com visibility=public NÃO deve tornar personagem ausente conhecedor
@@ -285,8 +284,8 @@ fn regression_memory_dynamics_and_anti_metagaming() {
             "prompt": "História de teste.",
             "settings": {
                 "context": {
-                    "preferredPairs": 3,
-                    "minPairs": 3,
+                    "preferredPairs": 8,
+                    "minPairs": 8,
                     "maxPairs": 10,
                     "adaptiveHistory": true
                 }
@@ -367,4 +366,3 @@ fn regression_memory_dynamics_and_anti_metagaming() {
         "O tail deve reforçar que ausentes nos turnos anteriores não sabem o ocorrido"
     );
 }
-

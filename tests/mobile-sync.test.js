@@ -236,26 +236,50 @@ test('sync: recupera recibo legado PUBLIC_SETTINGS_BATCH em lotes individuais, b
   assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
 });
 
-test('sync: recalcula somente lote rejeitado por metadados de job e preserva conflito na definição', async () => {
-  for(const reason of ['ROW_DIVERGED:jobs:[job-id]','JOB_DEFINITION_DIVERGED:job-id']) {
-    const f=fixture();f.put('pc','queue','inicial');await f.sync.synchronize(f.options);
-    f.put('mobile','queue','texto móvel preservado');
-    const before=f.calls.length;
-    const state=JSON.parse([...f.store.values.values()][0]);
-    state.pending={to:'pc',batchId:randomUUID(),code:'CONFLICT',conflicts:[{convId:'queue',reason}],records:[{
-      convId:'queue',hash:f.states.mobile.rows.get('queue').hash,baseHash:state.baselines.queue.pcHash
-    }]};
-    const oldBatch=state.pending.batchId;
-    f.store.values.set([...f.store.values.keys()][0],JSON.stringify(state));
-    if(reason.startsWith('ROW_DIVERGED:jobs:')) {
-      assert.equal((await f.sync.synchronize(f.options)).converged,true);
-      assert.equal(f.states.pc.rows.get('queue').snapshot.conversation.name,'texto móvel preservado');
-      const pushes=f.calls.slice(before).filter(c=>c.body?.pushes?.length);
-      assert.equal(pushes.length,1);assert.notEqual(pushes[0].body.batchId,oldBatch);
-    } else {
-      await assert.rejects(f.sync.synchronize(f.options),{code:'CONFLICT'});
-      assert.equal(f.calls.slice(before).filter(c=>c.body?.pushes?.length).length,0);
-      assert.equal(JSON.parse([...f.store.values.values()][0]).pending.batchId,oldBatch);
+test('sync: recalcula lotes rejeitados recuperáveis e preserva dados se o destino mantiver o conflito', async () => {
+  for (const reason of [
+    'ROW_DIVERGED:jobs:[job-id]', 'TERMINAL_JOB:job-id', 'JOB_DEFINITION_DIVERGED:job-id',
+    'MERGE_VALIDATE:Campo/tabela não permitido no sync: error', 'MERGED_REFERENCES_OR_UNIQUE_KEYS',
+  ]) {
+    for (const remainsConflicted of [false, true]) {
+      const scenario = fixture({ onCall: ({ kind, body, header }) => remainsConflicted && kind === 'pc' && body?.pushes?.length
+        ? Response.json({ ...header, code: 'CONFLICT', ackBatch: null, accepted: [],
+          conflicts: [{ convId: 'queue', reason }] }, { status: 409 }) : null });
+      scenario.put('pc', 'queue', 'inicial');
+      await scenario.sync.synchronize(scenario.options);
+      scenario.put('mobile', 'queue', 'texto móvel preservado');
+      const before = scenario.calls.length;
+      const pcRow = clone(scenario.states.pc.rows.get('queue'));
+      const mobileRow = clone(scenario.states.mobile.rows.get('queue'));
+      const [key, value] = [...scenario.store.values][0];
+      const state = JSON.parse(value);
+      state.pending = { to: 'pc', batchId: randomUUID(), code: 'CONFLICT', conflicts: [{ convId: 'queue', reason }], records: [{
+        convId: 'queue', hash: mobileRow.hash, baseHash: state.baselines.queue.pcHash,
+      }] };
+      const oldBatch = state.pending.batchId;
+      scenario.store.values.set(key, JSON.stringify(state));
+      if (remainsConflicted) {
+        await assert.rejects(scenario.sync.synchronize(scenario.options), { code: 'CONFLICT' });
+        assert.deepEqual(scenario.states.pc.rows.get('queue'), pcRow);
+      } else {
+        assert.equal((await scenario.sync.synchronize(scenario.options)).converged, true);
+        assert.deepEqual(scenario.states.pc.rows.get('queue').snapshot, mobileRow.snapshot);
+      }
+      assert.deepEqual(scenario.states.mobile.rows.get('queue'), mobileRow);
+      const pushes = scenario.calls.slice(before).filter(call => call.body?.pushes?.length);
+      assert.equal(pushes.length, 1);
+      assert.notEqual(pushes[0].body.batchId, oldBatch);
+      assert.deepEqual(pushes[0].body.pushes, [{ convId: 'queue', baseHash: pcRow.hash,
+        hash: mobileRow.hash, snapshot: mobileRow.snapshot }]);
+      const pending = JSON.parse(scenario.store.values.get(key)).pending;
+      if (remainsConflicted) {
+        assert.equal(pending.code, 'CONFLICT');
+        assert.equal(pending.batchId, pushes[0].body.batchId);
+        assert.deepEqual(pending.conflicts, [{ convId: 'queue', reason }]);
+        assert.deepEqual(pending.records, [{ ...state.pending.records[0], contentHash: mobileRow.contentHash }]);
+      } else {
+        assert.equal(pending, null);
+      }
     }
   }
 });

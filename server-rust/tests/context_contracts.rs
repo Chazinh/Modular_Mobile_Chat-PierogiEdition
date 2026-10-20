@@ -340,7 +340,7 @@ fn raw_excludes_the_actual_recent_window_and_pending_sources_without_text_dedup(
                 "id":format!("e{from}"), "fromSeq":from, "toSeq":to, "summary":format!("Resumo {from} a {to}."),
                 "interactionIds":(from..=to).map(|seq|format!("i{seq}")).collect::<Vec<_>>()
             })));
-            assert_eq!(context::retrieval_window_start(&d), 95);
+            assert_eq!(context::retrieval_window_start(&d), 93); // Smallest adaptive window keeps eight pairs (93..100).
         }
         let repeated = d["pairs"][42]["assistant"].as_str().unwrap().to_owned();
         let retrieval = json!({"raw":[

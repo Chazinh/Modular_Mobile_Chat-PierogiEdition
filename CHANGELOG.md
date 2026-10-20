@@ -5,6 +5,18 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.4.1: Public Settings Temperature Sync Hotfix — 2026-10-20
+
+- **Android Sync Public Settings Validation (`server-rust/src/store/sync.rs`)**:
+  - Fixed rejection of the Store's own `temperature: 1.0` during sync due to the JSON representation difference between `1` and `1.0`, preventing `Settings públicos fora dos limites do Store.` during Android connection.
+  - Public settings validation remains strict: limits, private fields and snapshot hashes are still checked.
+- **Regression Coverage (`server-rust/tests/sync_contracts.rs`)**:
+  - Added three regressions covering settings roundtrip, hash preservation and replay; all 121 Store temperatures from 0.20 to 1.40; and rejection of invalid limits, private fields and invalid hashes.
+- **Validation Status**:
+  - Passed 268 Rust tests (including 32 sync contracts) and 343 JavaScript tests; 5 Rust and 3 JavaScript tests remain explicitly ignored/skipped.
+  - Updated stale regression expectations for the existing adaptive history, configurable model effort and recoverable sync-conflict contracts without changing their production behavior.
+  - Built the Windows server and signed ARM64 Android APK, verified the existing signing certificate, and installed Android versionCode 83 with an in-place update preserving application data.
+
 ### ModularChat 3.4.0: Mobile Sync Loop Resolution, Queue Convergence & Resilient Memory Extraction — 2026-10-20
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
