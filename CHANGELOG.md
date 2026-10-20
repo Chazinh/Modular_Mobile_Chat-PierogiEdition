@@ -5,6 +5,19 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.3.1: MiniMax M3.1 Preset & 9Router Combo Integration — 2026-10-19
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **MiniMax M3.1 Model Preset (`presets.json`, `default-presets.js`, `api.js`, `presets.rs`)**:
+  - Added `minimax-m31` preset with 9Router combo fallback route `MiniMaxM3.1` and upstream route `openrouter/minimax/minimax-m3.1-flash:free`.
+  - Configured with 1.0M context (`1048576` tokens), 131k max output (`131072` tokens), reasoning/thinking toggle with omission when disabled, temperature sampling, and 16k provider reserve.
+  - Added `minimax-m31` to `PUBLIC_PRESETS` in `client/src/api.js` and `DEFAULT_PRESETS` in `client/src/default-presets.js`.
+  - Incremented `PRESET_VERSION` to 11 in `presets.rs`.
+
+- **Anti-Regression Unit Tests (`default-presets.test.js`, `multiagent_rp_config.rs`)**:
+  - Added automated tests verifying route resolution, groupRoute integrity, and public catalog availability for `minimax-m31`.
+
 ### ModularChat 3.3.0: Model Creativity Narrative Slider, Trash Purge & Clear Controls — 2026-10-19
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._

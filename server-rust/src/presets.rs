@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::sync::LazyLock;
 
 /// Version of the preset definitions; every generation records it.
-pub const PRESET_VERSION: u32 = 10;
+pub const PRESET_VERSION: u32 = 11;
 /// Retired presets: old conversations that use them still open and generate with the current default preset.
 const RETIRED_PRESETS: &[&str] = &["space-bunny"];
 /// Routes that must not be exposed or selected (e.g. argon is excluded by request; space-bunny is retired).

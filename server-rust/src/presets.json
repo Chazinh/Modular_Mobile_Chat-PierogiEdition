@@ -261,6 +261,37 @@
     "thinkingOffShape": "omit"
   },
   {
+    "id": "minimax-m31",
+    "groupRoute": "MiniMaxM3.1",
+    "label": "MiniMax M3.1",
+    "selectable": true,
+    "family": "minimax",
+    "match": [
+      "minimax-m3\\.1(?:[^0-9]|$)",
+      "minimax-m3\\.1-flash",
+      "^minimaxm3\\.1$",
+      "^minimax$"
+    ],
+    "preferredRoutes": [
+      "MiniMaxM3.1",
+      "openrouter/minimax/minimax-m3.1-flash:free",
+      "minimax/minimax-m3.1-flash:free"
+    ],
+    "efforts": [
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinkingCanDisable": true,
+    "thinkingDefault": false,
+    "thinking": "enabled",
+    "sampling": "temperature",
+    "providerReserve": 16384,
+    "contextWindow": 1048576,
+    "maxOutput": 131072,
+    "capacitySource": "documented",
+    "thinkingOffShape": "omit"
+  },
+  {
     "id": "mobile-local",
     "label": "Qwen2.5 1.5B (local no celular)",
     "selectable": true,

@@ -129,6 +129,29 @@ export const DEFAULT_PRESETS = {
       thinkingDefault: false,
       thinking: "enabled",
       available: true
+    },
+    {
+      id: "minimax-m31",
+      groupRoute: "MiniMaxM3.1",
+      selectable: true,
+      label: "MiniMax M3.1",
+      family: "minimax",
+      preferredRoutes: [
+        "MiniMaxM3.1",
+        "openrouter/minimax/minimax-m3.1-flash:free",
+        "minimax/minimax-m3.1-flash:free"
+      ],
+      routes: [
+        { id: "MiniMaxM3.1" },
+        { id: "openrouter/minimax/minimax-m3.1-flash:free" },
+        { id: "minimax/minimax-m3.1-flash:free" }
+      ],
+      efforts: ["high"],
+      defaultEffort: "high",
+      thinkingCanDisable: true,
+      thinkingDefault: false,
+      thinking: "enabled",
+      available: true
     }
   ]
 };

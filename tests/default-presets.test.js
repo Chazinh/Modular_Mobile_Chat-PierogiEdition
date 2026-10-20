@@ -53,6 +53,7 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.ok(ids.has('glm-52'));
   assert.ok(ids.has('muse-spark-13'));
   assert.ok(ids.has('nemotron-35'));
+  assert.ok(ids.has('minimax-m31'));
 
   // Modelos mortos/desligados devem ser removidos da lista ativa
   assert.ok(!ids.has('kimi-k3'), 'kimi-k3 desligado deve ser removido');
@@ -85,6 +86,10 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   const nemotron = DEFAULT_PRESETS.presets.find(p => p.id === 'nemotron-35');
   assert.equal(nemotron.groupRoute, 'Nemotron');
   assert.ok(nemotron.routes.some(r => r.id === 'Nemotron'), 'Nemotron deve expor a rota do grupo Nemotron');
+  const minimax = DEFAULT_PRESETS.presets.find(p => p.id === 'minimax-m31');
+  assert.equal(minimax.groupRoute, 'MiniMaxM3.1');
+  assert.ok(minimax.routes.some(r => r.id === 'MiniMaxM3.1'), 'MiniMax deve expor a rota do grupo MiniMaxM3.1');
+  assert.ok(minimax.preferredRoutes.includes('openrouter/minimax/minimax-m3.1-flash:free'), 'MiniMax deve incluir rota openrouter');
 
   // Regressão: Argon EXPLICITAMENTE excluído ("menos o argon")
   for (const preset of DEFAULT_PRESETS.presets) {

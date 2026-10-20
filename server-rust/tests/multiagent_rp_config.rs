@@ -124,8 +124,15 @@ fn test_nemotron_and_muse_spark_presets_available_in_catalog() {
     assert_eq!(muse["groupRoute"], "Muse");
     assert_eq!(presets::for_route("Muse")["id"], "muse-spark-13");
 
+    let minimax = presets::by_id("minimax-m31");
+    assert_eq!(minimax["id"], "minimax-m31");
+    assert_eq!(minimax["selectable"], true);
+    assert_eq!(minimax["groupRoute"], "MiniMaxM3.1");
+    assert_eq!(presets::for_route("MiniMaxM3.1")["id"], "minimax-m31");
+    assert_eq!(presets::for_route("openrouter/minimax/minimax-m3.1-flash:free")["id"], "minimax-m31");
+
     // Test public listing with routes discovered or active
-    let routes = vec!["Nemotron".to_string(), "Muse".to_string()];
+    let routes = vec!["Nemotron".to_string(), "Muse".to_string(), "MiniMaxM3.1".to_string()];
     let public_catalog = presets::public(&routes, &json!({}));
     let pub_nemotron = public_catalog.iter().find(|p| p["id"] == "nemotron-35").expect("nemotron-35 in public");
     assert_eq!(pub_nemotron["available"], true);
@@ -134,4 +141,9 @@ fn test_nemotron_and_muse_spark_presets_available_in_catalog() {
     let pub_muse = public_catalog.iter().find(|p| p["id"] == "muse-spark-13").expect("muse-spark-13 in public");
     assert_eq!(pub_muse["available"], true);
     assert_eq!(pub_muse["selectable"], true);
+
+    let pub_minimax = public_catalog.iter().find(|p| p["id"] == "minimax-m31").expect("minimax-m31 in public");
+    assert_eq!(pub_minimax["available"], true);
+    assert_eq!(pub_minimax["selectable"], true);
+    assert_eq!(pub_minimax["routes"][0]["id"], "MiniMaxM3.1");
 }
