@@ -5,6 +5,22 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.3.2: MiniMax Discovery, Deep Thinking Controls & Gemini Effort Fix — 2026-10-20
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **MiniMax M3.1 Preset Discovery & Cache Resilience (`api.js`, `default-presets.js`, `presets.json`)**:
+  - Implemented `mergeWithDefaults()` in `api.js` (`cachedPresets()` and `presets()`) to ensure new presets and updated routes are automatically merged over stale IndexedDB cache.
+  - Added route `oc/minimax-m3.1-flash-free` alongside `openrouter/minimax/minimax-m3.1-flash:free` under fallback group `MiniMaxM3.1`.
+- **Deep Thinking Toggle & Effort Level Controls (`SettingsDrawer.jsx`, `default-presets.js`, `presets.json`)**:
+  - Restored deep thinking toggle switch whenever models support thinking (`thinkingCanDisable || (thinking && thinking !== 'none')`).
+  - Added `low`, `medium`, and `high` effort buttons for DeepSeek V4.1, GLM, Muse Spark, Nemotron 3.5, and MiniMax M3.1.
+  - Removed `thinkingDefault: false` from Muse, Nemotron, and MiniMax so thinking begins enabled.
+- **Gemini Effort Selection Fix (`SettingsDrawer.jsx`)**:
+  - Fixed effort selection on the `Gemini` fallback group route, allowing switching between `low`, `medium`, and `high` without disabling buttons or forcing exit from group fallback.
+- **Anti-Regression Unit Tests (`tests/regression-effort-and-minimax.test.js`)**:
+  - Added regression test suite verifying MiniMax routes, low/medium/high efforts, thinking availability, and cache merging.
+
 ### ModularChat 3.3.1: MiniMax M3.1 Preset & 9Router Combo Integration — 2026-10-19
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
