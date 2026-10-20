@@ -13,7 +13,6 @@ implemented features.
   - A row that both sides changed since the last common ancestor is now converged by the same deterministic rule (newest content, immutable identity) instead of being refused as a generic divergence, so the phone and the PC reach the same record.
   - The references of the replaced row (version, generation and operation) follow the surviving row, so no message, memory or checkpoint is lost.
   - The destination releases the key its own stale row still holds before applying the peer row; a row of another conversation that owns the key is refused by name.
-  - When both sides changed the same logical row since the last common ancestor, the newest content wins in a deterministic and symmetric order, so both stores converge on the same row instead of refusing the batch.
   - Two rows that disagree about what the character is (`kind`) cannot be joined without changing who the user is: the batch is refused with the named reason `UNIQUE_KEY_CONFLICT:characters:<conv_id>:<name_key>` and nothing is overwritten.
 - **Anti-Regression Coverage (`server-rust/tests/sync_contracts.rs`)**:
   - Added regressions for a duplicated character key converging with the newest text, for a duplicated key whose peer row replaces the local one, and for the named conflict when the two rows have different kinds.
