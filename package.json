@@ -1,6 +1,6 @@
 {
   "name": "modularchat-pierogiedition",
-  "version": "3.3.3",
+  "version": "3.4.0",
   "description": "ModularChat (Pierogi Edition): local Rust server with encrypted memory, pluggable OpenAI-compatible model providers and an Android app. This package only holds the start, test and verification scripts.",
   "type": "module",
   "engines": {

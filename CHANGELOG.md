@@ -5,6 +5,28 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.4.0: Mobile Sync Loop Resolution, Queue Convergence & Resilient Memory Extraction — 2026-10-20
+
+_Development assisted by Artificial Intelligence (multi-agent collaboration)._
+
+- **Sync Loop Recovery & Client Conflict Resolution (`mobile-sync.js`)**:
+  - Resolved infinite conflict loop when synchronizing prolonged conversation turns (~13–16+ turns) between mobile and PC.
+  - When resolving conflicts with `prefer-pc`, now tracks preferred baseline without immediate re-trigger of conflicting pushback payloads.
+  - Broadened auto-recovery triggers to handle `JOB_DEFINITION_DIVERGED`, `MERGE_VALIDATE`, and structural merge conflict warnings gracefully.
+- **Deterministic Runtime Convergence & Job Metadata Normalization (`store/sync.rs`)**:
+  - Fixed job runtime metadata merging (`merge_job_runtime`) across devices when execution `error` strings diverged.
+  - Strictly isolated runtime-only fields (`status`, `attempts`, `updated_at`, `error`) so un-synced database columns like `error` are stripped before snapshot validation, eliminating `MERGE_VALIDATE: Campo/tabela não permitido no sync: error`.
+  - Prevented completed receipts (`done` / `skipped`) from being overridden or invalidated by conflicting failed attempts.
+  - Fixed conversation `character_rev` calculation during three-way merges to dynamically resolve to `max(rev)` across all merged character revisions, eliminating spurious `character_rev não aponta à última revisão` validation errors.
+- **Resilient Memory Extraction & Fallback (`memory_backend.rs`)**:
+  - Added automatic fallback retry for memory extraction when upstream model endpoints return HTTP 400 (`response_format unavailable` / schema rejection).
+  - Retries first with `json_object` and subsequently without `response_format`, maintaining local client schema validation to prevent background job amnesia and failure cascades.
+- **Anti-Regression Test Suite (`server-rust/src/store/sync.rs`, `sync_contracts.rs`)**:
+  - Added `test_merge_job_runtime_handles_error_divergence_and_rank` to guarantee error string divergence convergence.
+  - Added `test_merge_job_runtime_keeps_local_terminal_status` verifying terminal status retention.
+  - Added `test_merge_snapshot_character_rev_calculation` verifying multi-peer character revision consistency.
+  - Executed full 29-contract `sync_contracts` test suite with 100% pass rate.
+
 ### ModularChat 3.3.3: Preset Ordering, Native MiniMax Host Resolution & Kinship Perspective Memory Isolation — 2026-10-20
 
 _Development assisted by Artificial Intelligence (multi-agent collaboration)._
