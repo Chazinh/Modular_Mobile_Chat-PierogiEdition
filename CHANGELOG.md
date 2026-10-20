@@ -14,13 +14,21 @@ implemented features.
   - The references of the replaced row (version, generation and operation) follow the surviving row, so no message, memory or checkpoint is lost.
   - The destination releases the key its own stale row still holds before applying the peer row; a row of another conversation that owns the key is refused by name.
   - Two rows that disagree about what the character is (`kind`) cannot be joined without changing who the user is: the batch is refused with the named reason `UNIQUE_KEY_CONFLICT:characters:<conv_id>:<name_key>` and nothing is overwritten.
-- **Anti-Regression Coverage (`server-rust/tests/sync_contracts.rs`)**:
-  - Added regressions for a duplicated character key converging with the newest text, for a duplicated key whose peer row replaces the local one, and for the named conflict when the two rows have different kinds.
-  - Rust suite: **271 passed**, 5 explicitly ignored, 0 failed (25 targets, `sync_contracts` 35 passed).
-  - JavaScript suite: 347 passed, 3 explicitly skipped, 0 failed.
-- **Release Artifacts**:
-  - Signed ARM64 APK `versionName 3.5.0 / versionCode 89`, SHA-256 `C4ED250A1B00D542ABA02875AE0D8B6EAFEEE7BABBA88BA5E22BCB3D845DA0F7`, installed over the previous build with `adb install -r` (no uninstall, no data loss).
-  - The PC server runs the new release binary (`7dda61d7a3d81514d26d005f4b7cf5a0430df4fae4971dbad25cf8bccd808e8e`); the encrypted vault was snapshotted and verified before the restart.
+- **MiniMax Memory Extraction Compatibility (`server-rust/src/memory_backend.rs`)**:
+  - Include the complete JSON schema in the model instructions from the first request: some providers accept `json_schema` but ignore it. Local schema validation, consent, destination, token budgets and the 1 MiB response bound remain enforced.
+  - Negotiate only explicit capability rejections on the same model/provider: unsupported structured formats, mandatory reasoning, and a provider's pre-generation compound-schema rejection wrapped in an HTTP 200 error envelope. No replay on timeout, partial response, generic HTTP 400, rate limit or server error.
+  - When reasoning is mandatory, use low effort within the existing output budget so thinking does not exhaust all tokens before the JSON. Do not persist upstream error bodies or conversation content in diagnostic logs.
+- **Anti-Regression Coverage**:
+  - Sync regressions cover duplicate logical characters, destination key replacement and named conflicts for incompatible character kinds.
+  - Memory regressions reproduce format negotiation, ignored schemas, wrapped schema rejection and mandatory reasoning; both new regressions fail against the previous implementation and pass with the fix. Existing rejection/no-rerouting contracts remain green.
+  - Rust suite: **273 passed**, 5 explicitly ignored, 0 failed (`sync_contracts` 35 passed). JavaScript suite: **347 passed**, 3 explicitly skipped, 0 failed. Web and signed Android builds passed.
+- **Real-Device Synthetic Bench and Release Gate**:
+  - In the isolated Android measurement package, 16 MiniMax turns completed with the final PC runtime. Three additional concurrent chats completed 14 requests, including an idempotent replay without a duplicate turn. Earlier diagnostic turns are not counted in these final-run totals.
+  - The four test conversations drained to zero pending/failed jobs and zero processing lag: 72 visible memories and 5 episodes. All 23 soak health samples passed; this is bounded test evidence, not a guarantee of unlimited stability or model accuracy.
+  - Android and PC manifests matched for all four conversations after a server restart. A synthetic same-name character collision converged; an Android write made while the PC was stopped arrived after reconnect. Encrypted vault integrity passed. The isolated device bench used an ADB USB tunnel, not a LAN/firewall validation.
+  - Signed ARM64 APK `versionName 3.5.0 / versionCode 90`, SHA-256 `617ABA21B2BD035EFC156A9E3E7B6EC428BE157094AFCA735250E6FACB614AA4`, installed with `adb install -r`, preserving existing application data and signing identity.
+  - The PC runs binary SHA-256 `0E1F308CA1EE397B719A412872452503BA82414DB9CC204C9C06D25AF41B835B`; a verified encrypted backup was made before replacing the previous process.
+  - **Publication pending:** the primary release app still requires the owner's fingerprint. Final synchronization of the existing production conversations over their normal connection has not been verified; keep the replacement release in draft until that check completes.
 
 ### ModularChat 3.4.2: Pending Sync Receipt Recovery — 2026-10-20
 

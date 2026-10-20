@@ -37,6 +37,14 @@ enum Reply {
     BadModels,
     WrongModel,
     SlowModels,
+    FormatAndReasoning,
+    AllFormats,
+    SchemaIgnored,
+    WrappedSchemaRejection,
+    WrappedErrorWithPartialResult,
+    CapabilityAfterServerError,
+    GenericBadRequest,
+    SlowPost,
     Redirect,
 }
 
@@ -90,7 +98,48 @@ async fn fixture(reply: Reply) -> Fixture {
             let calls = posts.clone();
             async move {
                 calls.lock().unwrap().push(("POST".into(), auth(&headers), body.clone()));
-                if matches!(reply, Reply::Error) { return (StatusCode::BAD_GATEWAY, "fixture error").into_response(); }
+                if matches!(reply, Reply::Error | Reply::CapabilityAfterServerError) {
+                    return (StatusCode::BAD_GATEWAY, "json_schema unsupported; not a capability rejection").into_response();
+                }
+                if matches!(reply, Reply::GenericBadRequest) {
+                    return (StatusCode::BAD_REQUEST, "unavailable account; invalid input").into_response();
+                }
+                if matches!(reply, Reply::SlowPost) {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                if matches!(reply, Reply::WrappedErrorWithPartialResult) {
+                    return Json(json!({"error":{"message":"invalid params, Mismatch type string with value array", "code":400},"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]})).into_response();
+                }
+                if matches!(reply, Reply::WrappedSchemaRejection) && body["response_format"]["type"] == "json_schema" {
+                    return Json(json!({"error":{"message":"Minimax midstream error: invalid params, Mismatch type string with value array", "code":400},"object":"chat.completion"})).into_response();
+                }
+                if matches!(reply, Reply::SchemaIgnored) {
+                    // The upstream accepts json_schema but answers with a bare list: the schema is ignored.
+                    let described = body["messages"].as_array().unwrap().iter().any(|m| {
+                        m["content"].as_str().is_some_and(|text| text.contains(&schema().to_string()))
+                    });
+                    if described {
+                        return Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"{\"answer\":\"ok\"}"}}]})).into_response();
+                    }
+                    return Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"[\"Mira\",\"Nora\"]"}}]})).into_response();
+                }
+                if matches!(reply, Reply::FormatAndReasoning | Reply::AllFormats) {
+                    if body["response_format"]["type"] == "json_schema" {
+                        return (StatusCode::BAD_REQUEST, "response_format json_schema is unsupported").into_response();
+                    }
+                    if body["thinking"]["type"] == "disabled" {
+                        return (StatusCode::BAD_REQUEST, "Reasoning is mandatory for this endpoint and cannot be disabled.").into_response();
+                    }
+                    if matches!(reply, Reply::AllFormats) && body.get("response_format").is_some() {
+                        return (StatusCode::BAD_REQUEST, "response_format json_object is unavailable").into_response();
+                    }
+                    let described = body["messages"].as_array().unwrap().iter().any(|m| {
+                        m["content"].as_str().is_some_and(|text| text.contains(&schema().to_string()))
+                    });
+                    if !described {
+                        return Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]})).into_response();
+                    }
+                }
                 if matches!(reply, Reply::ContextWindow) { return (StatusCode::BAD_REQUEST, "physical context window exceeded").into_response(); }
                 if matches!(reply, Reply::Partial) {
                     let event = format!("data: {}\n\n", json!({"choices":[{"delta":{"content":"Resposta parcial preservada."}}]}));
@@ -407,6 +456,10 @@ async fn memory_api_rejects_incomplete_schema_length_and_errors_without_reroutin
         Reply::Length,
         Reply::Error,
         Reply::Partial,
+        Reply::CapabilityAfterServerError,
+        Reply::WrappedErrorWithPartialResult,
+        Reply::GenericBadRequest,
+        Reply::SlowPost,
     ] {
         let upstream = fixture(reply).await;
         let providers = MobileProviders::parse(&config(&upstream.url))
@@ -432,7 +485,7 @@ async fn memory_api_rejects_incomplete_schema_length_and_errors_without_reroutin
                 history_consent: true,
                 max_tokens: 600,
                 max_input_tokens: 1024,
-                timeout_seconds: 5,
+                timeout_seconds: if matches!(reply, Reply::SlowPost) { 1 } else { 5 },
             },
         };
         let result = backend
@@ -450,6 +503,75 @@ async fn memory_api_rejects_incomplete_schema_length_and_errors_without_reroutin
         assert_eq!(calls[0].2["max_tokens"], 600);
         assert_eq!(calls[0].2["model"], MODEL);
         assert_eq!(calls[0].2["response_format"]["json_schema"]["strict"], true);
+    }
+}
+
+#[tokio::test]
+async fn memory_capability_fallback_preserves_schema_prompt_and_required_reasoning() {
+    for (reply, attempts) in [(Reply::FormatAndReasoning, 3), (Reply::AllFormats, 4)] {
+        let upstream = fixture(reply).await;
+        let providers = MobileProviders::parse(&config(&upstream.url)).unwrap().runtime().unwrap().unwrap();
+        let (provider, _) = providers.target(&modularchat_server::providers::RouteTarget {
+            provider: "phone".into(), model: MODEL.into(),
+        }).unwrap();
+        let backend = MemoryBackend::Api {
+            client: reqwest::Client::new(), provider,
+            api: MemoryApi { provider: "phone".into(), model: MODEL.into(), history_consent: true,
+                max_tokens: 600, max_input_tokens: 4096, timeout_seconds: 5 },
+        };
+        let value = backend.chat_json(vec![
+            json!({"role":"system","content":"Preserve original instructions."}),
+            json!({"role":"user","content":"Synthetic memory turn."}),
+        ], schema(), 600, 0.1).await.unwrap();
+        assert_eq!(value, json!({"answer":"ok"}));
+        assert_eq!(upstream.posts(), attempts);
+        let calls = upstream.calls.lock().unwrap();
+        let original = calls[0].2["messages"].as_array().unwrap();
+        for (index, (_, authorization, body)) in calls.iter().enumerate() {
+            assert_eq!(authorization, &format!("Bearer {KEY}"));
+            assert_eq!(body["model"], MODEL);
+            assert_eq!(body["max_tokens"], 600);
+            assert_eq!(body["stream"], false);
+            let messages = body["messages"].as_array().unwrap();
+            assert_eq!(&messages[..original.len()], original.as_slice());
+            assert_eq!(messages.len(), original.len(), "schema is included exactly once");
+            assert!(messages.last().unwrap()["content"].as_str().unwrap().contains(&schema().to_string()));
+            assert!(index < attempts);
+        }
+        assert_eq!(calls[0].2["response_format"]["type"], "json_schema");
+        assert_eq!(calls[1].2["response_format"]["type"], "json_object");
+        assert_eq!(calls[1].2["thinking"]["type"], "disabled");
+        assert!(calls[2].2.get("thinking").is_none());
+        assert!(calls[2].2.get("chat_template_kwargs").is_none());
+        assert_eq!(calls[2].2["reasoning_effort"], "low");
+        if attempts == 4 { assert!(calls[3].2.get("response_format").is_none()); }
+    }
+}
+
+#[tokio::test]
+async fn memory_ignored_schema_receives_the_schema_in_the_first_prompt() {
+    for (reply, count) in [(Reply::SchemaIgnored, 1), (Reply::WrappedSchemaRejection, 2)] {
+    let upstream = fixture(reply).await;
+    let providers = MobileProviders::parse(&config(&upstream.url)).unwrap().runtime().unwrap().unwrap();
+    let (provider, _) = providers.target(&modularchat_server::providers::RouteTarget {
+        provider: "phone".into(), model: MODEL.into(),
+    }).unwrap();
+    let backend = MemoryBackend::Api {
+        client: reqwest::Client::new(), provider,
+        api: MemoryApi { provider: "phone".into(), model: MODEL.into(), history_consent: true,
+            max_tokens: 600, max_input_tokens: 4096, timeout_seconds: 5 },
+    };
+    let value = backend.chat_json(vec![json!({"role":"user","content":"Synthetic memory turn."})], schema(), 600, 0.1).await.unwrap();
+    assert_eq!(value, json!({"answer":"ok"}));
+    assert_eq!(upstream.posts(), count);
+    let calls = upstream.calls.lock().unwrap();
+    assert_eq!(calls[0].2["response_format"]["type"], "json_schema");
+    assert_eq!(calls[0].2["messages"][0]["content"], "Synthetic memory turn.");
+    assert!(calls[0].2["messages"].as_array().unwrap().iter().any(|m| m["content"].as_str().is_some_and(|t| t.contains(&schema().to_string()))));
+    if count == 2 {
+        assert_eq!(calls[1].2["response_format"]["type"], "json_object");
+        assert_eq!(calls[0].2["messages"], calls[1].2["messages"]);
+    }
     }
 }
 

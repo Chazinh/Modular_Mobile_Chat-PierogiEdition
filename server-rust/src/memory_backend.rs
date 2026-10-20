@@ -307,7 +307,7 @@ impl MemoryBackend {
                         "Entrada de memória excedeu o orçamento configurado; retry reduzido necessário.",
                     ));
                 }
-                let adapted_messages: Vec<Value> = messages
+                let mut adapted_messages: Vec<Value> = messages
                     .into_iter()
                     .flat_map(|m| {
                         if m["role"] == "system" {
@@ -320,102 +320,115 @@ impl MemoryBackend {
                         }
                     })
                     .collect();
-                let body = json!({
-                    "messages": adapted_messages,
-                    "stream": false,
-                    "temperature": temperature,
-                    "max_tokens": reserve,
-                    "chat_template_kwargs": { "enable_thinking": false },
-                    "thinking": { "type": "disabled" },
-                    "response_format": {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "memory",
-                            "strict": true,
-                            "schema": schema
-                        }
-                    }
-                });
-                // No retry or route fallback here: this POST may have been accepted.
-                let mut response = provider
-                    .chat_request(
-                        client,
-                        &api.model,
-                        &body,
-                        Duration::from_secs(api.timeout_seconds),
-                    )
-                    .send()
-                    .await
-                    .map_err(|_| unavailable())?;
-                let mut status = response.status();
-                if status.as_u16() == 400 {
-                    let err_text = response.text().await.unwrap_or_default();
-                    if err_text.contains("response_format") || err_text.contains("json_schema") || err_text.contains("unavailable") {
-                        tracing::warn!("Upstream rejected json_schema; retrying with json_object fallback: {}", err_text);
-                        let mut fallback_body = body.clone();
-                        fallback_body["response_format"] = json!({ "type": "json_object" });
-                        let fb_response = provider
-                            .chat_request(
-                                client,
-                                &api.model,
-                                &fallback_body,
-                                Duration::from_secs(api.timeout_seconds),
-                            )
-                            .send()
-                            .await
-                            .map_err(|_| unavailable())?;
-                        if fb_response.status().as_u16() == 400 {
-                            let fb_err = fb_response.text().await.unwrap_or_default();
-                            tracing::warn!("Upstream also rejected json_object; retrying without response_format: {}", fb_err);
-                            let mut unconstrained_body = fallback_body.clone();
-                            unconstrained_body.as_object_mut().unwrap().remove("response_format");
-                            response = provider
-                                .chat_request(
-                                    client,
-                                    &api.model,
-                                    &unconstrained_body,
-                                    Duration::from_secs(api.timeout_seconds),
-                                )
-                                .send()
-                                .await
-                                .map_err(|_| unavailable())?;
-                            status = response.status();
-                        } else {
-                            response = fb_response;
-                            status = response.status();
-                        }
+                // Some upstreams accept json_schema but ignore it; give the model the contract too.
+                adapted_messages.push(json!({
+                    "role": "user",
+                    "content": format!("Responda somente com JSON conforme este schema obrigatório. Preserve os nomes, os tipos e os campos required; use [] nos arrays vazios e \"\" nos textos desconhecidos.\n{}", schema)
+                }));
+                // Only explicit capability rejections repeat a POST on this same route.
+                let mut format = 0;
+                let mut reasoning_required = false;
+                loop {
+                    let mut body = json!({
+                        "messages": adapted_messages.clone(),
+                        "stream": false,
+                        "temperature": temperature,
+                        "max_tokens": reserve,
+                    });
+                    if !reasoning_required {
+                        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+                        body["thinking"] = json!({ "type": "disabled" });
                     } else {
-                        tracing::warn!(status = status.as_u16(), body = %err_text, "API de memória recusou requisição");
+                        // Required thinking shares max_tokens with the JSON; keep room for the result.
+                        body["reasoning_effort"] = json!("low");
+                    }
+                    if format == 0 {
+                        body["response_format"] = json!({
+                            "type": "json_schema",
+                            "json_schema": { "name": "memory", "strict": true, "schema": schema.clone() }
+                        });
+                    } else if format == 1 {
+                        body["response_format"] = json!({ "type": "json_object" });
+                    }
+                    let input = rules::estimate_messages(body["messages"].as_array().unwrap());
+                    if input > api.max_input_tokens
+                        || input as u64 + reserve + 64 > provider.context_window
+                    {
+                        return Err(Error::new(502, "Entrada de memória excedeu o orçamento configurado; retry reduzido necessário."));
+                    }
+                    let response = provider
+                        .chat_request(client, &api.model, &body, Duration::from_secs(api.timeout_seconds))
+                        .send()
+                        .await
+                        .map_err(|_| unavailable())?;
+                    let status = response.status();
+                    if status.as_u16() == 400 {
+                        let mut bytes = Vec::new();
+                        let mut stream = response.bytes_stream();
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk.map_err(|_| unavailable())?;
+                            if bytes.len() + chunk.len() > 1024 * 1024 {
+                                return Err(Error::new(502, "Resposta de memória excedeu o limite."));
+                            }
+                            bytes.extend_from_slice(&chunk);
+                        }
+                        let error = String::from_utf8_lossy(&bytes).to_lowercase();
+                        if !reasoning_required
+                            && error.contains("reasoning")
+                            && (error.contains("mandatory") || error.contains("required"))
+                            && (error.contains("cannot be disabled") || error.contains("can't be disabled"))
+                        {
+                            reasoning_required = true;
+                            tracing::warn!("API de memória exige raciocínio; removendo controles incompatíveis");
+                            continue;
+                        }
+                        let format_rejected = (error.contains("response_format") || error.contains("json_schema") || error.contains("json_object"))
+                            && (error.contains("unavailable") || error.contains("unsupported") || error.contains("not supported") || error.contains("not available"));
+                        if format < 2 && format_rejected {
+                            format += 1;
+                            tracing::warn!(fallback = format, "API de memória rejeitou formato estruturado; schema mantido nas instruções");
+                            continue;
+                        }
+                        tracing::warn!("API de memória recusou requisição (HTTP 400)");
+                        return Err(Error::new(502, "API de memória recusou o schema ou a entrada (HTTP 400)."));
+                    }
+                    if matches!(status.as_u16(), 401 | 403 | 404 | 408 | 429)
+                        || status.is_server_error()
+                        || status.is_redirection()
+                    {
+                        return Err(unavailable());
+                    }
+                    if !status.is_success() {
+                        tracing::warn!(status = status.as_u16(), "API de memória recusou requisição");
                         return Err(Error::new(
                             502,
-                            format!("API de memória recusou o schema ou a entrada (HTTP {status}): {err_text}"),
+                            format!("API de memória recusou o schema ou a entrada (HTTP {status})."),
                         ));
                     }
-                }
-                if matches!(status.as_u16(), 401 | 403 | 404 | 408 | 429)
-                    || status.is_server_error()
-                    || status.is_redirection()
-                {
-                    return Err(unavailable());
-                }
-                if !status.is_success() {
-                    let err_text = response.text().await.unwrap_or_default();
-                    tracing::warn!(status = status.as_u16(), body = %err_text, "API de memória recusou requisição");
-                    return Err(Error::new(
-                        502,
-                        format!("API de memória recusou o schema ou a entrada (HTTP {status}): {err_text}"),
-                    ));
-                }
-                let mut stream = response.bytes_stream();
-                let mut bytes = Vec::new();
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.map_err(|_| unavailable())?;
-                    if bytes.len() + chunk.len() > 1024 * 1024 {
-                        return Err(Error::new(502, "Resposta de memória excedeu o limite."));
+                    let mut stream = response.bytes_stream();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk.map_err(|_| unavailable())?;
+                        if bytes.len() + chunk.len() > 1024 * 1024 {
+                            return Err(Error::new(502, "Resposta de memória excedeu o limite."));
+                        }
+                        bytes.extend_from_slice(&chunk);
                     }
-                    bytes.extend_from_slice(&chunk);
+                    // OpenRouter can wrap a provider's pre-generation schema rejection in HTTP 200.
+                    let envelope: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                    let message = envelope["error"]["message"].as_str().unwrap_or_default().to_lowercase();
+                    if format == 0
+                        && envelope["choices"].as_array().is_none_or(|choices| choices.is_empty())
+                        && envelope["error"]["code"] == 400
+                        && message.contains("invalid params")
+                        && message.contains("mismatch type string with value array")
+                    {
+                        format = 1;
+                        tracing::warn!("API de memória recusou tipo composto do schema; usando JSON com instruções explícitas");
+                        continue;
+                    }
+                    break parse_model_content(&bytes)?;
                 }
-                parse_model_content(&bytes)?
             }
         };
         validate_schema(&result, &schema)?;
