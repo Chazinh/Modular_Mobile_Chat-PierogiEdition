@@ -151,6 +151,32 @@ export const DEFAULT_PRESETS = {
       thinkingCanDisable: true,
       thinking: "enabled",
       available: true
+    },
+    {
+      id: "gemma-4",
+      groupRoute: "Gemma4",
+      selectable: true,
+      label: "Gemma 4",
+      family: "gemma",
+      preferredRoutes: [
+        "Gemma4",
+        "openrouter/google/gemma-4-31b-it:free",
+        "google/gemma-4-31b-it:free",
+        "google/gemma-4-31b-it",
+        "openrouter/google/gemma-4-31b-it",
+        "oc/gemma-4-31b-it-free"
+      ],
+      routes: [
+        { id: "Gemma4" },
+        { id: "openrouter/google/gemma-4-31b-it:free" },
+        { id: "google/gemma-4-31b-it:free" },
+        { id: "google/gemma-4-31b-it" }
+      ],
+      efforts: ["low", "medium", "high"],
+      defaultEffort: "high",
+      thinkingCanDisable: true,
+      thinking: "enabled",
+      available: true
     }
   ]
 };

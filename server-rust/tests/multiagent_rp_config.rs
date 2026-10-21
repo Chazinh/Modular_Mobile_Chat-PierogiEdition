@@ -131,8 +131,17 @@ fn test_nemotron_and_muse_spark_presets_available_in_catalog() {
     assert_eq!(presets::for_route("MiniMaxM3.1")["id"], "minimax-m31");
     assert_eq!(presets::for_route("openrouter/minimax/minimax-m3.1-flash:free")["id"], "minimax-m31");
 
+    let gemma = presets::by_id("gemma-4");
+    assert_eq!(gemma["id"], "gemma-4");
+    assert_eq!(gemma["selectable"], true);
+    assert_eq!(gemma["groupRoute"], "Gemma4");
+    assert_eq!(presets::for_route("Gemma4")["id"], "gemma-4");
+    assert_eq!(presets::for_route("openrouter/google/gemma-4-31b-it:free")["id"], "gemma-4");
+    assert_eq!(presets::for_route("google/gemma-4-31b-it")["id"], "gemma-4");
+    assert_ne!(presets::for_route("embeddinggemma-300m")["id"], "gemma-4");
+
     // Test public listing with routes discovered or active
-    let routes = vec!["Nemotron".to_string(), "Muse".to_string(), "MiniMaxM3.1".to_string()];
+    let routes = vec!["Nemotron".to_string(), "Muse".to_string(), "MiniMaxM3.1".to_string(), "Gemma4".to_string()];
     let public_catalog = presets::public(&routes, &json!({}));
     let pub_nemotron = public_catalog.iter().find(|p| p["id"] == "nemotron-35").expect("nemotron-35 in public");
     assert_eq!(pub_nemotron["available"], true);
@@ -146,4 +155,9 @@ fn test_nemotron_and_muse_spark_presets_available_in_catalog() {
     assert_eq!(pub_minimax["available"], true);
     assert_eq!(pub_minimax["selectable"], true);
     assert_eq!(pub_minimax["routes"][0]["id"], "MiniMaxM3.1");
+
+    let pub_gemma = public_catalog.iter().find(|p| p["id"] == "gemma-4").expect("gemma-4 in public");
+    assert_eq!(pub_gemma["available"], true);
+    assert_eq!(pub_gemma["selectable"], true);
+    assert_eq!(pub_gemma["routes"][0]["id"], "Gemma4");
 }

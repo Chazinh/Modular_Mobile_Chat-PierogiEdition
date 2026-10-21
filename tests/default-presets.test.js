@@ -54,6 +54,7 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.ok(ids.has('muse-spark-13'));
   assert.ok(ids.has('nemotron-35'));
   assert.ok(ids.has('minimax-m31'));
+  assert.ok(ids.has('gemma-4'));
 
   // Modelos mortos/desligados devem ser removidos da lista ativa
   assert.ok(!ids.has('kimi-k3'), 'kimi-k3 desligado deve ser removido');
@@ -90,6 +91,10 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.equal(minimax.groupRoute, 'MiniMaxM3.1');
   assert.ok(minimax.routes.some(r => r.id === 'MiniMaxM3.1'), 'MiniMax deve expor a rota do grupo MiniMaxM3.1');
   assert.ok(minimax.preferredRoutes.includes('openrouter/minimax/minimax-m3.1-flash:free'), 'MiniMax deve incluir rota openrouter');
+  const gemma = DEFAULT_PRESETS.presets.find(p => p.id === 'gemma-4');
+  assert.equal(gemma.groupRoute, 'Gemma4');
+  assert.ok(gemma.routes.some(r => r.id === 'Gemma4'), 'Gemma 4 deve expor a rota do grupo Gemma4');
+  assert.ok(gemma.preferredRoutes.includes('openrouter/google/gemma-4-31b-it:free'), 'Gemma 4 deve incluir rota openrouter');
 
   // Regressão: Argon EXPLICITAMENTE excluído ("menos o argon")
   for (const preset of DEFAULT_PRESETS.presets) {

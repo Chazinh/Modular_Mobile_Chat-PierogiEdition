@@ -306,12 +306,54 @@
     "thinkingOffShape": "omit"
   },
   {
+    "id": "gemma-4",
+    "groupRoute": "Gemma4",
+    "label": "Gemma 4",
+    "selectable": true,
+    "family": "gemma",
+    "match": [
+      "gemma-4(?:[^0-9]|$)",
+      "gemma-4-31b",
+      "^gemma4$",
+      "^gemma$"
+    ],
+    "exclude": [
+      "embedding"
+    ],
+    "preferredRoutes": [
+      "Gemma4",
+      "openrouter/google/gemma-4-31b-it:free",
+      "google/gemma-4-31b-it:free",
+      "google/gemma-4-31b-it",
+      "openrouter/google/gemma-4-31b-it",
+      "oc/gemma-4-31b-it-free"
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinkingCanDisable": true,
+    "thinking": "enabled",
+    "sampling": "temperature",
+    "providerReserve": 16384,
+    "contextWindow": 128000,
+    "maxOutput": 64000,
+    "capacitySource": "documented",
+    "thinkingOffShape": "omit"
+  },
+  {
     "id": "mobile-local",
     "label": "Qwen2.5 1.5B (local no celular)",
     "selectable": true,
     "family": "local",
-    "match": ["^mobile-local$"],
-    "preferredRoutes": ["mobile-local"],
+    "match": [
+      "^mobile-local$"
+    ],
+    "preferredRoutes": [
+      "mobile-local"
+    ],
     "efforts": [],
     "defaultEffort": null,
     "thinkingCanDisable": true,
@@ -328,9 +370,15 @@
     "label": "API configurada no celular",
     "selectable": true,
     "family": "openai-compatible",
-    "match": ["^mobile-api:"],
+    "match": [
+      "^mobile-api:"
+    ],
     "preferredRoutes": [],
-    "efforts": ["low", "medium", "high"],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
     "defaultEffort": null,
     "thinkingCanDisable": true,
     "thinkingDefault": false,

@@ -5,6 +5,14 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.0.1: Gemma 4 Model Integration & Mobile Chat Catalog Fix — 2026-10-21
+
+- **Gemma 4 Preset & Route Discovery (`server-rust/src/presets.json`, `client/src/default-presets.js`, `client/src/api.js`)**:
+  - Registered `gemma-4` preset with 9Router combo fallback route `Gemma4` and upstream route `openrouter/google/gemma-4-31b-it:free`.
+  - Added `gemma-4` to `PUBLIC_PRESETS` in `client/src/api.js` and `DEFAULT_PRESETS` in `client/src/default-presets.js`, ensuring Gemma 4 is properly exposed in the in-chat model picker.
+  - Implemented automatic route normalization in `normalizeChatPreset` for `Gemma4` and `openrouter/google/gemma-4-31b-it:free` without conflicting with local embedding models (`embeddinggemma`).
+  - Added automated anti-regression test suite `tests/regression-gemma-4.test.js` and extended `tests/default-presets.test.js` and `server-rust/tests/multiagent_rp_config.rs`.
+
 ### ModularChat 4.0.0: Redesigned Memory Architecture, Epistemic Scene Isolation & POV Disambiguation — 2026-10-21
 
 - **Epistemic Scene Presence Tracking & Anti-Metagaming Engine (`server-rust/src/context.rs`, `server-rust/src/jobs.rs`, `server-rust/src/store/context.rs`, `server-rust/src/store/memory.rs`)**:

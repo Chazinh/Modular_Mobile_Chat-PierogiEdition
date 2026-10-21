@@ -185,7 +185,7 @@ const settingsReads = createLatestRequest(connectionSnapshot);
 function invalidateSettings() { globalSettingsCache = null; settingsReads.cancel(); }
 const CACHE_LIST = 'chats';
 const CACHE_CHAT = (id) => `chat.${id}`;
-const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'kimi-k3', 'muse-spark-13', 'nemotron-35', 'step-5-preview', 'glm-52', 'minimax-m31', 'mobile-local', 'mobile-api']);
+const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'kimi-k3', 'muse-spark-13', 'nemotron-35', 'step-5-preview', 'glm-52', 'minimax-m31', 'gemma-4', 'mobile-local', 'mobile-api']);
 export const publicPresets = data => data ? {
   ...data,
   presets: (data.presets || [])
@@ -200,6 +200,9 @@ export function normalizeChatPreset(chat) {
     const r = String(chat.routeId).toLowerCase();
     if (r.includes('minimax') || r === 'minimaxm3.1') {
       return { ...chat, presetId: 'minimax-m31' };
+    }
+    if ((r.includes('gemma-4') || r === 'gemma4') && !r.includes('embedding')) {
+      return { ...chat, presetId: 'gemma-4' };
     }
   }
   return chat;
