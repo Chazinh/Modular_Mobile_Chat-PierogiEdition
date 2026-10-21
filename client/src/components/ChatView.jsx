@@ -608,10 +608,11 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     && (!recentReply.model || recentReply.model === chat?.routeId)
     && (recentReply.effort == null || recentReply.effort === chat?.effort);
   const connected = !offline && (modelOnline ?? recoveredOnline);
+  const isPc = config.kind === 'pc';
   const serverOnline = !offline && (status ? status === 'online' : true);
   const isChecking = status === 'checking';
   const handleTitle = serverOnline
-    ? tr("Conectado ao servidor ativo · toque ou puxe para baixo")
+    ? (isPc ? tr("Conectado ao PC · toque ou puxe para baixo") : tr("Host local (AutoHost) · toque ou puxe para baixo"))
     : isChecking
       ? tr("Verificando conexão · toque ou puxe para baixo")
       : tr("Sem conexão com o servidor ativo · toque ou puxe para baixo");
@@ -629,7 +630,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
         aria-expanded={topBar.open}
         title={handleTitle}
       >
-        <span className={`mc-bar-dot ${serverOnline ? 'mc-on' : ''} ${isChecking ? 'mc-dot-checking' : ''}`} />
+        <span className={`mc-bar-dot ${serverOnline ? (isPc ? 'mc-on' : 'mc-local') : ''} ${isChecking ? 'mc-dot-checking' : ''}`} />
       </button>
       {/* the bubble that swells from the dot and the pop ring (moved by top-bar-motion.js) */}
       {/* Each one is a plain box (moved every frame by top-bar-motion.js) around the face that holds the heavy glass style:

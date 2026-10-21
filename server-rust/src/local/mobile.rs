@@ -141,8 +141,8 @@ impl Mobile {
                 if cancellation.is_cancelled() {
                     break;
                 }
-                // Independent models: an embedding failure need not discard a usable chat GGUF.
-                let _ = file.provision(&cancellation).await;
+                // Verify existing models only: do NOT automatically download models on activate.
+                let _ = file.verify_existing(&cancellation).await;
             }
             if let Some(mobile) = weak.upgrade() {
                 mobile.wake.notify_one();
@@ -156,16 +156,30 @@ impl Mobile {
         if self.lifecycle.lock().unwrap().stopped {
             return Err(unavailable("Modelos locais encerrados."));
         }
-        let file = match kind {
-            "chat" => self.chat_file.clone(),
-            "embed" => self.embed_file.clone(),
+        let files: Vec<Arc<ModelFile>> = match kind {
+            "chat" => vec![self.chat_file.clone()],
+            "embed" => vec![self.embed_file.clone()],
+            "all" => vec![self.embed_file.clone(), self.chat_file.clone()],
             _ => return Err(crate::Error::new(400, "Tipo de modelo desconhecido.")),
         };
+        self.cancel_provision().await;
+        self.start_worker();
+        if !self.chat.exe.is_file() {
+            for file in &files {
+                file.fail("Runtime Android indisponível.");
+            }
+            return Ok(());
+        }
         let cancel = Cancel::new();
         let cancellation = cancel.clone();
         let weak = Arc::downgrade(self);
         let task = tokio::spawn(async move {
-            let _ = file.provision(&cancellation).await;
+            for file in files {
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                let _ = file.provision(&cancellation).await;
+            }
             if let Some(mobile) = weak.upgrade() {
                 mobile.wake.notify_one();
             }

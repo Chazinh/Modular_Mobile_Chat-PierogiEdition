@@ -281,6 +281,34 @@ impl ModelFile {
     pub fn fail(&self, message: &str) {
         self.progress("error", self.status().downloaded, Some(message.into()));
     }
+    pub async fn verify_existing(&self, cancel: &Cancel) -> Result<()> {
+        let _gate = tokio::select! {
+            lock = self.gate.lock() => lock,
+            _ = cancel.cancelled() => return Err(unavailable("Verificação cancelada.")),
+        };
+        if cancel.is_cancelled() {
+            return Err(unavailable("Verificação cancelada."));
+        }
+        if tokio::fs::symlink_metadata(&self.path).await.is_ok() {
+            self.progress("verifying", 0, None);
+            if self
+                .digest
+                .digest(&self.path, self.pin.size, cancel)
+                .await?
+                .as_deref()
+                == Some(self.pin.sha256)
+            {
+                let _ = tokio::fs::remove_file(self.part()).await;
+                self.progress("ready", self.pin.size, None);
+                return Ok(());
+            } else {
+                self.progress("error", 0, Some("Arquivo local corrompido.".into()));
+            }
+        } else {
+            self.progress("pending", 0, None);
+        }
+        Ok(())
+    }
     pub async fn provision(&self, cancel: &Cancel) -> Result<()> {
         let _gate = tokio::select! {
             lock = self.gate.lock() => lock,

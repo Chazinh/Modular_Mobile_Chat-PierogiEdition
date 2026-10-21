@@ -541,3 +541,39 @@ async fn android_local_api_model_download_and_delete() {
 
     state.shutdown().await;
 }
+
+#[tokio::test]
+async fn activate_does_not_automatically_download_models() {
+    let dir = tempfile::tempdir().unwrap();
+    let native = tempfile::tempdir().unwrap();
+    // Simulate runtime binary being present
+    let fake_exe = native.path().join("libllama_server.so");
+    tokio::fs::write(&fake_exe, b"fake runtime binary").await.unwrap();
+
+    let state = AppState::new(Config::for_android(dir.path(), native.path()).unwrap())
+        .await
+        .unwrap();
+    state.auth.register_android_host(TOKEN).await.unwrap();
+
+    // Calling activate must NOT start provisioning/downloading missing models
+    let (code, status) = api_call(&state, "/api/local/activate", "POST", Some(TOKEN)).await;
+    assert_eq!(code, 202);
+    assert_eq!(status["activated"], true);
+    // Phase should remain "pending", NOT "downloading"
+    assert_eq!(status["chat"]["download"]["phase"], "pending");
+    assert_eq!(status["embed"]["download"]["phase"], "pending");
+    assert_eq!(status["chat"]["download"]["downloaded"], 0);
+
+    // Verify models directory has no downloaded files
+    let models_dir = dir.path().join("models");
+    if models_dir.exists() {
+        let mut entries = tokio::fs::read_dir(&models_dir).await.unwrap();
+        let mut count = 0;
+        while let Some(_) = entries.next_entry().await.unwrap() {
+            count += 1;
+        }
+        assert_eq!(count, 0, "No model files or parts should be created on activate");
+    }
+
+    state.shutdown().await;
+}

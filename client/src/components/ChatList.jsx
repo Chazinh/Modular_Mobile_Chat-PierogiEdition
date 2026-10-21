@@ -3,7 +3,7 @@ import { tr, useLanguage } from '../i18n.js';
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Plus, Settings, RefreshCw, WifiOff, Pin, Archive, ArchiveRestore, Copy, Trash2, Download, Pencil } from 'lucide-react';
 import BrainIcon from './BrainIcon.jsx';
-import { api } from '../api.js';
+import { api, config } from '../api.js';
 import { Avatar, timeAgo, useLongPress } from '../ui.jsx';
 import { plainText } from '../format.js';
 import { Sheet, SheetButton } from './Sheet.jsx';
@@ -98,7 +98,12 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
       el.removeEventListener('touchcancel', cancel);
     };
   }, []);
-  const statusLabel = status === 'online' ? tr('Conectado ao servidor ativo') : status === 'offline' ? tr('Sem conexão com o servidor ativo') : tr('Verificando conexão');
+  const isPc = config.kind === 'pc';
+  const statusLabel = status === 'online'
+    ? (isPc ? tr('Conectado ao PC') : tr('Host local (AutoHost)'))
+    : status === 'offline'
+      ? tr('Sem conexão com o servidor ativo')
+      : tr('Verificando conexão');
 
   const flash = (t) => {
     setToast(t);
@@ -143,7 +148,7 @@ export default function ChatList({ hostStatus, chats, offline, status, onRefresh
               role="status"
               title={statusLabel}
               aria-label={statusLabel}
-              className={`mc-bar-dot shrink-0 ${status === 'online' ? 'mc-on' : ''} ${status === 'checking' || spinning ? 'mc-dot-checking' : ''}`}
+              className={`mc-bar-dot shrink-0 ${status === 'online' ? (isPc ? 'mc-on' : 'mc-local') : ''} ${status === 'checking' || spinning ? 'mc-dot-checking' : ''}`}
             />
           </div>
 

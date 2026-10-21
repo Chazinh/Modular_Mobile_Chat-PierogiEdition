@@ -7,6 +7,11 @@ implemented features.
 
 ### ModularChat 3.6.0: Optional Mobile AI Model Downloads with Live Hugging Face Integration — 2026-10-21
 
+- **First-Boot Non-Intrusive Model Activation & AutoHost Status Dot (`server-rust/src/local/mobile.rs`, `server-rust/src/local/model_files.rs`, `client/src/glass.css`, `client/src/components/ChatList.jsx`, `client/src/components/ChatView.jsx`, `client/src/components/AutoHostStatus.jsx`)**:
+  - `Mobile::activate()` now executes non-intrusive local verification (`verify_existing`) instead of automatic provisioning, guaranteeing that conversational models and embeddings libraries are never automatically downloaded on first launch or local host activation.
+  - Top-bar indicator dot (`.mc-bar-dot`) is now strictly green (`.mc-on`) when connected to the PC host, and warm amber/yellow (`.mc-local`) when running standalone in AutoHost mode.
+  - Suppressed idle download progress bars in `AutoHostStatus.jsx` when downloads are not actively in-flight (`downloading`/`verifying`).
+  - Added anti-regression test `activate_does_not_automatically_download_models` in `server-rust/src/local/mobile_tests.rs`.
 - **Optional Model Downloads in Android Home Drawer (`client/src/components/HomeDrawer.jsx`, `client/src/components/ModelManager.jsx`)**:
   - Integrated "Modelos de IA" (`opcional · Hugging Face`) into the main side drawer with native liquid-glass subpage navigation.
   - Made local model downloading explicitly optional, clarifying that the application functions normally with cloud API providers (DeepSeek, 9Router, OpenRouter).

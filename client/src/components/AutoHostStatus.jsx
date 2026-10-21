@@ -61,16 +61,22 @@ export default function AutoHostStatus() {
     <div className="max-h-36 overflow-y-auto rounded-2xl border border-white/10 bg-cardDark px-3 py-2">
       <div className="flex items-center justify-between gap-2 font-semibold">
         <span>{kind === 'pc' ? tr('Host ativo: PC') : kind === 'local' ? tr('Host ativo: Android') : tr('Verificando host ativo…')}</span>
-        {kind === 'local' && (downloadError || !status?.activated || !status?.chat?.ok) && <button type="button" disabled={retrying} onClick={retry} className="rounded-full bg-composer px-3 py-1 font-medium disabled:opacity-40">{tr(!status?.activated ? 'Baixar e ativar modelos' : downloadError ? 'Tentar ativar modelos' : 'Ativar modelos')}</button>}
+        {kind === 'local' && (downloadError || !status?.activated) && <button type="button" disabled={retrying} onClick={retry} className="rounded-full bg-composer px-3 py-1 font-medium disabled:opacity-40">{tr(!status?.activated ? 'Ativar host' : downloadError ? 'Tentar ativar host' : 'Reconectar')}</button>}
       </div>
       {syncLabel && <p role="status" className={conflict ? 'text-yellow-300' : 'text-textMuted'}>{tr(syncLabel)}</p>}
       {health?.message && health.message !== syncLabel && <p className="text-yellow-300">{tr(health.message)}</p>}
       <PcConnectionButton />
       {standby && <p className="text-textMuted">{tr(resident ? 'Android em standby · descarregando modelos' : 'Android em standby · nenhum modelo residente')}</p>}
-      {status ? <div className="mt-1 space-y-1 text-textMuted">
-        <DownloadStatus model={status.chat} title={tr('Modelo de conversa')} />
-        <DownloadStatus model={status.embed} title={tr('Biblioteca de embeddings')} />
-      </div> : <p className="text-textMuted">{tr('Consultando downloads…')}</p>}
+      {status && (['downloading', 'verifying'].includes(downloadProgress(status.chat).phase) || ['downloading', 'verifying'].includes(downloadProgress(status.embed).phase)) && (
+        <div className="mt-1 space-y-1 text-textMuted">
+          {['downloading', 'verifying'].includes(downloadProgress(status.chat).phase) && (
+            <DownloadStatus model={status.chat} title={tr('Modelo de conversa')} />
+          )}
+          {['downloading', 'verifying'].includes(downloadProgress(status.embed).phase) && (
+            <DownloadStatus model={status.embed} title={tr('Biblioteca de embeddings')} />
+          )}
+        </div>
+      )}
       {downloadError && <p className="mt-1 text-textMuted">{tr('A ativação não reinicia um download já ativo. Se o erro persistir, confira o runtime Android.')}</p>}
       {error && <p role="status" className="mt-1 text-red-300">{error}</p>}
     </div>

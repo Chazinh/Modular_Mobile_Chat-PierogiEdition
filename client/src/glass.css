@@ -260,6 +260,11 @@ button.mc-glass-pill:active::after { opacity: .55; }
   background: rgb(calc(120 * var(--mc-tr, 1)) calc(120 * var(--mc-tg, 1)) calc(132 * var(--mc-tb, 1)));
   box-shadow: 0 0 0 2px rgba(0, 0, 0, .35), 0 1px 3px rgba(0, 0, 0, .4);
 }
+/* AutoHost (host local Android): bolinha amarela */
+.mc-bar-dot.mc-local {
+  background: radial-gradient(circle at 35% 30%, rgb(calc(255 * var(--mc-tr, 1)) calc(245 * var(--mc-tg, 1)) calc(160 * var(--mc-tb, 1))), rgb(calc(245 * var(--mc-tr, 1)) calc(158 * var(--mc-tg, 1)) calc(11 * var(--mc-tb, 1))) 60%);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, .3), 0 0 10px rgb(calc(245 * var(--mc-tr, 1)) calc(158 * var(--mc-tg, 1)) calc(11 * var(--mc-tb, 1)) / .7);
+}
 .mc-bar-dot.mc-on {
   background: radial-gradient(circle at 35% 30%, rgb(calc(190 * var(--mc-tr, 1)) calc(255 * var(--mc-tg, 1)) calc(225 * var(--mc-tb, 1))), rgb(calc(52 * var(--mc-tr, 1)) calc(211 * var(--mc-tg, 1)) calc(153 * var(--mc-tb, 1))) 60%);
   box-shadow: 0 0 0 2px rgba(0, 0, 0, .3), 0 0 10px rgb(calc(52 * var(--mc-tr, 1)) calc(211 * var(--mc-tg, 1)) calc(153 * var(--mc-tb, 1)) / .7);
