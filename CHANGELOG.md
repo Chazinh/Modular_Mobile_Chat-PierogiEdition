@@ -5,6 +5,25 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.5.10: Structured Format Caching, Level 0 Budget Calibration & Job Recovery — 2026-10-21
+
+- **Structured Format Negotiation Caching (`server-rust/src/providers.rs`, `server-rust/src/memory_backend.rs`)**:
+  - Added thread-safe `format_cache` in `RuntimeProviders` to retain provider and model structured response capability (`json_object` vs `json_schema`).
+  - Negotiates format on the first extraction request and caches the winning capability in memory; subsequent memory extractions and reviews immediately use the supported format without triggering upstream HTTP 400 errors, eliminating redundant round-trip latencies and `fallback=1` warnings.
+- **Level 0 Token Budget & Chunk Calibration (`server-rust/src/jobs.rs`, `server-rust/src/memory_backend.rs`)**:
+  - Calibrated level 0 chunk input limit from 5,000 to 4,000 characters and increased output token allocation from 2,200 to 3,200 tokens (preventing `finish_reason: "length"` cutoffs on narrative-rich turns that triggered 502 incomplete errors).
+  - Raised default memory API `max_tokens` ceiling from 3,000 to 3,500.
+  - Desktop loopback model fallback now defaults to 9Router's resilient `Deepseek` multi-provider combo route rather than single free-tier endpoints (`oc/deepseek-v4.1-flash-free`).
+- **Automatic Recovery of Stalled Memory Extraction Jobs (`server-rust/src/store/mod.rs`)**:
+  - Extended startup `Request::RequeueJobs` to reset failed jobs caused by `%response_format%`, `%schema%`, `%incompleto%`, or `%502%`, automatically recovering and processing stalled historical turns on server launch.
+- **Anti-Regression Coverage (`server-rust/tests/regression_desktop_memory_fallback.rs`)**:
+  - Added automated end-to-end regression `regression_desktop_format_cache_and_requeue` verifying:
+    1. First call negotiates from `json_schema` to `json_object` with local schema preservation.
+    2. Format is cached in `RuntimeProviders`.
+    3. Second call directly issues `json_object` with zero rejected requests.
+    4. Failed memory extraction jobs with schema/format errors are automatically requeued and claimed on server startup.
+  - Rust test suite: 100% passed (65 unit tests, 35 sync contracts, 7 safety, 3 thinking, 3 runner stop, 3 desktop memory regressions). Full JS/client test suite passed.
+
 ### ModularChat 3.5.0: Secondary Unique Key Convergence in Sync — 2026-10-20
 
 - **Duplicate Logical Rows No Longer Break the Sync (`server-rust/src/store/sync.rs`)**:
