@@ -297,15 +297,6 @@ pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
     let shape = rv["shape"].as_str().unwrap_or("reasoning_effort");
     let mut body = json!({"model":route,"messages":messages,"stream":true,"stream_options":{"include_usage":true}});
     let unrestricted = unrestricted_safety_enabled(conv);
-    if unrestricted {
-        let safety = conv["settings"]["safetySettings"]
-            .as_array()
-            .cloned()
-            .map(Value::Array)
-            .unwrap_or_else(default_safety_settings);
-        body["safetySettings"] = safety.clone();
-        body["safety_settings"] = safety;
-    }
     if !thinking_enabled {
         // 9Router converts none into the native control: disabled on DeepSeek
         // and between_tools on Sonnet 5.5. The chosen effort is kept.

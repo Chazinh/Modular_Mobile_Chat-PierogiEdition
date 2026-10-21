@@ -12,6 +12,9 @@ implemented features.
   - Added `gemma-4` to `PUBLIC_PRESETS` in `client/src/api.js` and `DEFAULT_PRESETS` in `client/src/default-presets.js`, ensuring Gemma 4 is properly exposed in the in-chat model picker.
   - Implemented automatic route normalization in `normalizeChatPreset` for `Gemma4` and `openrouter/google/gemma-4-31b-it:free` without conflicting with local embedding models (`embeddinggemma`).
   - Added automated anti-regression test suite `tests/regression-gemma-4.test.js` and extended `tests/default-presets.test.js` and `server-rust/tests/multiagent_rp_config.rs`.
+- **Unrestricted Safety Wire Compliance & Upstream Schema Protection (`server-rust/src/generation.rs`, `server-rust/src/presets.rs`, `server-rust/src/providers.rs`, `server-rust/tests/unrestricted_safety.rs`)**:
+  - Removed injection of `safetySettings` and `safety_settings` into outgoing wire requests across all providers, resolving upstream rejection (`{"error": {"type": "invalid_request_error"}}`) from OpenAI-compatible endpoints (DeepSeek, Claude, GLM, 9Router, OpenRouter).
+  - Preserved internal `unrestrictedSafety` metadata within `plan.controls` while strictly scrubbing wire request bodies so models run unconstrained without triggering schema validation errors.
 
 ### ModularChat 4.0.0: Redesigned Memory Architecture, Epistemic Scene Isolation & POV Disambiguation — 2026-10-21
 

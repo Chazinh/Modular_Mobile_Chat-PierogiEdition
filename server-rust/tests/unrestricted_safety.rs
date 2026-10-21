@@ -28,8 +28,9 @@ fn default_safety_settings_blocks_none_for_all_four_standard_categories() {
 }
 
 #[test]
-fn presets_request_applies_unrestricted_safety_globally_to_all_models() {
-    // Test across various model families: generic, claude, deepseek, glm, and gemini
+fn presets_request_does_not_inject_safety_settings_into_wire_body() {
+    // Upstream OpenAI-compatible endpoints reject `safetySettings` with `invalid_request_error` ("type" error).
+    // The request body must remain clean while controls metadata declares unrestrictedSafety.
     for (preset_id, route_id) in [
         ("generic", "openai/gpt-4o"),
         ("claude-sonnet-5-5", "anthropic/claude-3-5-sonnet"),
@@ -44,22 +45,16 @@ fn presets_request_applies_unrestricted_safety_globally_to_all_models() {
 
         let plan = request(&conv, vec![], &json!({}));
 
-        // Verify it was applied to the request body in both Google REST (camelCase)
-        // and OpenAI proxy/wrapper (snake_case) formats.
         assert!(
-            plan.body.get("safetySettings").is_some(),
-            "safetySettings must be present for preset {preset_id}"
+            plan.body.get("safetySettings").is_none(),
+            "safetySettings must NOT be present in wire body for preset {preset_id} to avoid invalid_request_error"
         );
         assert!(
-            plan.body.get("safety_settings").is_some(),
-            "safety_settings must be present for preset {preset_id}"
+            plan.body.get("safety_settings").is_none(),
+            "safety_settings must NOT be present in wire body for preset {preset_id} to avoid invalid_request_error"
         );
 
-        let body_settings = &plan.body["safetySettings"];
-        assert_eq!(body_settings, &default_safety_settings());
-        assert_eq!(&plan.body["safety_settings"], &default_safety_settings());
-
-        // Verify controls metadata declares unrestrictedSafety as true
+        // Controls metadata declares unrestrictedSafety as true
         assert_eq!(plan.controls["unrestrictedSafety"], json!(true));
     }
 }
@@ -81,29 +76,7 @@ fn presets_request_respects_explicit_disabled_unrestricted_safety() {
 }
 
 #[test]
-fn presets_request_preserves_custom_safety_settings() {
-    let custom = json!([
-        {
-            "category": "HARM_CATEGORY_HARASSMENT",
-            "threshold": "BLOCK_ONLY_HIGH"
-        }
-    ]);
-
-    let conv = json!({
-        "presetId": "generic",
-        "routeId": "openai/gpt-4o",
-        "settings": {
-            "safetySettings": custom
-        }
-    });
-
-    let plan = request(&conv, vec![], &json!({}));
-    assert_eq!(plan.body["safetySettings"], custom);
-    assert_eq!(plan.body["safety_settings"], custom);
-}
-
-#[test]
-fn provider_chat_request_injects_safety_settings_globally() {
+fn provider_chat_request_strips_safety_settings_for_openai_wire_compliance() {
     let provider = Provider {
         id: "fixture-provider".into(),
         base_url: "https://openrouter.ai/api/v1".into(),
@@ -115,15 +88,21 @@ fn provider_chat_request_injects_safety_settings_globally() {
         max_output: 8000,
     };
 
-    let original = json!({
-        "messages": [{"role": "user", "content": "Hello world"}]
+    // Even if incoming body contains safetySettings, safety_settings, or unrestrictedSafety
+    // (from legacy payloads or conversation settings), chat_request strips them so upstream
+    // endpoints never reject the request with {"error":{"type":"invalid_request_error"}}.
+    let incoming = json!({
+        "messages": [{"role": "user", "content": "Hello world"}],
+        "safetySettings": default_safety_settings(),
+        "safety_settings": default_safety_settings(),
+        "unrestrictedSafety": true
     });
 
     let request = provider
         .chat_request(
             &reqwest::Client::new(),
             "any-model",
-            &original,
+            &incoming,
             Duration::from_secs(1),
         )
         .build()
@@ -132,45 +111,18 @@ fn provider_chat_request_injects_safety_settings_globally() {
     let sent: serde_json::Value =
         serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
 
-    assert_eq!(sent["safetySettings"], default_safety_settings());
-    assert_eq!(sent["safety_settings"], default_safety_settings());
-    assert!(sent.get("unrestrictedSafety").is_none(), "internal flag must be cleaned up");
-}
-
-#[test]
-fn provider_chat_request_respects_explicit_disabled_safety() {
-    let provider = Provider {
-        id: "fixture-provider".into(),
-        base_url: "https://openrouter.ai/api/v1".into(),
-        api_key: None,
-        models: vec![],
-        request_log: None,
-        reasoning_format: ReasoningFormat::Omit,
-        context_window: 128000,
-        max_output: 8000,
-    };
-
-    let disabled_body = json!({
-        "messages": [{"role": "user", "content": "Hello"}],
-        "unrestrictedSafety": false
-    });
-
-    let request = provider
-        .chat_request(
-            &reqwest::Client::new(),
-            "any-model",
-            &disabled_body,
-            Duration::from_secs(1),
-        )
-        .build()
-        .unwrap();
-
-    let sent: serde_json::Value =
-        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-
-    assert!(sent.get("safetySettings").is_none());
-    assert!(sent.get("safety_settings").is_none());
-    assert!(sent.get("unrestrictedSafety").is_none());
+    assert!(
+        sent.get("safetySettings").is_none(),
+        "safetySettings must be stripped from outgoing wire request"
+    );
+    assert!(
+        sent.get("safety_settings").is_none(),
+        "safety_settings must be stripped from outgoing wire request"
+    );
+    assert!(
+        sent.get("unrestrictedSafety").is_none(),
+        "internal unrestrictedSafety flag must be cleaned up"
+    );
 }
 
 #[test]
