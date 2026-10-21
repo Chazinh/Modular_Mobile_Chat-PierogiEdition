@@ -187,6 +187,12 @@ impl DigestCache {
         });
         Ok(())
     }
+    pub fn forget(&self, path: &Path) {
+        let mut lock = self.cached.lock().unwrap();
+        if lock.as_ref().is_some_and(|cached| cached.path == path) {
+            *lock = None;
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -232,6 +238,19 @@ impl ModelFile {
     }
     pub fn ready(&self) -> bool {
         self.digest.matches(&self.path, self.pin.sha256)
+    }
+    pub async fn delete(&self) -> Result<()> {
+        let _gate = self.gate.lock().await;
+        if tokio::fs::symlink_metadata(&self.path).await.is_ok() {
+            tokio::fs::remove_file(&self.path).await.map_err(disk_error)?;
+        }
+        let part = self.part();
+        if tokio::fs::symlink_metadata(&part).await.is_ok() {
+            let _ = tokio::fs::remove_file(&part).await;
+        }
+        self.digest.forget(&self.path);
+        self.progress("pending", 0, None);
+        Ok(())
     }
     #[cfg(test)]
     pub fn fixture(root: PathBuf, pin: Pin, url: String) -> Self {

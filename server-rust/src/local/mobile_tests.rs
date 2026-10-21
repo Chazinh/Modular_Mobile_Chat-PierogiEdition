@@ -505,3 +505,39 @@ async fn android_local_api_auth_activation_and_standby_are_idempotent() {
         "deferred must leave the pending job untouched"
     );
 }
+
+#[tokio::test]
+async fn android_local_api_model_download_and_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let native = tempfile::tempdir().unwrap();
+    let state = AppState::new(Config::for_android(dir.path(), native.path()).unwrap())
+        .await
+        .unwrap();
+    state.auth.register_android_host(TOKEN).await.unwrap();
+
+    // Test download chat model
+    let (code, status) = api_call(&state, "/api/local/models/download?model=chat", "POST", Some(TOKEN)).await;
+    assert_eq!(code, 202);
+    assert!(status["chat"].is_object());
+
+    // Test download embed model
+    let (code, status) = api_call(&state, "/api/local/models/download?model=embed", "POST", Some(TOKEN)).await;
+    assert_eq!(code, 202);
+    assert!(status["embed"].is_object());
+
+    // Test delete chat model via query
+    let (code, status) = api_call(&state, "/api/local/models/delete?model=chat", "POST", Some(TOKEN)).await;
+    assert_eq!(code, 200);
+    assert!(status["chat"].is_object());
+
+    // Test delete embed model via path
+    let (code, status) = api_call(&state, "/api/local/models/embed", "DELETE", Some(TOKEN)).await;
+    assert_eq!(code, 200);
+    assert!(status["embed"].is_object());
+
+    // Test delete invalid model returns 400
+    let (code, _) = api_call(&state, "/api/local/models/delete?model=invalid", "POST", Some(TOKEN)).await;
+    assert_eq!(code, 400);
+
+    state.shutdown().await;
+}

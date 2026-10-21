@@ -5,6 +5,23 @@ implemented features.
 
 ## Released
 
+### ModularChat 3.6.0: Optional Mobile AI Model Downloads with Live Hugging Face Integration — 2026-10-21
+
+- **Optional Model Downloads in Android Home Drawer (`client/src/components/HomeDrawer.jsx`, `client/src/components/ModelManager.jsx`)**:
+  - Integrated "Modelos de IA" (`opcional · Hugging Face`) into the main side drawer with native liquid-glass subpage navigation.
+  - Made local model downloading explicitly optional, clarifying that the application functions normally with cloud API providers (DeepSeek, 9Router, OpenRouter).
+  - Provided separate cards for downloaded and active models (`✓ Ativo` badge) versus available models, showing language support, format tags, precision and speed meters with pink gradient fills, download progress bars, and model deletion with confirmation.
+- **Direct Hugging Face API Integration (`client/src/huggingface.js`)**:
+  - Added live querying against Hugging Face API (`https://huggingface.co/api/models`) filtered for GGUF model formats, with real-time search, category filtering (All, Chat, Memory), and offline curated catalog fallback.
+  - Implemented automatic metric estimation (precision, speed) based on model parameter architecture and tags.
+- **On-Demand Local Model Download & Deletion Endpoints (`server-rust/src/api.rs`, `server-rust/src/local/mobile.rs`, `server-rust/src/local/model_files.rs`, `server-rust/src/local.rs`)**:
+  - Added `POST /api/local/models/download` to provision chat or embedding models on demand without forcing full bundles.
+  - Added `POST/DELETE /api/local/models/delete` and `DELETE /api/local/models/:kind` with safe subprocess shutdown, disk file deletion, and digest cache invalidation to free mobile storage.
+  - Added client bindings `api.downloadLocalModel` and `api.deleteLocalModel`.
+- **Anti-Regression Test Coverage (`server-rust/src/local/mobile_tests.rs`, `tests/huggingface-models.test.js`)**:
+  - Added Rust integration test `android_local_api_model_download_and_delete` verifying single-model download, query/path-based deletion, and input validation.
+  - Added JavaScript unit test suite `tests/huggingface-models.test.js` covering byte formatting, rating estimation, repository name sanitation, and API failure fallbacks.
+
 ### ModularChat 3.5.10: Structured Format Caching, Level 0 Budget Calibration & Job Recovery — 2026-10-21
 
 - **Structured Format Negotiation Caching (`server-rust/src/providers.rs`, `server-rust/src/memory_backend.rs`)**:

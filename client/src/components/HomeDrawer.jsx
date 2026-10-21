@@ -20,11 +20,12 @@ import { StairList, Row, SubPage, Switch } from './SettingsDrawer.jsx';
 import '../drawer.css';
 
 const LocalHostSettings = lazy(() => import('./LocalHostSettings.jsx'));
+const ModelManager = lazy(() => import('./ModelManager.jsx'));
 
 export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, onCreate, onChanged, onResetServer }) {
   const confirm = useConfirm();
   const language = useLanguage();
-  const [page, setPage] = useState(null); // null | style | reading | eye | lang | icon | pairing | backup | trash
+  const [page, setPage] = useState(null); // null | style | reading | eye | lang | icon | pairing | backup | trash | models
   const [gs, setGs] = useState(() => api.peekGlobalSettings());
   const [eye, setEye] = useState(loadEyeCare);
   const [appIcon, setAppIcon] = useState(getSelectedAppIcon);
@@ -202,6 +203,15 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
                   label={tr("Host Android")}
                   value={tr("provedores e memória")}
                   onClick={() => setLocalHostOpen(true)}
+                />
+              )}
+
+              {(isNative() || config.embeddedReady || config.kind === 'local' || import.meta.env.DEV) && (
+                <Row
+                  lead={<Download size={20} />}
+                  label={tr("Modelos de IA")}
+                  value={tr("opcional · Hugging Face")}
+                  onClick={() => setPage('models')}
                 />
               )}
 
@@ -495,6 +505,14 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
                 </div>
               ))}
             </div>
+          </SubPage>
+        )}
+
+        {page === 'models' && (
+          <SubPage title={tr("Modelos de IA")} onBack={() => setPage(null)}>
+            <Suspense fallback={<div className="p-4 text-center text-xs text-textMuted">{tr("Carregando modelos…")}</div>}>
+              <ModelManager onClose={() => setPage(null)} />
+            </Suspense>
           </SubPage>
         )}
 

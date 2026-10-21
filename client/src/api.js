@@ -297,6 +297,8 @@ export const api = {
   localPolicy: (options) => request('GET', '/api/local/policy', undefined, embeddedOptions(options)),
   saveLocalPolicy: (body, options) => request('PUT', '/api/local/policy', body, embeddedOptions(options)),
   localActivate: (options) => request('POST', '/api/local/activate', undefined, { ...embeddedOptions(options), localOnly: true }),
+  downloadLocalModel: (model, options) => request('POST', '/api/local/models/download', { model }, embeddedOptions(options)),
+  deleteLocalModel: (model, options) => request('POST', '/api/local/models/delete', { model }, embeddedOptions(options)),
 
   // ----- conversas -----
   async listChats(archived = false, q = '', options = {}) {

@@ -718,6 +718,28 @@ impl LocalModels {
         mobile.standby().await;
         Ok(self.status().await)
     }
+    pub async fn download_model(&self, kind: &str) -> Result<Value> {
+        if self.mock.is_some() {
+            return Ok(self.status().await);
+        }
+        let mobile = self
+            .mobile
+            .as_ref()
+            .ok_or_else(|| Error::new(409, "Download disponível apenas no perfil Android."))?;
+        mobile.download_file(kind).await?;
+        Ok(self.status().await)
+    }
+    pub async fn delete_model(&self, kind: &str) -> Result<Value> {
+        if self.mock.is_some() {
+            return Ok(self.status().await);
+        }
+        let mobile = self
+            .mobile
+            .as_ref()
+            .ok_or_else(|| Error::new(409, "Exclusão disponível apenas no perfil Android."))?;
+        mobile.delete_file(kind).await?;
+        Ok(self.status().await)
+    }
     async fn pinned_embedding(&self) -> bool {
         if self.mock.is_some() {
             return false;

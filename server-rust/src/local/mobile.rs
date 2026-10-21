@@ -151,6 +151,44 @@ impl Mobile {
         *self.provision.lock().unwrap() = Some(Provisioning { cancel, task });
         Ok(())
     }
+    pub async fn download_file(self: &Arc<Self>, kind: &str) -> Result<()> {
+        let _transition = self.transition.lock().await;
+        if self.lifecycle.lock().unwrap().stopped {
+            return Err(unavailable("Modelos locais encerrados."));
+        }
+        let file = match kind {
+            "chat" => self.chat_file.clone(),
+            "embed" => self.embed_file.clone(),
+            _ => return Err(crate::Error::new(400, "Tipo de modelo desconhecido.")),
+        };
+        let cancel = Cancel::new();
+        let cancellation = cancel.clone();
+        let weak = Arc::downgrade(self);
+        let task = tokio::spawn(async move {
+            let _ = file.provision(&cancellation).await;
+            if let Some(mobile) = weak.upgrade() {
+                mobile.wake.notify_one();
+            }
+        });
+        *self.provision.lock().unwrap() = Some(Provisioning { cancel, task });
+        Ok(())
+    }
+    pub async fn delete_file(self: &Arc<Self>, kind: &str) -> Result<()> {
+        let _transition = self.transition.lock().await;
+        match kind {
+            "chat" => {
+                let _ = self.chat.stop().await;
+                self.chat_file.delete().await?;
+            }
+            "embed" => {
+                let _ = self.embed.stop().await;
+                self.embed_file.delete().await?;
+            }
+            _ => return Err(crate::Error::new(400, "Tipo de modelo desconhecido.")),
+        };
+        self.wake.notify_one();
+        Ok(())
+    }
     pub async fn standby(&self) {
         let _transition = self.transition.lock().await;
         self.lifecycle.lock().unwrap().activated = false;

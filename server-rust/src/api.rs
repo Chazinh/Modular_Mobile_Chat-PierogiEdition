@@ -701,6 +701,30 @@ async fn dispatch(
             out
         }
         ["local", "standby"] if post => state.local.standby().await?,
+        ["local", "models", "download"] if post => {
+            state.require_mobile()?;
+            let kind = b["model"]
+                .as_str()
+                .or_else(|| query.get("model").map(|s| s.as_str()))
+                .unwrap_or("all");
+            status = 202;
+            if kind == "all" {
+                let out = state.local.activate().await?;
+                state.runner.kick();
+                out
+            } else {
+                state.local.download_model(kind).await?
+            }
+        }
+        ["local", "models", "delete"] if post || delete => {
+            state.require_mobile()?;
+            let kind = b["model"].as_str().or_else(|| query.get("model").map(|s| s.as_str())).unwrap_or("");
+            state.local.delete_model(kind).await?
+        }
+        ["local", "models", kind] if delete => {
+            state.require_mobile()?;
+            state.local.delete_model(kind).await?
+        }
         ["pair", "info"] if get => {
             json!({"required":state.auth.required,"loopback":auth::loopback(peer.ip())})
         }
