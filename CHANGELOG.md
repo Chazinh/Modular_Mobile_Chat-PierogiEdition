@@ -5,6 +5,35 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.0.0: Redesigned Memory Architecture, Epistemic Scene Isolation & POV Disambiguation — 2026-10-21
+
+- **Epistemic Scene Presence Tracking & Anti-Metagaming Engine (`server-rust/src/context.rs`, `server-rust/src/jobs.rs`, `server-rust/src/store/context.rs`, `server-rust/src/store/memory.rs`)**:
+  - Implemented dynamic per-turn presence tracking and annotation across conversation history so absent characters never receive contextual disclosure of dialogue or events outside their presence.
+  - Added deterministic N-1 scene cache invalidation on explicit movement/location transitions, completely eliminating ghost characters lingering across room boundaries.
+  - Added spatial boundary and idiomatic phrase masking in Portuguese (e.g., preventing figurative expressions like "entra em pânico" or "sai do sério" from falsely triggering scene transitions).
+  - Enforced deterministic witness validation in memory events: absent personas and NPCs are strictly excluded from witnessed fact creation unless explicitly informed in scene.
+- **Entity Possession & Kinship Disambiguation with 4-Level POV Matrix (`server-rust/src/context.rs`, `server-rust/src/extraction-schema.json`, `server-rust/src/extraction-prompt.txt`, `server-rust/src/jobs.rs`, `server-rust/src/store/memory.rs`)**:
+  - Excised the toxic negative tail directive `(trate como 'sua mãe/família', nunca como 'minha')` that inverted pronouns across multi-NPC dialogue.
+  - Integrated the formal 4-level Point-of-View (POV) perspective matrix:
+    1. *Level 1 (Narration & Actions)*: strict 3rd-person nominative with explicit character names ("a mãe de Alex", "o carro de Lia").
+    2. *Level 2 (NPC to Player)*: 2nd-person for user's belongings ("sua mãe") and 1st-person for speaker's own family ("minha mãe").
+    3. *Level 3 (Inter-NPC Dialogue / Choral)*: mandatory 3rd-person nominative ("a mãe de Alex") when speaking to other NPCs, never "sua mãe".
+    4. *Level 4 (Speaker Self-Reference)*: exclusive 1st-person ownership without cross-entity possession bleed.
+  - Extended extraction schema and prompt with first-class `KINSHIP` (with reciprocal inverse derivation like parent_of <-> child_of) and `POSSESSION`/`INVENTORY` classes.
+- **Token-Aware Adaptive History Ladder & Narrative Cohesion (`server-rust/src/context.rs`, `server-rust/src/jobs.rs`)**:
+  - Redesigned adaptive history ladder: retains the user's full preferred history (up to 30 pairs) under normal token budgets without premature compression to 16/8 pairs, stepping down only when approaching softLimit (110k tokens).
+  - Aligned RAG memory retrieval window symmetrically with the active dialogue ladder, eliminating dead-zone gaps.
+  - Introduced rich 5-dimension episodic compression prompt in `jobs.rs` capturing persona emotional subtext, boundary anchors, transition continuity, and nominative 3rd-person perspective with single-bullet formatting.
+- **Character Card Preservation, Cast Heuristics & Model Pacing Harmonization (`server-rust/src/context.rs`, `server-rust/src/cast.rs`, `server-rust/src/style_policy.rs`, `server-rust/src/api.rs`)**:
+  - Replaced destructive `{{char}}` substitution with `resolve_char_replacement`, anchoring character cards to canonical names or singular descriptors rather than corrupting fields with "o narrador e os personagens".
+  - Updated `cast::from_card` to recognize single-word character names ("Elena", "Mira", "Kael") under section headers (`words >= 1`).
+  - Harmonized `turn_instruction` in `style_policy.rs` with core prompt guidelines, unfreezing Claude Sonnet and allowing natural choral banter, apartes, and cross-interactions among multiple NPCs.
+  - Added prominent `[DIRETRIZES GLOBAIS DE PERSONALIZAÇÃO DO CHAT]` header and bidirectional tail anchor to ensure global customization text is actively respected across long contexts.
+  - Hardened sidecar `character.txt` synchronization in `api.rs` with strict symlink and hardlink rejection.
+- **Comprehensive Anti-Regression Test Coverage**:
+  - Added 42 new automated unit, integration, and adversarial probe tests across `server-rust/tests/adversarial_presence_probes.rs`, `adversarial_entity_disambiguation_probes.rs`, `adversarial_memory_cohesion_probes.rs`, `adversarial_m4_probes.rs`, and benchmark suites `adversarial_challenger_m2_2_perf.rs` and `adversarial_challenger_m3_2_perf.rs`.
+  - Workspace test suite: 100% passing (342 tests, 0 failures).
+
 ### ModularChat 3.6.0: Optional Mobile AI Model Downloads with Live Hugging Face Integration — 2026-10-21
 
 - **First-Boot Non-Intrusive Model Activation & AutoHost Status Dot (`server-rust/src/local/mobile.rs`, `server-rust/src/local/model_files.rs`, `client/src/glass.css`, `client/src/components/ChatList.jsx`, `client/src/components/ChatView.jsx`, `client/src/components/AutoHostStatus.jsx`)**:

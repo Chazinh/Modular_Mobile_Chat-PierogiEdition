@@ -83,13 +83,18 @@ client/android/host-trust/
 relatorios/
 
 # Hosting private configurations & runtime data
+hosting/caddy/
 hosting/*.local.*
-hosting/Caddyfile
+hosting/Caddyfile*
 hosting/auth.json
 hosting/login.txt
 hosting/duckdns-token.txt
+hosting/*duckdns*
 hosting/data/
 hosting/logs/
+duckdns-token.txt
+*duckdns-state.json
+port-mappings.json
 
 # Backups, backup folders and redundant copies
 *backup*/
@@ -136,6 +141,8 @@ Desktop.ini
 .DS_Store
 
 # Test baselines & agent scratchpads
+.agents/
+PROJECT.md
 baseline-*/
 artefatos-*/
 snapshot-*/

@@ -154,7 +154,7 @@ pub fn from_card(text: &str, persona: &str) -> Vec<Value> {
             if in_chars
                 && short
                 && let Some(h) = header(line)
-                && (h.words >= 2 || h.title.is_some() || h.paren.is_some())
+                && (h.words >= 1 || h.title.is_some() || h.paren.is_some())
             {
                 current = add(&mut out, &mut map, h, kind, "", persona);
                 continue;
@@ -179,7 +179,7 @@ pub fn from_card(text: &str, persona: &str) -> Vec<Value> {
             }
             if in_chars {
                 if let Some(h) = header(label)
-                    && (h.words >= 2 || h.title.is_some() || h.paren.is_some())
+                    && (h.words >= 1 || h.title.is_some() || h.paren.is_some())
                 {
                     current = add(&mut out, &mut map, h, kind, rest, persona);
                     continue;

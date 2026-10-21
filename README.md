@@ -82,9 +82,53 @@ Keep the vault (`modularchat.db.vault`) **and** its key file (`modularchat.db.ke
 
 ## Private HTTPS hosting
 
-Hosting is optional and no setup script runs
-automatically. The repository ships no personal hostname, IP, credentials,
-certificate, signing key or device identifier.
+Hosting is optional and no setup script runs automatically. The repository ships no personal hostname, IP, credentials, certificate, signing key or device identifier. All local hosting directories (`hosting/caddy/`), DuckDNS tokens, state files, generated passwords, certificates, and IP addresses are strictly Git-ignored.
+
+### Caddy & DuckDNS Setup (Step-by-Step)
+
+The project includes built-in scripts to manage a native Windows Caddy reverse proxy and automatic DuckDNS dynamic DNS updates inside the `hosting/caddy/` workspace.
+
+#### 1. Binary Placement
+Place the official Windows 64-bit Caddy executable into:
+```
+hosting/caddy/caddy.exe
+```
+
+#### 2. Prepare Caddy Configuration
+Run the preparation script in PowerShell:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/caddy-host.ps1 -Action Prepare
+```
+This generates:
+- An Argon2id hashed web login credential in `hosting/caddy/login.txt` (for browser gateway access).
+- The validated gateway `Caddyfile` with secure headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`), rate-limiting, and token forwarding.
+
+#### 3. Configure DuckDNS (Dynamic IP Updates)
+1. Save your DuckDNS account token into:
+   ```
+   hosting/caddy/duckdns-token.txt
+   ```
+2. Enable automatic DNS updates (updates IPv4 and public IPv6 every 5 minutes in background):
+   ```powershell
+   # Run in PowerShell as Administrator:
+   powershell -ExecutionPolicy Bypass -File scripts/duckdns-host.ps1 -Action Enable -Subdomain <your-subdomain>
+   ```
+
+#### 4. Install & Activate Caddy Service
+Once your domain points to your public IP and your router forwards TCP ports 80 and 443 to your PC:
+```powershell
+# Run in PowerShell as Administrator:
+powershell -ExecutionPolicy Bypass -File scripts/caddy-host.ps1 -Action Install -Domain <your-subdomain>.duckdns.org
+powershell -ExecutionPolicy Bypass -File scripts/caddy-host.ps1 -Action Activate -Domain <your-subdomain>.duckdns.org
+```
+
+To stop or inspect status at any time:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/caddy-host.ps1 -Action Status
+powershell -ExecutionPolicy Bypass -File scripts/caddy-host.ps1 -Action Stop
+```
+
+### Client Connection & Security Model
 
 The Android setup screen accepts a local HTTPS address and an optional internet
 HTTPS address for the same PC. It prefers the local endpoint, probes the remote

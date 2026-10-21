@@ -6,13 +6,14 @@ param(
     [string]$Domain='',
     [string]$LanAddress='',
     [string]$LanSubnet='',
-    [string]$Base=(Join-Path $env:USERPROFILE 'ModularChat-local\caddy'),
+    [string]$Base='',
     [ValidateRange(1024,65535)][int]$BackendPort=3000,
     [ValidateRange(1024,65535)][int]$HttpsPort=8443,
     [ValidateRange(1024,65535)][int]$AdminPort=2019,
     [ValidatePattern('^[a-zA-Z0-9_-]{1,32}$')][string]$WebUser='modularchat'
 )
 $ErrorActionPreference='Stop'
+if(-not $Base){$Base=Join-Path (Split-Path $PSScriptRoot -Parent) 'hosting\caddy'}
 $base=[IO.Path]::GetFullPath($Base)
 $exe=Join-Path $base 'caddy.exe'
 $config=Join-Path $base 'Caddyfile'

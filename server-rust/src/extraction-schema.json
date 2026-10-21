@@ -103,7 +103,10 @@
               "WORLD_FACT",
               "OBJECT",
               "LOCATION",
-              "OPEN_THREAD"
+              "OPEN_THREAD",
+              "KINSHIP",
+              "POSSESSION",
+              "INVENTORY"
             ]
           },
           "subject": {
@@ -138,6 +141,36 @@
               "originalSpeaker": { "type": "string" }
             },
             "required": ["quote", "originalSpeaker"]
+          },
+          "kinship": {
+            "type": ["object", "null"],
+            "properties": {
+              "subject": { "type": "string" },
+              "relation": {
+                "type": "string",
+                "enum": [
+                  "parent_of",
+                  "child_of",
+                  "sibling_of",
+                  "spouse_of",
+                  "relative_of"
+                ]
+              },
+              "target": { "type": "string" }
+            },
+            "required": ["subject", "relation", "target"]
+          },
+          "possession": {
+            "type": ["object", "null"],
+            "properties": {
+              "owner": { "type": "string" },
+              "item": { "type": "string" },
+              "status": {
+                "type": "string",
+                "enum": ["owned", "held", "stored", "lost", "transferred"]
+              }
+            },
+            "required": ["owner", "item", "status"]
           },
           "knowledge": {
             "type": "array",
@@ -206,6 +239,25 @@
           },
           "b": {
             "type": "string"
+          },
+          "relation_type": {
+            "type": "string",
+            "enum": [
+              "parent_of",
+              "child_of",
+              "sibling_of",
+              "spouse_of",
+              "relative_of",
+              "friend_of",
+              "rival_of",
+              "ally_of",
+              "subordinate_of",
+              "mentor_of",
+              "acquaintance_of"
+            ]
+          },
+          "directed": {
+            "type": "boolean"
           },
           "description": {
             "type": "string"

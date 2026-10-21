@@ -133,7 +133,7 @@ $capturedDataDirDuringSpawn = $null
 function Start-Process {
     param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru)
     # Captura o valor de DATA_DIR no exato momento em que o processo filho seria iniciado
-    $capturedDataDirDuringSpawn = $env:DATA_DIR
+    $script:capturedDataDirDuringSpawn = $env:DATA_DIR
     $mockState.StartedProcesses.Add([pscustomobject]@{
         FilePath = $FilePath
         ArgumentList = $ArgumentList
@@ -151,6 +151,63 @@ if ($env:DATA_DIR -ne 'C:\fake\modularchat-data') {
     throw "DATA_DIR nao foi restaurado no ambiente pai apos a execucao de Start-NineRouter. Valor atual: $($env:DATA_DIR)"
 }
 Remove-Item Env:DATA_DIR -ErrorAction SilentlyContinue
+
+# Cenário 4e: Regressão - PORT isolado para que o 9Router receba $TargetPort em vez de herdar PORT=3000 do ModularChat
+$mockState.ListeningPorts.Remove(20128)
+$mockState.MockCommand = 'C:\fake\npm\9router.cmd'
+$mockState.StartedProcesses.Clear()
+$env:PORT = '3000'
+$capturedPortDuringSpawn = $null
+
+function Start-Process {
+    param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru)
+    $script:capturedPortDuringSpawn = $env:PORT
+    $mockState.StartedProcesses.Add([pscustomobject]@{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        WindowStyle = $WindowStyle
+    })
+    $mockState.ListeningPorts[20128] = $true
+    return [pscustomobject]@{ Id = 12345 }
+}
+
+$pidResult = Start-NineRouter -TargetPort 20128 -TimeoutSeconds 2
+if ($capturedPortDuringSpawn -ne '20128') {
+    throw "Regressao detectada: PORT nao foi isolado com TargetPort durante o spawn do 9Router! Valor capturado: $capturedPortDuringSpawn"
+}
+if ($env:PORT -ne '3000') {
+    throw "PORT nao foi restaurado no ambiente pai apos a execucao de Start-NineRouter. Valor atual: $($env:PORT)"
+}
+Remove-Item Env:PORT -ErrorAction SilentlyContinue
+
+# Cenário 4f: Regressão - Quando cli.js direto ou adjacente ao .cmd estiver presente, deve iniciar via node sem intermediar cmd.exe
+$mockState.ListeningPorts.Remove(20128)
+$mockState.MockCommand = $null
+$mockState.StartedProcesses.Clear()
+$canonicalCli = Join-Path $env:APPDATA 'npm\node_modules\9router\cli.js'
+$mockState.MockPathExists[$canonicalCli] = $true
+
+function Start-Process {
+    param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru)
+    $mockState.StartedProcesses.Add([pscustomobject]@{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        WindowStyle = $WindowStyle
+    })
+    $mockState.ListeningPorts[20128] = $true
+    return [pscustomobject]@{ Id = 12345 }
+}
+
+$pidResult = Start-NineRouter -TargetPort 20128 -TimeoutSeconds 2
+$mockState.MockPathExists.Remove($canonicalCli)
+if ($mockState.StartedProcesses.Count -ne 1) { throw 'Start-NineRouter deveria iniciar 1 processo para cli.js.' }
+$callNode = $mockState.StartedProcesses[0]
+if ($callNode.FilePath -eq 'cmd.exe') {
+    throw "Regressao detectada: cli.js nao deveria ser chamado atraves de cmd.exe, e sim diretamente pelo runtime node: $($callNode.FilePath)"
+}
+if ($callNode.ArgumentList[0] -ne $canonicalCli) {
+    throw "Primeiro argumento para o runtime deveria ser o script cli.js: $($callNode.ArgumentList[0])"
+}
 
 # 5. Validacao do start-server.bat
 $batContent = Get-Content -LiteralPath $batPath -Raw

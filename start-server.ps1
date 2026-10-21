@@ -50,17 +50,26 @@ function Write-ConnectionAddresses([int]$ListenPort, [bool]$LanEnabled) {
 }
 
 function Find-NineRouterExecutable {
+  # Prefer the canonical cli.js directly so Node.js spawns it without intermediate cmd.exe shells
+  $cliJs = Join-Path $env:APPDATA 'npm\node_modules\9router\cli.js'
+  if (Test-Path -LiteralPath $cliJs) { return $cliJs }
+
   $cmd = Get-Command '9router.cmd' -ErrorAction SilentlyContinue
-  if ($cmd -and $cmd.Source) { return $cmd.Source }
+  if ($cmd -and $cmd.Source) {
+    $adjacentCliJs = Join-Path (Split-Path $cmd.Source) 'node_modules\9router\cli.js'
+    if (Test-Path -LiteralPath $adjacentCliJs) { return $adjacentCliJs }
+    return $cmd.Source
+  }
 
   $appDataCmd = Join-Path $env:APPDATA 'npm\9router.cmd'
   if (Test-Path -LiteralPath $appDataCmd) { return $appDataCmd }
 
   $plainCmd = Get-Command '9router' -ErrorAction SilentlyContinue
-  if ($plainCmd -and $plainCmd.Source -and $plainCmd.Source -notlike '*.ps1') { return $plainCmd.Source }
-
-  $cliJs = Join-Path $env:APPDATA 'npm\node_modules\9router\cli.js'
-  if (Test-Path -LiteralPath $cliJs) { return $cliJs }
+  if ($plainCmd -and $plainCmd.Source -and $plainCmd.Source -notlike '*.ps1') {
+    $adjacentCliJs = Join-Path (Split-Path $plainCmd.Source) 'node_modules\9router\cli.js'
+    if (Test-Path -LiteralPath $adjacentCliJs) { return $adjacentCliJs }
+    return $plainCmd.Source
+  }
 
   return $null
 }
@@ -86,11 +95,17 @@ function Start-NineRouter {
   $routerArgs = @('--port', "$TargetPort", '--tray', '--no-browser', '--skip-update')
   $proc = $null
   $prevDataDir = $env:DATA_DIR
+  $prevPort = $env:PORT
   try {
     # 9Router uses process.env.DATA_DIR if set, which would divert its db from %APPDATA%\9router
     # to ModularChat's server DATA_DIR. Clear DATA_DIR during process launch to ensure 9Router
     # uses its standard config and combos (identical to launching 9Router standalone).
     Remove-Item Env:DATA_DIR -ErrorAction SilentlyContinue
+
+    # 9Router/Next.js standalone uses process.env.PORT || 3000. If ModularChat's $env:PORT (3000)
+    # is inherited, 9Router attempts to bind to 3000 instead of TargetPort (20128). Set $env:PORT
+    # to TargetPort during spawn to ensure 9Router binds to the expected port.
+    $env:PORT = "$TargetPort"
 
     if ($exe.EndsWith('.js', [StringComparison]::OrdinalIgnoreCase)) {
       $nodeExe = (Get-Command 'node' -ErrorAction SilentlyContinue).Source
@@ -98,14 +113,29 @@ function Start-NineRouter {
       $procArgs = @($exe) + $routerArgs
       $proc = Start-Process -FilePath $nodeExe -ArgumentList $procArgs -WindowStyle Hidden -PassThru
     } elseif ($exe.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase) -or $exe.EndsWith('.bat', [StringComparison]::OrdinalIgnoreCase)) {
-      $cmdLineArgs = @('/c', "`"$exe`"") + $routerArgs
-      $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdLineArgs -WindowStyle Hidden -PassThru
+      $adjacent = Join-Path (Split-Path $exe) 'node_modules\9router\cli.js'
+      if (Test-Path -LiteralPath $adjacent) {
+        $nodeExe = (Get-Command 'node' -ErrorAction SilentlyContinue).Source
+        if (-not $nodeExe) { $nodeExe = 'node' }
+        $procArgs = @($adjacent) + $routerArgs
+        $proc = Start-Process -FilePath $nodeExe -ArgumentList $procArgs -WindowStyle Hidden -PassThru
+      } else {
+        $cmdLineArgs = @('/c', "`"$exe`"") + $routerArgs
+        $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdLineArgs -WindowStyle Hidden -PassThru
+      }
     } else {
       $proc = Start-Process -FilePath $exe -ArgumentList $routerArgs -WindowStyle Hidden -PassThru
     }
   } finally {
     if ($null -ne $prevDataDir) {
       $env:DATA_DIR = $prevDataDir
+    } else {
+      Remove-Item Env:DATA_DIR -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $prevPort) {
+      $env:PORT = $prevPort
+    } else {
+      Remove-Item Env:PORT -ErrorAction SilentlyContinue
     }
   }
 
@@ -210,6 +240,10 @@ if ($Sandbox) {
   $env:MC_RUST_BACKUP_FILE = $backup
 }
 
+if ($With9Router) {
+  Start-NineRouter -TargetPort $NineRouterPort
+}
+
 $env:DATA_DIR = $data
 $env:HOST = if ($Loopback -or ($Sandbox -and -not $Lan)) { '127.0.0.1' } else { '0.0.0.0' }
 $env:PORT = "$Port"
@@ -223,10 +257,6 @@ $env:MC_LOCAL_MODELS_ENABLED = if ($LocalModels -or -not $Sandbox) { '1' } else 
 $env:LOCAL_CHAT_PORT = if ($Sandbox) { '20581' } else { '20481' }
 $env:LOCAL_EMBED_PORT = if ($Sandbox) { '20582' } else { '20482' }
 Remove-Item Env:MC_TEST_LOCAL_URL -ErrorAction SilentlyContinue
-
-if ($With9Router) {
-  Start-NineRouter -TargetPort $NineRouterPort
-}
 
 Write-Host "ModularChat on port $Port. Vault: $vault"
 Write-ConnectionAddresses -ListenPort $Port -LanEnabled ($env:HOST -eq '0.0.0.0')

@@ -187,7 +187,7 @@ pub fn turn_instruction(settings: &Value) -> String {
             "Ritmo livre: desenvolva a cena conforme necessário, sempre parando antes de uma escolha ou ação do usuário."
         }
         _ => {
-            "Ritmo interativo: faça apenas uma reação curta de cada personagem relevante à entrada atual. Não crie uma conversa longa entre personagens nem encadeie várias perguntas, ações ou acontecimentos antes da resposta do usuário. Termine numa pausa natural, sem forçar uma pergunta, e devolva a vez."
+            "Ritmo interativo: cada personagem relevante reage de forma natural à entrada atual, permitindo apartes, comentários paralelos e interações cruzadas breves entre si sem monopolizar a cena nem encadear acontecimentos excessivos antes da resposta do usuário. Termine numa pausa natural, sem forçar uma pergunta, e devolva a vez."
         }
     };
     format!(

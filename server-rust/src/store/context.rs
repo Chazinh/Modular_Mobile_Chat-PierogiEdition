@@ -84,6 +84,26 @@ impl Database {
         }
         // Only recent, mandatory pending, and the current turn load full source text.
         let rows=self.rows("SELECT i.id,i.seq,i.user_text,p.idx,v.id version_id,v.content FROM interactions i LEFT JOIN parts p ON p.interaction_id=i.id AND p.deleted_at IS NULL LEFT JOIN versions v ON v.id=p.selected_version_id AND v.status!='generating' WHERE i.id IN (SELECT value FROM json_each(?)) ORDER BY i.seq,p.idx",&[json!(json!(needed).to_string())])?;
+        let scene_rows = self.rows(
+            "SELECT interaction_id, present_json FROM scene_states WHERE conv_id=? AND interaction_id IN (SELECT value FROM json_each(?)) ORDER BY seq, created_at, rowid",
+            &[json!(c), json!(json!(needed).to_string())],
+        )?;
+        let mut presence_by_id = HashMap::<String, Vec<String>>::new();
+        for row in scene_rows {
+            let iid = s(&row, "interaction_id");
+            let list = parsed(&row, "present_json", json!([]));
+            if let Some(arr) = list.as_array() {
+                let entry = presence_by_id.entry(iid).or_default();
+                for item in arr {
+                    if let Some(name) = item.as_str() {
+                        let trimmed = name.trim();
+                        if !trimmed.is_empty() && !entry.iter().any(|e| rules::key(e) == rules::key(trimmed)) {
+                            entry.push(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+        }
         let mut by_id = HashMap::<String, Value>::new();
         for row in rows {
             let pair=by_id.entry(s(&row,"id")).or_insert_with(||json!({"id":row["id"],"seq":row["seq"],"user":row["user_text"],"assistant":"","parts":[],"complete":false,"sources":if row["user_text"].is_string(){vec![json!({"id":row["id"],"role":"user","text":row["user_text"]})]}else{vec![]}}));
@@ -100,6 +120,7 @@ impl Database {
             }
         }
         for pair in by_id.values_mut() {
+            let pid = s(pair, "id");
             pair["assistant"] = json!(
                 pair["parts"]
                     .as_array()
@@ -109,7 +130,8 @@ impl Database {
                     .collect::<Vec<_>>()
                     .join("\n\n")
             );
-            pair["versions"] = json!(version_ids.get(&s(pair, "id")).cloned().unwrap_or_default());
+            pair["versions"] = json!(version_ids.get(&pid).cloned().unwrap_or_default());
+            pair["present_entities"] = json!(presence_by_id.remove(&pid).unwrap_or_default());
         }
         let mut current = if pending {
             json!({"interactionId":null,"seq":cutoff,"userText":p["pendingUserText"],"priorParts":[]})
@@ -474,7 +496,20 @@ impl Database {
 }
 /// Pair without the redundant text copies (see `context_data`).
 fn slim_pair(pair: &Value, with_sources: bool) -> Value {
-    let mut out = json!({"id":pair["id"],"seq":pair["seq"],"user":pair["user"],"assistant":pair["assistant"],"complete":pair["complete"],"versions":pair["versions"]});
+    let present = pair["present_entities"]
+        .as_array()
+        .or_else(|| pair["present"].as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = json!({
+        "id": pair["id"],
+        "seq": pair["seq"],
+        "user": pair["user"],
+        "assistant": pair["assistant"],
+        "complete": pair["complete"],
+        "versions": pair["versions"],
+        "present_entities": present,
+    });
     if with_sources {
         out["sources"] = pair["sources"].clone();
     }

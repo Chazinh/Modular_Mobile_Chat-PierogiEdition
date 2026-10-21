@@ -574,6 +574,11 @@ pub async fn sync_character(store: &Store, config: &Config, c: &str) -> Result<b
         write_character(store, config, c, &s(&conv, "prompt")).await?;
         return Ok(false);
     }
+    if file.symlink_metadata()?.file_type().is_symlink()
+        || crate::config::hard_links(&file)? > 1
+    {
+        return Err(Error::new(400, "Ficha não pode ser um link."));
+    }
     if file.metadata()?.len() > 800000 {
         return Err(Error::new(422, "Personalização grande demais."));
     }

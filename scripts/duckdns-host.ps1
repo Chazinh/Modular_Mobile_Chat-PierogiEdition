@@ -3,9 +3,10 @@
 param(
     [ValidateSet('Update','Enable','Disable')][string]$Action='Update',
     [string]$Subdomain='',
-    [string]$Base=(Join-Path $env:USERPROFILE 'ModularChat-local\caddy')
+    [string]$Base=''
 )
 $ErrorActionPreference='Stop'
+if(-not $Base){$Base=Join-Path (Split-Path $PSScriptRoot -Parent) 'hosting\caddy'}
 $utf8=New-Object System.Text.UTF8Encoding($false)
 if($Action -ne 'Disable' -and $Subdomain -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'){throw 'Informe somente o subdominio DuckDNS usando -Subdomain.'}
 function Update-Dns {

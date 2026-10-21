@@ -8,7 +8,7 @@ use crate::{
     store::{EmbeddingItem, Request, Store},
 };
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 #[derive(Default)]
 struct State {
@@ -542,10 +542,64 @@ impl Runner {
                 ext["scenes"].as_array_mut().unwrap().push(scene.clone());
             }
             let present = scene["present"].as_array().cloned().unwrap_or_default();
+
             for f in ext["facts"].as_array_mut().unwrap() {
-                if f.get("witnesses").is_none() {
-                    f["witnesses"] = json!(present);
+                if f.get("witnesses").is_some() {
+                    continue;
                 }
+                let subject = s(f, "subject");
+                let content = s(f, "content");
+                let speaker = f["attribution"]["originalSpeaker"].as_str().unwrap_or_default();
+                let visibility = f["visibility"].as_str().unwrap_or("public");
+                let kind = f["kind"].as_str().unwrap_or("EVENT");
+
+                let mut deterministic_witnesses = HashSet::new();
+
+                // 1. Explicit knowledge attribution with valid witnessed state
+                if let Some(knows) = f["knowledge"].as_array() {
+                    for k in knows {
+                        let who = s(k, "who");
+                        let state = k["state"].as_str().unwrap_or("knows");
+                        let via = k["via"].as_str().unwrap_or("witnessed");
+                        if state != "unaware" && via == "witnessed" && !who.is_empty() {
+                            let w_key = rules::key(&who);
+                            if present.iter().any(|p| rules::key(p.as_str().unwrap_or_default()) == w_key) {
+                                deterministic_witnesses.insert(who);
+                            }
+                        }
+                    }
+                }
+
+                // 2. Direct participants (subject, content, speaker) who are physically present
+                for p_val in &present {
+                    let p_name = p_val.as_str().unwrap_or_default();
+                    let p_key = rules::key(p_name);
+                    if p_key.is_empty() {
+                        continue;
+                    }
+                    let in_subject = !subject.is_empty() && rules::key(&subject).contains(&p_key);
+                    let in_content = !content.is_empty() && rules::key(&content).contains(&p_key);
+                    let is_speaker = !speaker.is_empty() && rules::key(speaker) == p_key;
+
+                    if in_subject || in_content || is_speaker {
+                        deterministic_witnesses.insert(p_name.to_string());
+                    }
+                }
+
+                // 3. For public, non-secret events without specific individual participants,
+                // present characters witness the public scene event.
+                // Private/secret events are NEVER defaulted to all present!
+                if deterministic_witnesses.is_empty() && visibility != "private" && kind != "SECRET" {
+                    for p_val in &present {
+                        if let Some(p_name) = p_val.as_str() {
+                            deterministic_witnesses.insert(p_name.to_string());
+                        }
+                    }
+                }
+
+                let mut w_list: Vec<String> = deterministic_witnesses.into_iter().collect();
+                w_list.sort();
+                f["witnesses"] = json!(w_list);
             }
             related = part["facts"].clone();
         }
@@ -571,6 +625,15 @@ impl Runner {
             return Ok("skipped".into());
         }
         let notes = payload["notes"].as_array().cloned().unwrap_or_default();
+        let conv = self
+            .store
+            .call(Request::GetMeta(s(job, "conv_id")))
+            .await
+            .unwrap_or_default();
+        let persona = conv["persona"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Alex");
         let mut sources = Vec::new();
         for iid in &ids {
             let source = self
@@ -597,20 +660,46 @@ impl Runner {
         let original = sources.join("\n\n");
         let mut summaries = Vec::new();
         if backend.available() {
-            for (_, _, text) in
-                rules::chunks(&original, if backend.compact() { 1400 } else { 5000 }, 0)
-            {
-                let raw=backend.chat_json(vec![json!({"role":"system","content":"Resuma em até 4 frases o episódio em português, preservando nomes, decisões, segredos revelados e promessas. Responda somente JSON."}),json!({"role":"user","content":text})],json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}),500,0.1).await?;
-                let summary = s(&raw, "summary");
-                if summary.trim().is_empty() {
-                    return Err(Error::new(502, "Resumo episódico vazio."));
-                }
+            let prompt = episode_prompt(persona, backend.compact());
+            let chunk_size = if backend.compact() { 1400 } else { 5000 };
+            let overlap = if backend.compact() { 100 } else { 200 };
+            for (_, _, text) in rules::chunks(&original, chunk_size, overlap) {
+                let raw = backend
+                    .chat_json(
+                        vec![
+                            json!({"role":"system","content":prompt}),
+                            json!({"role":"user","content":text}),
+                        ],
+                        json!({
+                            "type": "object",
+                            "properties": {
+                                "summary": {"type": "string"}
+                            },
+                            "required": ["summary"]
+                        }),
+                        if backend.compact() { 400 } else { 600 },
+                        0.2,
+                    )
+                    .await?;
+                let summary = sanitize_episode_summary(&raw)
+                    .ok_or_else(|| Error::new(502, "Resumo episódico vazio."))?;
                 summaries.push(summary);
             }
         } else {
             summaries.push(original);
         }
-        let result=self.store.call(Request::CreateEpisode(json!({"convId":job["conv_id"],"interactionIds":ids,"fromSeq":payload["fromSeq"],"toSeq":payload["toSeq"],"summary":summaries.join("\n"),"expectedNotes":notes}))).await?;
+        let final_summary = summaries.join(" ");
+        let result = self
+            .store
+            .call(Request::CreateEpisode(json!({
+                "convId": job["conv_id"],
+                "interactionIds": ids,
+                "fromSeq": payload["fromSeq"],
+                "toSeq": payload["toSeq"],
+                "summary": final_summary,
+                "expectedNotes": notes
+            })))
+            .await?;
         Ok(if result["skipped"] == true {
             "skipped"
         } else {
@@ -912,6 +1001,63 @@ fn compact_extraction_prompt(persona: &str) -> String {
         "Extraia memória narrativa em português do fragmento integral. Responda somente JSON conforme o schema, com todos os campos obrigatórios e listas vazias quando ausentes. No máximo 5 fatos essenciais. Não invente acontecimentos, relações ou conhecimento. A persona {persona} é controlada pelo usuário. Em relationships, forneça objetos com a, b e description para vínculos estabelecidos/alterados. Em open_threads/resolved_threads, liste pendências narrativas curtas. Preserve autor original de citações/imitações: attribution.quote deve ser trecho exato e originalSpeaker/sourceId devem corresponder à proveniência fornecida; comentários fora das aspas são separados. Resuma apenas fatos ocorridos; cenas, personagens, segredos, relações e pendências devem ser suportados pelo texto. Não exponha segredos a quem não sabe."
     )
 }
+
+pub fn episode_prompt(persona: &str, compact: bool) -> String {
+    if compact {
+        format!(
+            "Comprima o episódio em um resumo narrativo coeso em português (3 a 4 frases em parágrafo único), preservando o tom dramático e a continuidade.\n\
+             Regras obrigatórias:\n\
+             1. Ponto de vista: use 3ª pessoa nominativa para todos os personagens. A persona {persona} é o usuário; use o nome dela, nunca 'usuário', 'você', 'eu' ou 'narrador'.\n\
+             2. Atmosfera emocional: preserve o clima (tensão, ternura, desconfiança, cumplicidade, medo) e o tom literário da cena, evitando relatórios clínicos ou listas secas.\n\
+             3. Dinâmica interpessoal: registre como a relação e a postura psicológica dos personagens mudaram (quem confrontou, cedeu, se aproximou ou desconfiou).\n\
+             4. Fatos e revelações: destaque decisões cruciais, segredos descobertos e fatos determinantes com nomes explícitos.\n\
+             5. Compromissos e âncoras: explicite promessas feitas, pendências não resolvidas e a postura com que os personagens terminaram a cena, servindo de elo para a próxima.\n\
+             Responda SOMENTE em JSON no formato: {{\"summary\": \"...\"}}"
+        )
+    } else {
+        format!(
+            "Você é o sintetizador de memória de longo prazo e continuidade narrativa do chat.\n\
+             Sua missão é comprimir o episódio em um resumo narrativo coeso e vivo em português (3 a 5 frases densas em parágrafo único), preservando a atmosfera dramática e prevenindo achatamento clínico.\n\n\
+             Diretrizes obrigatórias:\n\
+             1. Ponto de Vista e Nomes Nominais (3ª Pessoa Estrita):\n\
+                - O usuário interpreta a persona {persona}. Refira-se a {persona} sempre pelo nome próprio, NUNCA como 'o usuário', 'você', 'eu' ou 'narrador'.\n\
+                - Identifique todos os personagens pelos seus nomes próprios explícitos (ex.: 'Alex', 'Lia'). Nunca use pronomes isolados sem antecedente inequívoco.\n\
+             2. Atmosfera Emocional e Tom Dramático:\n\
+                - Capture o clima emocional predominante (tensão, desconfiança mútua, vulnerabilidade íntima, urgência, cumplicidade ou melancolia) e preserve a cadência literária original.\n\
+                - Evite linguagem burocrática, resumos policiais ou bullet points assépticos.\n\
+             3. Dinâmica Interpessoal e Postura Psicológica:\n\
+                - Explicite a evolução relacional: quem ganhou influência, quem se abriu, quem recuou, atritos velados ou vínculos consolidados.\n\
+                - Descreva a postura psicológica dos participantes (ex.: defensivo, provocador, relutante, afetuoso).\n\
+             4. Revelações, Segredos e Decisões Críticas:\n\
+                - Registre decisões determinantes, segredos compartilhados ou revelados e reviravoltas que alteram os rumos da história.\n\
+             5. Compromissos em Aberto e Âncora de Transição (Fronteira Narrativa):\n\
+                - Explicite promessas firmadas, dívidas morais, planos combinados e questões que ficaram pendentes para o futuro.\n\
+                - A última frase DEVE ancorar o estado psicológico e situacional exato em que os personagens terminaram o episódio, fornecendo uma transição fluida para o diálogo que se segue.\n\n\
+             Responda SOMENTE em JSON no formato: {{\"summary\": \"...\"}}"
+        )
+    }
+}
+
+pub fn sanitize_episode_summary(raw: &Value) -> Option<String> {
+    let text = if let Some(s) = raw.as_str() {
+        s
+    } else if let Some(s) = raw["summary"]
+        .as_str()
+        .or_else(|| raw["resumo"].as_str())
+        .or_else(|| raw["narrative"].as_str())
+        .or_else(|| raw["episode"].as_str())
+    {
+        s
+    } else {
+        return None;
+    };
+    let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
 pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
     if !raw.is_object() {
         return Err(Error::new(
@@ -1002,6 +1148,7 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
         let mut positions = serde_json::Map::new();
         let mut locations = serde_json::Map::new();
         let mut holding = serde_json::Map::new();
+        let mut possessions = serde_json::Map::new();
         for c in scene["characters"]
             .as_array()
             .or_else(|| scene["personagens"].as_array())
@@ -1019,7 +1166,7 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
                 locations.insert(name.clone(), json!(value));
             }
             holding.insert(
-                name,
+                name.clone(),
                 json!(
                     c["holding"]
                         .as_array()
@@ -1029,6 +1176,22 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
                         .map(|s| crate::cast::clean(s, 50))
                         .filter(|s| !s.is_empty())
                         .take(8)
+                        .collect::<Vec<_>>()
+                ),
+            );
+            possessions.insert(
+                name,
+                json!(
+                    c["possessions"]
+                        .as_array()
+                        .or_else(|| c["posses"].as_array())
+                        .or_else(|| c["inventory"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(|s| crate::cast::clean(s, 50))
+                        .filter(|s| !s.is_empty())
+                        .take(12)
                         .collect::<Vec<_>>()
                 ),
             );
@@ -1064,15 +1227,37 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
                 }
             }
         }
+        if let Some(input) = scene["possessions"].as_object().or_else(|| scene["inventory"].as_object()) {
+            for (name, v) in input.iter().take(40) {
+                if let Some(name) = crate::cast::name(name) {
+                    possessions.entry(name).or_insert(json!(
+                        v.as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(|s| crate::cast::clean(s, 50))
+                            .filter(|s| !s.is_empty())
+                            .take(12)
+                            .collect::<Vec<_>>()
+                    ));
+                }
+            }
+        }
         let location = crate::cast::known(&s(scene, "location"), 80);
         let time = crate::cast::known(&s(scene, "time"), 60);
         if location.is_some() || time.is_some() || !present.is_empty() || !positions.is_empty() {
-            out["scene"] = json!({"location":location,"time":time,"mood":crate::cast::known(&s(scene,"mood"),80),"present":present,"positions":positions,"locations":locations,"holding":holding,"objects":scene["objects"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|s|crate::cast::clean(s,50)).filter(|s|!s.is_empty()).take(12).collect::<Vec<_>>()});
+            out["scene"] = json!({"location":location,"time":time,"mood":crate::cast::known(&s(scene,"mood"),80),"present":present,"positions":positions,"locations":locations,"holding":holding,"possessions":possessions,"objects":scene["objects"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|s|crate::cast::clean(s,50)).filter(|s|!s.is_empty()).take(12).collect::<Vec<_>>()});
         }
     }
     let facts_arr = raw["facts"]
         .as_array()
         .or_else(|| raw["fatos"].as_array());
+    let persona = raw
+        .get("persona")
+        .or_else(|| raw.get("conv").and_then(|c| c.get("persona")))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
     for f in facts_arr.into_iter().flatten().take(14) {
         let content_val = if !f["content"].is_null() {
             &f["content"]
@@ -1081,20 +1266,26 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
         } else {
             &f["fact"]
         };
-        let content = clean(content_val, 300);
+        let speaker = f["attribution"]["originalSpeaker"]
+            .as_str()
+            .unwrap_or_default();
+        let raw_content = content_val.as_str().unwrap_or_default();
+        let normalized_content = normalize_fact_text(raw_content, speaker, persona);
+        let content = clean(&json!(normalized_content), 300);
         if content.as_str().unwrap().len() < 6 {
             continue;
         }
         let mut fact = f.clone();
         fact["content"] = content;
-        fact["subject"] = clean(
-            if !f["subject"].is_null() {
-                &f["subject"]
-            } else {
-                &f["sujeito"]
-            },
-            60,
-        );
+
+        let raw_subject = if !f["subject"].is_null() {
+            f["subject"].as_str().unwrap_or_default()
+        } else {
+            f["sujeito"].as_str().unwrap_or_default()
+        };
+        let normalized_subject = normalize_fact_text(raw_subject, speaker, persona);
+        fact["subject"] = clean(&json!(normalized_subject), 60);
+
         fact["replaces"] = clean(&f["replaces"], 300);
         fact["existingId"] = f["existing_id"].clone();
         fact["kind"] = json!(
@@ -1104,6 +1295,9 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
                     "CHARACTER_FACT",
                     "USER_FACT",
                     "RELATIONSHIP",
+                    "KINSHIP",
+                    "POSSESSION",
+                    "INVENTORY",
                     "EVENT",
                     "SECRET",
                     "PROMISE",
@@ -1116,6 +1310,12 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
                 .contains(k))
                 .unwrap_or("EVENT")
         );
+        if let Some(kinship) = f.get("kinship").filter(|k| !k.is_null()) {
+            fact["kinship"] = kinship.clone();
+        }
+        if let Some(possession) = f.get("possession").filter(|p| !p.is_null()) {
+            fact["possession"] = possession.clone();
+        }
         for (key, default) in [("importance", 0.5), ("confidence", 0.7)] {
             fact[key] = json!(
                 f[key]
@@ -1172,8 +1372,39 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
         .flatten()
         .take(8)
     {
-        if !s(r, "a").is_empty() && !s(r, "b").is_empty() && !s(r, "description").is_empty() {
-            out["relationships"].as_array_mut().unwrap().push(r.clone());
+        let mut a = s(r, "a").trim().to_string();
+        let mut b = s(r, "b").trim().to_string();
+        let desc = s(r, "description").trim().to_string();
+
+        if !persona.is_empty() {
+            if rules::key(&a) == "eu" || rules::key(&a) == "me" {
+                a = persona.to_string();
+            }
+            if rules::key(&b) == "eu" || rules::key(&b) == "me" {
+                b = persona.to_string();
+            }
+        }
+
+        let a_norm = crate::cast::name(&a).unwrap_or(a);
+        let b_norm = crate::cast::name(&b).unwrap_or(b);
+
+        if !a_norm.is_empty() && !b_norm.is_empty() && rules::key(&a_norm) != rules::key(&b_norm) && !desc.is_empty() {
+            let normalized_desc = normalize_fact_text(&desc, &a_norm, persona);
+            let mut rel = json!({
+                "a": a_norm,
+                "b": b_norm,
+                "description": clean(&json!(normalized_desc), 300)
+            });
+            if let Some(kind) = r.get("kind").or_else(|| r.get("relation")).or_else(|| r.get("relation_type")) {
+                rel["kind"] = kind.clone();
+            }
+            if let Some(rel_type) = r.get("relation_type") {
+                rel["relation_type"] = rel_type.clone();
+            }
+            if let Some(directed) = r.get("directed") {
+                rel["directed"] = directed.clone();
+            }
+            out["relationships"].as_array_mut().unwrap().push(rel);
         }
     }
     for (k, source, alt) in [
@@ -1189,6 +1420,66 @@ pub fn sanitize_extraction(raw: &Value) -> Result<Value> {
         }
     }
     Ok(out)
+}
+
+pub fn normalize_fact_text(text: &str, speaker: &str, persona: &str) -> String {
+    let effective_speaker = if !speaker.trim().is_empty() {
+        speaker.trim()
+    } else if !persona.trim().is_empty() {
+        persona.trim()
+    } else {
+        ""
+    };
+
+    if effective_speaker.is_empty() {
+        return text.to_string();
+    }
+
+    let mut result = text.to_string();
+
+    // 1. Normalize 1st-person possessives (meu/minha/meus/minhas) -> attribution to speaker
+    static RE_MINHA: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bminha\s+((?:melhor\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+    static RE_MEU: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bmeu\s+((?:melhor\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+    static RE_MINHAS: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bminhas\s+((?:melhores\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+    static RE_MEUS: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bmeus\s+((?:melhores\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+
+    result = RE_MINHA.replace_all(&result, format!("a $1 de {effective_speaker}")).to_string();
+    result = RE_MEU.replace_all(&result, format!("o $1 de {effective_speaker}")).to_string();
+    result = RE_MINHAS.replace_all(&result, format!("as $1 de {effective_speaker}")).to_string();
+    result = RE_MEUS.replace_all(&result, format!("os $1 de {effective_speaker}")).to_string();
+
+    // 2. Normalize 2nd-person possessives (sua/seu/suas/seus) when addressing persona
+    let target = if !persona.trim().is_empty() && effective_speaker != persona.trim() {
+        persona.trim()
+    } else {
+        ""
+    };
+    if !target.is_empty() {
+        static RE_SUA: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bsua\s+((?:melhor\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+        static RE_SEU: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bseu\s+((?:melhor\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+        static RE_SUAS: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bsuas\s+((?:melhores\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+        static RE_SEUS: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bseus\s+((?:melhores\s+)?[a-záéíóúâêîôûãõç]+)").unwrap());
+
+        result = RE_SUA.replace_all(&result, format!("a $1 de {target}")).to_string();
+        result = RE_SEU.replace_all(&result, format!("o $1 de {target}")).to_string();
+        result = RE_SUAS.replace_all(&result, format!("as $1 de {target}")).to_string();
+        result = RE_SEUS.replace_all(&result, format!("os $1 de {target}")).to_string();
+    }
+
+    // 3. Normalize raw first-person pronoun as subject (e.g. "eu" -> effective_speaker)
+    static RE_EU: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^\s*eu\b").unwrap());
+    result = RE_EU.replace_all(&result, effective_speaker).to_string();
+
+    result
 }
 
 // Same speaker despite case/accents/spacing, or first name vs. full name ("Mira" ~ "Mira Rose").
@@ -1221,7 +1512,17 @@ fn same_speaker(documented: &Value, claimed: &Value) -> bool {
 /// may carry the same false authorship, so the runner must not promote the batch. The key exists only in
 /// that case; a fact without attribution never triggers it.
 pub fn sanitize_with_sources(raw: &Value, input: &Value) -> Result<Value> {
-    let mut out = sanitize_extraction(raw)?;
+    let mut raw_with_persona;
+    let effective_raw = if raw.get("persona").is_none()
+        && input.get("conv").and_then(|c| c.get("persona")).is_some()
+    {
+        raw_with_persona = raw.clone();
+        raw_with_persona["persona"] = input["conv"]["persona"].clone();
+        &raw_with_persona
+    } else {
+        raw
+    };
+    let mut out = sanitize_extraction(effective_raw)?;
     let sources = input["recentSources"]
         .as_array()
         .cloned()
@@ -1271,4 +1572,66 @@ fn attribution_conflict(rejected: &[Value]) -> Error {
         ),
     )
     .extra("code", "ATTRIBUTION_CONFLICT")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_episode_summary_resilience() {
+        // Standard summary key
+        let v1 = json!({"summary": "Em meio à névoa, Alex e Lia firmaram um pacto secreto."});
+        assert_eq!(
+            sanitize_episode_summary(&v1).unwrap(),
+            "Em meio à névoa, Alex e Lia firmaram um pacto secreto."
+        );
+
+        // Portuguese key fallback
+        let v2 = json!({"resumo": "Sob tensão crescente, Elena revelou o mapa roubado."});
+        assert_eq!(
+            sanitize_episode_summary(&v2).unwrap(),
+            "Sob tensão crescente, Elena revelou o mapa roubado."
+        );
+
+        // Alternative key fallbacks
+        let v_narrative = json!({"narrative": "A revelação mudou o destino do reino."});
+        assert_eq!(
+            sanitize_episode_summary(&v_narrative).unwrap(),
+            "A revelação mudou o destino do reino."
+        );
+        let v_episode = json!({"episode": "O pacto foi selado."});
+        assert_eq!(
+            sanitize_episode_summary(&v_episode).unwrap(),
+            "O pacto foi selado."
+        );
+
+        // Whitespace and newline collapsing into single paragraph
+        let v3 = json!({"summary": "Linha um com tensão.\n\nLinha dois com   espaços\n  e promessas."});
+        assert_eq!(
+            sanitize_episode_summary(&v3).unwrap(),
+            "Linha um com tensão. Linha dois com espaços e promessas."
+        );
+
+        // Rejection of empty or invalid
+        assert!(sanitize_episode_summary(&json!({"summary": "   "})).is_none());
+        assert!(sanitize_episode_summary(&json!({})).is_none());
+        assert!(sanitize_episode_summary(&json!(null)).is_none());
+    }
+
+    #[test]
+    fn test_episode_prompt_invariants_and_persona() {
+        let p_desktop = episode_prompt("Kael", false);
+        assert!(p_desktop.contains("Kael"));
+        assert!(p_desktop.contains("NUNCA como 'o usuário'"));
+        assert!(p_desktop.contains("Atmosfera Emocional"));
+        assert!(p_desktop.contains("Dinâmica Interpessoal"));
+        assert!(p_desktop.contains("Compromissos em Aberto"));
+        assert!(p_desktop.contains("{\"summary\": \"...\"}"));
+
+        let p_compact = episode_prompt("Mira", true);
+        assert!(p_compact.contains("Mira"));
+        assert!(p_compact.contains("Atmosfera emocional"));
+        assert!(p_compact.contains("Compromissos e âncoras"));
+    }
 }

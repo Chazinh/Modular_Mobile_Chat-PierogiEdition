@@ -114,7 +114,7 @@ impl Database {
             .map(|n| rules::key(n.as_str().unwrap_or_default()))
             .collect();
         Ok(
-            json!({"interactionId":scene["interaction_id"],"seq":scene["seq"],"location":scene["location"],"time":scene["time_text"],"mood":scene["mood"],"present":present,"objects":parsed(&scene,"objects_json",json!([])),"characters":chars.iter().filter(|c|keys.contains(&s(c,"entity_key"))).map(|c|json!({"key":c["entity_key"],"name":c["entity_name"],"location":c["location"],"position":c["position"],"holding":parsed(c,"holding_json",json!([]))})).collect::<Vec<_>>()}),
+            json!({"interactionId":scene["interaction_id"],"seq":scene["seq"],"location":scene["location"],"time":scene["time_text"],"mood":scene["mood"],"present":present,"objects":parsed(&scene,"objects_json",json!([])),"characters":chars.iter().filter(|c|keys.contains(&s(c,"entity_key"))).map(|c|json!({"key":c["entity_key"],"name":c["entity_name"],"location":c["location"],"position":c["position"],"holding":parsed(c,"holding_json",json!([])),"possessions":c.get("possessions").cloned().unwrap_or_else(|| parsed(c,"possessions_json",json!([])))})).collect::<Vec<_>>()}),
         )
     }
     pub(super) fn sync_lag(&self, c: &str) -> Result<Value> {
@@ -152,7 +152,41 @@ impl Database {
         eligible: &Eligibility,
     ) -> Result<(Vec<Value>, Vec<Value>)> {
         let mut seen = HashSet::new();
-        let relationships=self.rows("SELECT * FROM relationships WHERE conv_id=? ORDER BY created_at DESC,rowid DESC",&[json!(c)])?.into_iter().filter(|r|r["source_interaction_id"].is_null()||eligible.seq.contains_key(&s(r,"source_interaction_id"))).filter(|r|{let mut keys=[s(r,"a_key"),s(r,"b_key")];keys.sort();seen.insert(keys)}).map(|r|json!({"id":r["id"],"a":r["a_name"],"b":r["b_name"],"description":r["description"]})).collect();
+        let relationships = self.rows(
+            "SELECT * FROM relationships WHERE conv_id=? AND (status IS NULL OR status='current') AND (validity IS NULL OR validity='ok') ORDER BY created_at DESC, rowid DESC",
+            &[json!(c)],
+        )?
+        .into_iter()
+        .filter(|r| {
+            r["source_interaction_id"].is_null()
+                || eligible.seq.contains_key(&s(r, "source_interaction_id"))
+        })
+        .filter(|r| {
+            // Directed relationships: preserve (a_key -> b_key) uniquely, do NOT sort keys!
+            let key = (s(r, "a_key"), s(r, "b_key"));
+            seen.insert(key)
+        })
+        .map(|r| {
+            let mut rel = json!({
+                "id": r["id"],
+                "a": r["a_name"],
+                "b": r["b_name"],
+                "a_key": r["a_key"],
+                "b_key": r["b_key"],
+                "description": r["description"]
+            });
+            if let Some(d) = r.get("directed") {
+                rel["directed"] = d.clone();
+            }
+            if let Some(k) = r.get("kind") {
+                rel["kind"] = k.clone();
+            }
+            if let Some(rt) = r.get("relation_type") {
+                rel["relation_type"] = rt.clone();
+            }
+            rel
+        })
+        .collect();
         let threads = self
             .rows(
                 "SELECT * FROM threads WHERE conv_id=? ORDER BY created_at",
@@ -383,6 +417,7 @@ impl Database {
         // What the model omitted (scene place/time/mood; character place/position) inherits the last non-empty
         // value from the previous scene; null fields only, so an outdated place is not kept when there is an explicit change.
         let before_scene = self.scene_at(&c, seq)?;
+        let before_loc = before_scene["location"].as_str().unwrap_or_default().trim();
         let mut carried = json!({"location":before_scene["location"],"time":before_scene["time"],"mood":before_scene["mood"]});
         let mut last_chars = self
             .latest_characters(&c, seq)?
@@ -396,13 +431,21 @@ impl Database {
             .collect::<HashMap<_, _>>();
         for scene in &scenes {
             let explicit_location = !blank(&scene["location"]);
-            present = scene["present"]
-                .as_array()
+            let new_loc = scene["location"].as_str().unwrap_or_default().trim();
+            let transition_detected = !before_loc.is_empty()
+                && explicit_location
+                && rules::key(before_loc) != rules::key(new_loc);
+
+            let scene_present_arr = scene["present"].as_array();
+            let is_explicit = scene_present_arr.is_some_and(|a| !a.is_empty());
+            present = scene_present_arr
                 .into_iter()
                 .flatten()
                 .map(|n| rules::key(n.as_str().unwrap_or_default()))
                 .collect();
-            present.insert(rules::key(&s(&conv, "persona")));
+            if !is_explicit || present.contains(&rules::key(&s(&conv, "persona"))) {
+                present.insert(rules::key(&s(&conv, "persona")));
+            }
             let mut filled = scene.clone();
             if filled.is_object() {
                 for field in ["location", "time", "mood"] {
@@ -434,7 +477,7 @@ impl Database {
                     if blank(&ch["location"]) && !explicit_location && !blank(last_location) {
                         ch["location"] = last_location.clone();
                     }
-                    if blank(&ch["position"]) && ch["location"] == *last_location {
+                    if !transition_detected && blank(&ch["position"]) && ch["location"] == *last_location {
                         ch["position"] = last_position.clone();
                     }
                 }
@@ -516,15 +559,30 @@ impl Database {
                 )?;
             }
             let knows = f["knowledge"].as_array().cloned().unwrap_or_default();
+            let persona_key = rules::key(&s(&conv, "persona"));
+            let is_persona_present = present.contains(&persona_key);
             let witnesses = f["witnesses"]
                 .as_array()
                 .map(|a| {
-                    a.iter()
+                    let mut set = a.iter()
                         .map(|n| rules::key(n.as_str().unwrap_or_default()))
-                        .chain(std::iter::once(rules::key(&s(&conv, "persona"))))
-                        .collect::<HashSet<_>>()
+                        .collect::<HashSet<_>>();
+                    if is_persona_present {
+                        set.insert(persona_key.clone());
+                    } else {
+                        set.remove(&persona_key);
+                    }
+                    set
                 })
-                .unwrap_or_else(|| present.clone());
+                .unwrap_or_else(|| {
+                    if is_persona_present {
+                        let mut s = present.clone();
+                        s.insert(persona_key.clone());
+                        s
+                    } else {
+                        present.iter().filter(|k| **k != persona_key).cloned().collect()
+                    }
+                });
             let mut seen = HashSet::new();
             for k in &knows {
                 let name = s(k, "who");
@@ -551,6 +609,9 @@ impl Database {
             }
             if visibility == "private" && kind != "SECRET" && knows.is_empty() {
                 for key in &witnesses {
+                    if !present.contains(key) {
+                        continue;
+                    }
                     let row = self.resolve_cast(&c, key)?;
                     let name = row["name"].as_str().unwrap_or(key);
                     self.exec("INSERT INTO knowledge_events(id,conv_id,memory_id,entity_key,entity_name,state,via,source_interaction_id,source_version_id,created_at) VALUES(?,?,?,?,?,'knows','witnessed',?,?,?)",&[json!(id()),json!(c),json!(mid),json!(key),json!(name),json!(iid),p["versionId"].clone(),json!(now())])?;
@@ -562,18 +623,55 @@ impl Database {
             }
         }
         let before = Eligibility::from_path(&path, seq);
-        for r in ext["relationships"]
+        let mut rel_list = ext["relationships"]
             .as_array()
-            .into_iter()
-            .flatten()
-            .take(8)
-        {
+            .cloned()
+            .unwrap_or_default();
+
+        let mut derived_inverses = Vec::new();
+        for r in &rel_list {
             let (a, b) = (s(r, "a"), s(r, "b"));
-            let description = s(r, "description");
+            let desc = s(r, "description");
+            if a.is_empty() || b.is_empty() || a == b || desc.is_empty() {
+                continue;
+            }
+            let a_key = rules::key(&a);
+            let b_key = rules::key(&b);
+            let has_reverse = rel_list.iter().any(|other| {
+                rules::key(&s(other, "a")) == b_key && rules::key(&s(other, "b")) == a_key
+            });
+            if !has_reverse {
+                if let Some(inv_desc) = derive_inverse_kinship(&a, &b, &desc) {
+                    derived_inverses.push(json!({
+                        "a": b,
+                        "b": a,
+                        "description": inv_desc,
+                        "directed": true,
+                        "kind": "kinship"
+                    }));
+                }
+            }
+        }
+        rel_list.extend(derived_inverses);
+
+        for r in rel_list.into_iter().take(12) {
+            let (a, b) = (s(&r, "a"), s(&r, "b"));
+            let description = s(&r, "description");
             if a.is_empty() || b.is_empty() || a == b || description.is_empty() {
                 continue;
             }
-            let previous=self.rows("SELECT * FROM relationships WHERE conv_id=? AND ((a_key=? AND b_key=?) OR (b_key=? AND a_key=?)) ORDER BY created_at DESC",&[json!(c),json!(rules::key(&a)),json!(rules::key(&b)),json!(rules::key(&a)),json!(rules::key(&b))])?.into_iter().find(|r|r["source_interaction_id"].is_null()||before.seq.contains_key(&s(r,"source_interaction_id")));
+            let a_key = rules::key(&a);
+            let b_key = rules::key(&b);
+            let previous = self.rows(
+                "SELECT * FROM relationships WHERE conv_id=? AND a_key=? AND b_key=? AND (status IS NULL OR status='current') ORDER BY created_at DESC",
+                &[json!(c), json!(a_key), json!(b_key)],
+            )?
+            .into_iter()
+            .find(|r| {
+                r["source_interaction_id"].is_null()
+                    || before.seq.contains_key(&s(r, "source_interaction_id"))
+            });
+
             if previous
                 .as_ref()
                 .is_some_and(|r| rules::jaccard(&s(r, "description"), &description) >= 0.7)
@@ -581,7 +679,20 @@ impl Database {
                 continue;
             }
             let rid = id();
-            self.exec("INSERT INTO relationships(id,conv_id,a_key,a_name,b_key,b_name,description,source_interaction_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",&[json!(rid),json!(c),json!(rules::key(&a)),json!(a),json!(rules::key(&b)),json!(b),json!(rules::clip(&description,300)),json!(iid),json!(now())])?;
+            self.exec(
+                "INSERT INTO relationships(id,conv_id,a_key,a_name,b_key,b_name,description,source_interaction_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                &[
+                    json!(rid),
+                    json!(c),
+                    json!(a_key),
+                    json!(a),
+                    json!(b_key),
+                    json!(b),
+                    json!(rules::clip(&description, 300)),
+                    json!(iid),
+                    json!(now()),
+                ],
+            )?;
             if let Some(old) = previous {
                 self.exec(
                     "UPDATE relationships SET status='historical',superseded_by=? WHERE id=?",
@@ -638,6 +749,9 @@ pub(super) const KINDS: &[&str] = &[
     "CHARACTER_FACT",
     "USER_FACT",
     "RELATIONSHIP",
+    "KINSHIP",
+    "POSSESSION",
+    "INVENTORY",
     "EVENT",
     "SECRET",
     "PROMISE",
@@ -655,7 +769,33 @@ const PRIVATE: &[&str] = &[
     "OPEN_THREAD",
     "USER_FACT",
     "RELATIONSHIP",
+    "KINSHIP",
+    "POSSESSION",
+    "INVENTORY",
 ];
+
+pub(super) fn derive_inverse_kinship(a_name: &str, _b_name: &str, desc: &str) -> Option<String> {
+    let lower = desc.to_lowercase();
+    if lower.contains("mãe de") || lower.contains("pai de") || lower.contains("progenitor") {
+        Some(format!("filho(a) de {a_name}"))
+    } else if lower.contains("filho de") || lower.contains("filha de") {
+        Some(format!("pai/mãe de {a_name}"))
+    } else if lower.contains("irmão de") || lower.contains("irmã de") {
+        Some(format!("irmão/irmã de {a_name}"))
+    } else if lower.contains("esposa de") || lower.contains("marido de") || lower.contains("esposo de") {
+        Some(format!("cônjuge de {a_name}"))
+    } else if lower.contains("avó de") || lower.contains("avô de") {
+        Some(format!("neto(a) de {a_name}"))
+    } else if lower.contains("neto de") || lower.contains("neta de") {
+        Some(format!("avô/avó de {a_name}"))
+    } else if lower.contains("tio de") || lower.contains("tia de") {
+        Some(format!("sobrinho(a) de {a_name}"))
+    } else if lower.contains("sobrinho de") || lower.contains("sobrinha de") {
+        Some(format!("tio/tia de {a_name}"))
+    } else {
+        None
+    }
+}
 /// Field omitted by the model: null or empty text.
 fn blank(v: &Value) -> bool {
     v.is_null() || v.as_str().is_some_and(|t| t.trim().is_empty())

@@ -2,9 +2,10 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Apply','Status','Remove')][string]$Action='Status',
-    [string]$Base=(Join-Path $env:USERPROFILE 'ModularChat-local\caddy')
+    [string]$Base=''
 )
 $ErrorActionPreference='Stop'
+if(-not $Base){$Base=Join-Path (Split-Path $PSScriptRoot -Parent) 'hosting\caddy'}
 $base=[IO.Path]::GetFullPath($Base)
 $manifest=Join-Path $base 'port-mappings.json'
 $nat=New-Object -ComObject HNetCfg.NATUPnP

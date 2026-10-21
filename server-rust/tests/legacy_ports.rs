@@ -647,7 +647,7 @@ async fn persona_profiles_reach_the_system_prompt() {
     assert!(sys.contains("O usuário interpreta Lucas"));
     assert!(sys.contains("Mercenário de 30 anos"));
     assert!(
-        sys.contains("o narrador e os personagens nunca age por Lucas"),
+        sys.contains("nunca age por Lucas"),
         "{{char}}/{{user}} substituídos"
     );
     assert!(!sys.contains("{{"));
