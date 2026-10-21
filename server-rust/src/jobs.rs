@@ -446,9 +446,9 @@ impl Runner {
                 _ => 450,
             }
         } else if level == 0 {
-            5000
+            4000
         } else if level == 1 {
-            3000
+            2800
         } else {
             1800
         };
@@ -497,7 +497,7 @@ impl Runner {
                     if backend.compact() {
                         1200
                     } else if level == 0 {
-                        2200
+                        3200
                     } else {
                         3000
                     },

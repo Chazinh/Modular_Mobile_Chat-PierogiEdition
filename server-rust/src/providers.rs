@@ -321,16 +321,30 @@ impl MobileProviders {
 
 /// Every operation holds its own Arc snapshot; changes never reroute an accepted POST.
 #[derive(Clone, Default)]
-pub struct RuntimeProviders(Arc<RwLock<Option<Arc<Providers>>>>);
+pub struct RuntimeProviders {
+    providers: Arc<RwLock<Option<Arc<Providers>>>>,
+    format_cache: Arc<RwLock<std::collections::HashMap<String, u8>>>,
+}
 impl RuntimeProviders {
     pub fn new(providers: Option<Arc<Providers>>) -> Self {
-        Self(Arc::new(RwLock::new(providers)))
+        Self {
+            providers: Arc::new(RwLock::new(providers)),
+            format_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
     }
     pub fn snapshot(&self) -> Option<Arc<Providers>> {
-        self.0.read().unwrap().clone()
+        self.providers.read().unwrap().clone()
     }
     pub fn set(&self, providers: Option<Arc<Providers>>) {
-        *self.0.write().unwrap() = providers;
+        *self.providers.write().unwrap() = providers;
+    }
+    pub fn get_format(&self, provider: &str, model: &str) -> Option<u8> {
+        self.format_cache.read().ok()?.get(&format!("{provider}:{model}")).copied()
+    }
+    pub fn set_format(&self, provider: &str, model: &str, format: u8) {
+        if let Ok(mut cache) = self.format_cache.write() {
+            cache.insert(format!("{provider}:{model}"), format);
+        }
     }
 }
 

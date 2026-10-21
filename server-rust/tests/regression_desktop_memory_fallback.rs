@@ -326,3 +326,177 @@ fn test_regression_sanitize_extraction_resilience() {
     assert_eq!(sanitized_empty["facts"].as_array().unwrap().len(), 0);
 }
 
+#[tokio::test]
+async fn regression_desktop_format_cache_and_requeue() {
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let requests_clone = requests.clone();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/v1");
+
+    let app = Router::new()
+        .route(
+            "/v1/models",
+            get(|| async move {
+                Json(json!({
+                    "data": [
+                        {"id": "Deepseek"},
+                        {"id": "oc/deepseek-v4.1-flash-free"}
+                    ]
+                }))
+                .into_response()
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(move |_headers: HeaderMap, Json(body): Json<Value>| {
+                let reqs = requests_clone.clone();
+                async move {
+                    reqs.lock().unwrap().push(body.clone());
+                    let rf_type = body.get("response_format").and_then(|r| r.get("type")).and_then(|t| t.as_str());
+                    if rf_type == Some("json_schema") {
+                        (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            "Upstream request failed: [invalid_request_error] This response_format type is unavailable now",
+                        )
+                            .into_response()
+                    } else if rf_type == Some("json_object") {
+                        Json(json!({
+                            "id": "chatcmpl-test",
+                            "object": "chat.completion",
+                            "created": 1700000000,
+                            "model": body["model"],
+                            "choices": [{
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "{\"location\": \"Cais Central\", \"mood\": \"Alegre\"}"
+                                },
+                                "finish_reason": "stop"
+                            }]
+                        }))
+                        .into_response()
+                    } else {
+                        (axum::http::StatusCode::BAD_REQUEST, "invalid format").into_response()
+                    }
+                }
+            }),
+        );
+
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.ok();
+    });
+
+    let providers_json = json!({
+        "providers": [{
+            "id": "fixture-9router",
+            "baseUrl": url,
+            "apiKey": "dummy-key",
+            "models": ["Deepseek", "oc/deepseek-v4.1-flash-free"]
+        }],
+        "default": "fixture-9router"
+    });
+    let providers_obj = Arc::new(Providers::from_json(&providers_json).unwrap());
+    let runtime = RuntimeProviders::new(Some(providers_obj));
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().canonicalize().unwrap();
+    let config = Config {
+        dist: data_dir.join("client-dist"),
+        data_dir: data_dir.clone(),
+        address: "127.0.0.1:3012".parse().unwrap(),
+        require_pairing: false,
+        providers: None,
+        max_generations: 1,
+        production: false,
+        native_lib_dir: None,
+        review: false,
+    };
+    let client = reqwest::Client::new();
+    let local = LocalModels::new(&config, client.clone()).unwrap();
+
+    let policy = MemoryPolicy {
+        mode: MemoryMode::Local,
+        api: None,
+    };
+
+    // 1. First resolution and call: negotiates json_schema -> json_object
+    let backend1 = MemoryBackend::resolve(&local, &runtime, &policy, &client)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "location": {"type": "string"},
+            "mood": {"type": "string"}
+        },
+        "required": ["location", "mood"]
+    });
+    let messages = vec![
+        json!({"role": "user", "content": "Estamos no porto."}),
+    ];
+
+    let result1 = backend1.chat_json(messages.clone(), schema.clone(), 1000, 0.1).await.unwrap();
+    assert_eq!(result1["location"], "Cais Central");
+
+    // Must have made 2 requests on call 1 (attempt 1 rejected json_schema, attempt 2 succeeded with json_object)
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(requests.lock().unwrap()[0]["response_format"]["type"], "json_schema");
+    assert_eq!(requests.lock().unwrap()[1]["response_format"]["type"], "json_object");
+
+    // Format must be cached in runtime
+    assert_eq!(runtime.get_format("fixture-9router", "Deepseek"), Some(1));
+
+    // 2. Second resolution and call: must start directly at json_object (format 1), zero rejected requests!
+    let backend2 = MemoryBackend::resolve(&local, &runtime, &policy, &client)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result2 = backend2.chat_json(messages, schema, 1000, 0.1).await.unwrap();
+    assert_eq!(result2["location"], "Cais Central");
+
+    // Only 1 new request made on call 2, and it was directly json_object
+    assert_eq!(requests.lock().unwrap().len(), 3);
+    assert_eq!(requests.lock().unwrap()[2]["response_format"]["type"], "json_object");
+
+    // 3. Test RequeueJobs resets failed jobs with response_format/schema errors
+    let store = modularchat_server::store::Store::open(&data_dir).unwrap();
+    let conv = store.call(Request::CreateConversation(json!({"name": "Test Conv", "routeId": "Deepseek", "presetId": "default"}))).await.unwrap();
+    let conv_id = conv["id"].as_str().unwrap();
+
+    let job = store.call(Request::EnqueueJob(json!({
+        "convId": conv_id,
+        "kind": "turn",
+        "interactionId": "i-1",
+        "versionId": "v-1",
+        "payload": {}
+    }))).await.unwrap();
+    let job_id = job["id"].as_str().unwrap();
+
+    // Mark job as failed with response_format error
+    store.call(Request::FinishJob {
+        id: job_id.into(),
+        status: "failed".into(),
+        error: Some("API de memória recusou o schema ou a entrada (HTTP 400 Bad Request): This response_format type is unavailable now".into()),
+    }).await.unwrap();
+
+    // Verify it is failed
+    let pending_before = store.call(Request::ClaimJob).await.unwrap();
+    assert!(pending_before.is_null());
+
+    // Requeue jobs (as done on server startup)
+    store.call(Request::RequeueJobs).await.unwrap();
+
+    // Verify it was reset to pending (ClaimJob claims it, incrementing attempts from 0 to 1)
+    let claimed = store.call(Request::ClaimJob).await.unwrap();
+    assert_eq!(claimed["id"], job_id);
+    assert_eq!(claimed["attempts"], 1);
+
+    store.call(Request::Close).await.unwrap();
+    server_task.abort();
+}
+

@@ -487,6 +487,8 @@ async fn memory_api_rejects_incomplete_schema_length_and_errors_without_reroutin
                 max_input_tokens: 1024,
                 timeout_seconds: if matches!(reply, Reply::SlowPost) { 1 } else { 5 },
             },
+            preferred_format: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            runtime: None,
         };
         let result = backend
             .chat_json(
@@ -518,6 +520,8 @@ async fn memory_capability_fallback_preserves_schema_prompt_and_required_reasoni
             client: reqwest::Client::new(), provider,
             api: MemoryApi { provider: "phone".into(), model: MODEL.into(), history_consent: true,
                 max_tokens: 600, max_input_tokens: 4096, timeout_seconds: 5 },
+            preferred_format: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            runtime: None,
         };
         let value = backend.chat_json(vec![
             json!({"role":"system","content":"Preserve original instructions."}),
@@ -560,6 +564,8 @@ async fn memory_ignored_schema_receives_the_schema_in_the_first_prompt() {
         client: reqwest::Client::new(), provider,
         api: MemoryApi { provider: "phone".into(), model: MODEL.into(), history_consent: true,
             max_tokens: 600, max_input_tokens: 4096, timeout_seconds: 5 },
+        preferred_format: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        runtime: None,
     };
     let value = backend.chat_json(vec![json!({"role":"user","content":"Synthetic memory turn."})], schema(), 600, 0.1).await.unwrap();
     assert_eq!(value, json!({"answer":"ok"}));

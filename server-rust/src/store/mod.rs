@@ -1011,7 +1011,7 @@ impl Database {
                     &[json!(now())],
                 )?;
                 self.exec(
-                    "UPDATE jobs SET status='pending',attempts=0,error=NULL,updated_at=? WHERE status='failed' AND (error LIKE '%excedeu o orçamento%' OR error LIKE '%orçamento%')",
+                    "UPDATE jobs SET status='pending',attempts=0,error=NULL,updated_at=? WHERE status='failed' AND (error LIKE '%excedeu o orçamento%' OR error LIKE '%orçamento%' OR error LIKE '%response_format%' OR error LIKE '%schema%' OR error LIKE '%incompleto%' OR error LIKE '%502%')",
                     &[json!(now())],
                 )?;
                 Ok(json!(n))

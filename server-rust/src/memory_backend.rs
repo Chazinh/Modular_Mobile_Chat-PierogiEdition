@@ -108,6 +108,8 @@ pub enum MemoryBackend {
         client: reqwest::Client,
         provider: Provider,
         api: MemoryApi,
+        preferred_format: Arc<std::sync::atomic::AtomicU8>,
+        runtime: Option<RuntimeProviders>,
     },
 }
 impl MemoryBackend {
@@ -169,6 +171,8 @@ impl MemoryBackend {
                 .unwrap_or_else(|_| {
                     if let Some(m) = provider.models.first() {
                         m.clone()
+                    } else if provider.is_loopback() {
+                        "Deepseek".to_string()
                     } else {
                         "oc/deepseek-v4.1-flash-free".to_string()
                     }
@@ -200,6 +204,8 @@ impl MemoryBackend {
                 .unwrap_or_else(|_| {
                     if let Some(m) = provider.models.first() {
                         m.clone()
+                    } else if provider.is_loopback() {
+                        "Deepseek".to_string()
                     } else {
                         "oc/deepseek-v4.1-flash-free".to_string()
                     }
@@ -207,25 +213,30 @@ impl MemoryBackend {
             (provider, model)
         };
         let mut model = model;
-        if provider.is_loopback() && !provider.preflight(&model).await {
-            if model != "Deepseek" && provider.preflight("Deepseek").await {
+        if provider.is_loopback() {
+            if (model == "oc/deepseek-v4.1-flash-free" || !provider.preflight(&model).await)
+                && provider.preflight("Deepseek").await
+            {
                 model = "Deepseek".to_string();
-            } else {
+            } else if !provider.preflight(&model).await {
                 return Ok(None);
             }
         }
         let api = MemoryApi {
             provider: provider.id.clone(),
-            model,
+            model: model.clone(),
             history_consent: true,
-            max_tokens: 3000,
+            max_tokens: 3500,
             max_input_tokens: 32000,
             timeout_seconds: 90,
         };
+        let cached_format = runtime.get_format(&provider.id, &model).unwrap_or(0);
         Ok(Some(Self::Api {
             client: client.clone(),
             provider,
             api,
+            preferred_format: Arc::new(std::sync::atomic::AtomicU8::new(cached_format)),
+            runtime: Some(runtime.clone()),
         }))
     }
 
@@ -262,10 +273,13 @@ impl MemoryBackend {
                 if provider.is_loopback() && !provider.preflight(&api.model).await {
                     return Err(unavailable());
                 }
+                let cached_format = runtime.get_format(&provider.id, &api.model).unwrap_or(0);
                 Ok(Some(Self::Api {
                     client: client.clone(),
                     provider,
                     api,
+                    preferred_format: Arc::new(std::sync::atomic::AtomicU8::new(cached_format)),
+                    runtime: Some(runtime.clone()),
                 }))
             }
         }
@@ -296,6 +310,8 @@ impl MemoryBackend {
                 client,
                 provider,
                 api,
+                preferred_format,
+                runtime,
             } => {
                 let reserve = max_tokens.min(api.max_tokens).min(provider.max_output);
                 let input = rules::estimate_messages(&messages);
@@ -326,7 +342,7 @@ impl MemoryBackend {
                     "content": format!("Responda somente com JSON conforme este schema obrigatório. Preserve os nomes, os tipos e os campos required; use [] nos arrays vazios e \"\" nos textos desconhecidos.\n{}", schema)
                 }));
                 // Only explicit capability rejections repeat a POST on this same route.
-                let mut format = 0;
+                let mut format = preferred_format.load(std::sync::atomic::Ordering::Relaxed);
                 let mut reasoning_required = false;
                 loop {
                     let mut body = json!({
@@ -386,6 +402,10 @@ impl MemoryBackend {
                             && (error.contains("unavailable") || error.contains("unsupported") || error.contains("not supported") || error.contains("not available"));
                         if format < 2 && format_rejected {
                             format += 1;
+                            preferred_format.store(format, std::sync::atomic::Ordering::Relaxed);
+                            if let Some(rt) = runtime {
+                                rt.set_format(&provider.id, &api.model, format);
+                            }
                             tracing::warn!(fallback = format, "API de memória rejeitou formato estruturado; schema mantido nas instruções");
                             continue;
                         }
@@ -424,6 +444,10 @@ impl MemoryBackend {
                         && message.contains("mismatch type string with value array")
                     {
                         format = 1;
+                        preferred_format.store(format, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(rt) = runtime {
+                            rt.set_format(&provider.id, &api.model, format);
+                        }
                         tracing::warn!("API de memória recusou tipo composto do schema; usando JSON com instruções explícitas");
                         continue;
                     }
