@@ -11,6 +11,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+pub const PAIRING_TTL: Duration = Duration::from_secs(900);
+
 pub(crate) fn valid_android_token(token: &str) -> bool {
     (32..=256).contains(&token.len())
         && token
@@ -67,8 +69,12 @@ impl Auth {
             .filter(|(_, expiry)| *expiry > now)
             .map(|(code, _)| code.clone())
             .unwrap_or_else(|| format!("{:06}", rand::random_range(0..1_000_000u32)));
-        state.code = Some((code.clone(), now + Duration::from_secs(300)));
-        json!({"code":code,"expiresIn":300,"expiresAt":(chrono::Utc::now()+chrono::Duration::minutes(5)).to_rfc3339()})
+        state.code = Some((code.clone(), now + PAIRING_TTL));
+        json!({
+            "code": code,
+            "expiresIn": PAIRING_TTL.as_secs(),
+            "expiresAt": (chrono::Utc::now() + chrono::Duration::seconds(PAIRING_TTL.as_secs() as i64)).to_rfc3339()
+        })
     }
     pub async fn verify(&self, token: &str) -> Result<Value> {
         if token.is_empty() || token.len() > 256 {
@@ -109,7 +115,7 @@ impl Auth {
         state.fails.retain(|_, v| {
             while v
                 .front()
-                .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(600))
+                .is_some_and(|t| now.saturating_duration_since(*t) > Duration::from_secs(600))
             {
                 v.pop_front();
             }
@@ -125,14 +131,31 @@ impl Auth {
                 "Muitas tentativas; aguarde alguns minutos.",
             ));
         }
-        let code = p["code"].as_str().unwrap_or_default().trim();
-        if !state
-            .code
-            .as_ref()
-            .is_some_and(|(c, expiry)| c == code && *expiry > now)
-        {
-            state.fails.entry(ip).or_default().push_back(now);
-            return Err(Error::new(401, "Código inválido ou expirado."));
+        let code = match &p["code"] {
+            Value::String(s) => s.trim().to_string(),
+            Value::Number(n) => {
+                if let Some(v) = n.as_u64() {
+                    format!("{:06}", v)
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        };
+        match &state.code {
+            None => {
+                state.fails.entry(ip).or_default().push_back(now);
+                return Err(Error::new(401, "Nenhum código ativo no momento. Gere um novo código no PC."));
+            }
+            Some((_, expiry)) if *expiry <= now => {
+                state.fails.entry(ip).or_default().push_back(now);
+                return Err(Error::new(401, "Código expirado. Gere um novo código no PC."));
+            }
+            Some((active_code, _)) if active_code != &code => {
+                state.fails.entry(ip).or_default().push_back(now);
+                return Err(Error::new(401, "Código incorreto. Confira os 6 dígitos."));
+            }
+            _ => {}
         }
         let token = format!("{}{}", id().replace('-', ""), id().replace('-', ""));
         let dev = self
@@ -144,6 +167,7 @@ impl Auth {
             .await?;
         // Consume only after the credential has been saved successfully.
         state.code = None;
+        state.fails.remove(&ip);
         Ok(json!({"token":token,"deviceId":dev["id"]}))
     }
 }
@@ -153,34 +177,75 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn pairing_code_survives_reopening_and_gets_five_full_minutes() {
+    async fn pairing_code_survives_reopening_and_gets_full_window() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         let auth = Auth::new(store, true);
         let now = Instant::now();
         let first = auth.start_at(now).await;
-        let renewed = auth.start_at(now + Duration::from_secs(299)).await;
+        let renewed = auth.start_at(now + Duration::from_secs(899)).await;
         assert_eq!(first["code"], renewed["code"]);
-        assert_eq!(renewed["expiresIn"], 300);
+        assert_eq!(renewed["expiresIn"], 900);
         let body = json!({"code":first["code"],"deviceName":"Phone"});
         let ip = "192.168.0.9".parse().unwrap();
-        let paired = auth.pair_at(&body, ip, now + Duration::from_secs(598)).await.unwrap();
+        let paired = auth.pair_at(&body, ip, now + Duration::from_secs(1798)).await.unwrap();
         assert!(!auth.verify(paired["token"].as_str().unwrap()).await.unwrap().is_null());
-        assert!(auth.pair_at(&body, ip, now + Duration::from_secs(598)).await.is_err());
+        assert!(auth.pair_at(&body, ip, now + Duration::from_secs(1798)).await.is_err());
     }
 
     #[tokio::test]
-    async fn pairing_code_accepts_299_seconds_and_expires_at_300() {
+    async fn pairing_code_accepts_899_seconds_and_expires_at_900() {
         let dir = tempfile::tempdir().unwrap();
         let auth = Auth::new(Store::open(dir.path()).unwrap(), true);
         let now = Instant::now();
         let first = auth.start_at(now).await;
         let ip = "192.168.0.9".parse().unwrap();
         let body = json!({"code":first["code"]});
-        let failure = auth.pair_at(&body, ip, now + Duration::from_secs(300)).await.unwrap_err();
+        let failure = auth.pair_at(&body, ip, now + Duration::from_secs(900)).await.unwrap_err();
         assert_eq!(failure.status, 401);
-        assert_eq!(failure.message, "Código inválido ou expirado.");
-        let fresh = auth.start_at(now + Duration::from_secs(301)).await;
-        auth.pair_at(&json!({"code":fresh["code"]}), ip, now + Duration::from_secs(600)).await.unwrap();
+        assert_eq!(failure.message, "Código expirado. Gere um novo código no PC.");
+        let fresh = auth.start_at(now + Duration::from_secs(901)).await;
+        auth.pair_at(&json!({"code":fresh["code"]}), ip, now + Duration::from_secs(1800)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pairing_code_remains_valid_well_past_five_minutes_and_accepts_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = Auth::new(Store::open(dir.path()).unwrap(), true);
+        let now = Instant::now();
+        let first = auth.start_at(now).await;
+        let ip = "192.168.0.9".parse().unwrap();
+        let code_str = first["code"].as_str().unwrap();
+        let code_num: u64 = code_str.parse().unwrap();
+        
+        // 6 minutes (360s) has passed: under the old 300s TTL this would fail, but now succeeds!
+        let body_numeric = json!({"code": code_num, "deviceName": "Phone"});
+        let paired = auth.pair_at(&body_numeric, ip, now + Duration::from_secs(360)).await.unwrap();
+        assert!(!auth.verify(paired["token"].as_str().unwrap()).await.unwrap().is_null());
+    }
+
+    #[tokio::test]
+    async fn pairing_reports_accurate_error_messages_and_clears_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = Auth::new(Store::open(dir.path()).unwrap(), true);
+        let now = Instant::now();
+        let first = auth.start_at(now).await;
+        let ip = "192.168.0.9".parse().unwrap();
+        
+        // Wrong code
+        let err_wrong = auth.pair_at(&json!({"code":"999999"}), ip, now).await.unwrap_err();
+        assert_eq!(err_wrong.message, "Código incorreto. Confira os 6 dígitos.");
+        
+        // Expired code
+        let err_exp = auth.pair_at(&json!({"code":first["code"]}), ip, now + Duration::from_secs(901)).await.unwrap_err();
+        assert_eq!(err_exp.message, "Código expirado. Gere um novo código no PC.");
+        
+        // Successful pair clears previous failed attempts
+        let fresh = auth.start_at(now + Duration::from_secs(902)).await;
+        auth.pair_at(&json!({"code":fresh["code"]}), ip, now + Duration::from_secs(903)).await.unwrap();
+        
+        // No active code after consumption
+        let err_none = auth.pair_at(&json!({"code":fresh["code"]}), ip, now + Duration::from_secs(904)).await.unwrap_err();
+        assert_eq!(err_none.message, "Nenhum código ativo no momento. Gere um novo código no PC.");
     }
 }

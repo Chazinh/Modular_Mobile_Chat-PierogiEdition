@@ -85,7 +85,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
       onDone();
     } catch (err) {
       rollback?.();
-      if (err.status === 401 || err.code === 'UNPAIRED' || err.data?.code === 'UNPAIRED') setPairedPc('');
+      if (!pairedPc && (err.status === 401 || err.code === 'UNPAIRED' || err.data?.code === 'UNPAIRED')) setPairedPc('');
       if (controller.signal.aborted) return;
       setError(err.status === 0 ? 'Não consegui falar com o PC. Confira os endereços, a porta e o firewall.' : err.message);
     } finally {
@@ -191,7 +191,7 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
         >
           {busy && <Loader2 size={18} className="animate-spin" />}{tr(" Conectar\n        ")}</button>
         {(onCancel || config.embeddedReady) && <button type="button" disabled={busy && !waiting} onClick={() => { action.current?.abort(); (onCancel || onDone)(); }} className="w-full py-2 text-sm text-textMuted">{tr(config.embeddedReady ? 'Continuar no aparelho' : 'Cancelar')}</button>}
-        <p className="text-xs leading-relaxed text-textMuted">{tr("\n          O código aparece na janela do servidor ao iniciar o ")}<b>start-server.ps1</b>{tr(", ou no PC em ")}<b>{tr("⋯ → Configurações → Gerar código")}</b>{tr(". Ele vale por 5 minutos e só pode ser usado uma vez.\n        ")}</p>
+        <p className="text-xs leading-relaxed text-textMuted">{tr("\n          O código aparece na janela do servidor ao iniciar o ")}<b>start-server.ps1</b>{tr(", ou no PC em ")}<b>{tr("⋯ → Configurações → Gerar código")}</b>{tr(". Ele vale por 15 minutos e só pode ser usado uma vez.\n        ")}</p>
       </form>
     </div>
   );

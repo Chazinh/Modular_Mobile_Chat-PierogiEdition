@@ -404,7 +404,7 @@ export default function HomeDrawer({ hostStatus, fontSize, onFontSize, onClose, 
               ) : (
                 <>
                   <button
-                    onClick={() => runAction(async () => setCode(await api.startPairing()), tr("Código gerado (vale 5 min)."))}
+                    onClick={() => runAction(async () => setCode(await api.startPairing()), tr("Código gerado (vale 15 min)."))}
                     className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"
                   >
                     <KeyRound size={16} />{tr(" Gerar código de pareamento")}

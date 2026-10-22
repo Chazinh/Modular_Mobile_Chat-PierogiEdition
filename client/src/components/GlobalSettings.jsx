@@ -215,7 +215,7 @@ export default function GlobalSettings({ fontSize, onFontSize, onClose, onChange
             </>
           ) : (
             <>
-              <button onClick={() => run(async () => setCode(await api.startPairing()), tr("Código gerado (vale 5 min)."))} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><KeyRound size={16} />{tr(" Gerar código de pareamento")}</button>
+              <button onClick={() => run(async () => setCode(await api.startPairing()), tr("Código gerado (vale 15 min)."))} className="flex items-center gap-2 rounded-full bg-composer px-4 py-2.5 text-sm"><KeyRound size={16} />{tr(" Gerar código de pareamento")}</button>
               {code && <p className="rounded-xl bg-composer p-3 text-center font-mono text-[28px] tracking-[0.3em]">{code.code}</p>}
             </>
           )}

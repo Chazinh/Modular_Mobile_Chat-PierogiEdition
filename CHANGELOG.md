@@ -5,6 +5,21 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.0.2: Pairing Code Window Extension, Number Coercion & Connection Resilience — 2026-10-22
+
+- **Pairing Code Window Extension (`server-rust/src/auth.rs`, `server-rust/src/main.rs`, `client/src/components/HomeDrawer.jsx`, `client/src/components/GlobalSettings.jsx`, `client/src/components/ServerSetup.jsx`)**:
+  - Increased pairing code time-to-live (TTL) from 300 seconds (5 minutes) to 900 seconds (15 minutes), resolving issues where boot-time generated codes expired before users finished entering network settings on mobile.
+  - Updated server startup banner, web UI, and mobile client labels to reflect the 15-minute window (`(15 min)`).
+  - Maintained code renewal behavior on PC reopening while ensuring new codes receive the full 15-minute duration.
+- **Robust Code Input Coercion & Differentiated Diagnostic Errors (`server-rust/src/auth.rs`)**:
+  - Enabled safe coercion for both string and numeric JSON payloads (`{ code: 123456 }` formats cleanly to 6-digit zero-padded string).
+  - Replaced ambiguous generic error (`"Código inválido ou expirado."`) with differentiated status messages: `"Código incorreto. Confira os 6 dígitos."`, `"Código expirado. Gere um novo código no PC."`, and `"Nenhum código ativo no momento. Gere um novo código no PC."`.
+  - Automatically clears failed IP attempt history upon successful pairing to prevent accidental rate limit lockouts.
+- **Client Synchronization Retry Protection (`client/src/components/ServerSetup.jsx`)**:
+  - Preserved `pairedPc` credential mapping when post-pairing synchronization encounters temporary network or auth race conditions, allowing users to retry connection without falsely re-submitting the consumed pairing code.
+- **Anti-Regression Verification**:
+  - Added automated unit tests in `server-rust/src/auth.rs` verifying 15-minute survival past 300 seconds, number input coercion, and differentiated error messages. All 340+ tests passing 100%.
+
 ### ModularChat 4.0.1: Gemma 4 Model Integration & Mobile Chat Catalog Fix — 2026-10-21
 
 - **Gemma 4 Preset & Route Discovery (`server-rust/src/presets.json`, `client/src/default-presets.js`, `client/src/api.js`)**:

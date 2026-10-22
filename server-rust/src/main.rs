@@ -133,7 +133,7 @@ async fn run() -> Result<()> {
     let pairing = app.auth.start().await;
     let listener = tokio::net::TcpListener::bind(config.address).await?;
     println!(
-        "ModularChat Rust {} em http://{}; pareamento={} (5 min); DATA_DIR={}",
+        "ModularChat Rust {} em http://{}; pareamento={} (15 min); DATA_DIR={}",
         if config.production {
             "production"
         } else {

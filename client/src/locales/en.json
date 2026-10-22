@@ -263,7 +263,6 @@
   "Nome da conversa": "Chat name",
   "Informe o endereço HTTPS do PC, ex.: https://192.168.0.10:8443": "Enter the PC's HTTPS address, e.g.: https://192.168.0.10:8443",
   "Não consegui falar com o PC. Confira o endereço, o Wi-Fi e o firewall.": "Could not reach the PC. Check the address, Wi-Fi, and firewall.",
-  "Conectar ao PC": "Connect to PC",
   "O PC guarda as conversas e a memória.": "The PC stores all chats and memory.",
   "Endereço do PC na rede local": "PC address on the local network",
   "http://192.168.0.10:3000": "http://192.168.0.10:3000",
@@ -700,12 +699,11 @@
   "Alternar para Auto-Hospedagem agora": "Switch to Self-Hosting now",
   "Minimizar": "Minimize",
   "Iniciando Auto-Hospedagem…": "Starting Self-Hosting…",
-  "Ativando o banco e modelos locais sem reiniciar o app…": "Activating local database and models without restarting the app…",
+  "Ativando o banco e modelos locais sem reiniciar o app…": "Activating local database and models without restarting the app…",
   "Use HTTPS ou autorize HTTP apenas em IP loopback literal ou localhost, sem credenciais, parâmetros, fragmentos, barras invertidas ou controles.": "Use HTTPS or explicitly allow HTTP only for a literal loopback IP or exact localhost, without credentials, query parameters, fragments, backslashes or control characters.",
   "Informe a baseURL sem /chat/completions; o host acrescenta esse caminho.": "Enter the baseURL without /chat/completions; the host adds that path.",
   "Não foi possível atualizar a detecção local.": "Could not refresh local discovery.",
   "Provedor já salvo: o atalho abriu a configuração existente.": "Provider already saved: the shortcut opened its existing configuration.",
-  "Disponível": "Available",
   "Exige autenticação": "Authentication required",
   "Não detectado": "Not detected",
   "Resposta incompatível": "Incompatible response",
@@ -769,7 +767,6 @@
   "Recomendado": "Recommended",
   "Ultra Leve": "Ultra Light",
   "Ativo": "Active",
-  "Baixando": "Downloading",
   "Excluir": "Delete",
   "Download opcional": "Optional download",
   "Selecione um modelo de IA ou baixe modelos adicionais do Hugging Face. O download é opcional: diferentes modelos oferecem diferentes níveis de precisão, velocidade e consumo de memória.": "Select an AI model or download additional models from Hugging Face. Downloading is optional: different models offer different levels of precision, speed and memory consumption.",
@@ -786,5 +783,6 @@
   "opções": "options",
   "ativo(s)": "active",
   "Conversa": "Chat",
-  "Memória": "Memory"
+  "Código gerado (vale 15 min).": "Code generated (valid for 15 min).",
+  ". Ele vale por 15 minutos e só pode ser usado uma vez.": ". It is valid for 15 minutes and can only be used once."
 }
