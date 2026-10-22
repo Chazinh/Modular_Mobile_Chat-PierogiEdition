@@ -500,3 +500,86 @@ async fn regression_desktop_format_cache_and_requeue() {
     server_task.abort();
 }
 
+#[tokio::test]
+async fn test_regression_provider_channel_rejection_defers_job() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/v1");
+
+    let app = Router::new()
+        .route(
+            "/v1/models",
+            get(|| async {
+                Json(json!({
+                    "data": [{ "id": "Deepseek" }]
+                }))
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(|Json(_body): Json<Value>| async {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    r#"{"code":11128,"msg":"request illegal","displayTips":{"en":"This call failed channel verification"}}"#,
+                )
+                    .into_response()
+            }),
+        );
+
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.ok();
+    });
+
+    let providers_json = json!({
+        "providers": [{
+            "id": "fixture-9router",
+            "baseUrl": url,
+            "apiKey": "dummy-key",
+            "models": ["Deepseek"]
+        }],
+        "default": "fixture-9router"
+    });
+    let providers_obj = Arc::new(Providers::from_json(&providers_json).unwrap());
+    let runtime = RuntimeProviders::new(Some(providers_obj));
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().canonicalize().unwrap();
+    let config = Config {
+        dist: data_dir.join("client-dist"),
+        data_dir: data_dir.clone(),
+        address: "127.0.0.1:3013".parse().unwrap(),
+        require_pairing: false,
+        providers: None,
+        max_generations: 1,
+        production: false,
+        native_lib_dir: None,
+        review: false,
+    };
+    let client = reqwest::Client::new();
+    let local = LocalModels::new(&config, client.clone()).unwrap();
+
+    let policy = MemoryPolicy {
+        mode: MemoryMode::Local,
+        api: None,
+    };
+
+    let backend = MemoryBackend::resolve(&local, &runtime, &policy, &client)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let schema = json!({
+        "type": "object",
+        "properties": { "location": {"type": "string"} },
+        "required": ["location"]
+    });
+    let messages = vec![json!({"role": "user", "content": "teste"})];
+
+    let err = backend.chat_json(messages, schema, 1000, 0.1).await.unwrap_err();
+    assert_eq!(err.status, 503);
+    assert_eq!(err.extra["code"], "MEMORY_BACKEND_UNAVAILABLE");
+
+    server_task.abort();
+}
+
+

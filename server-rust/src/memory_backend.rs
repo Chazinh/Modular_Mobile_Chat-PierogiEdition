@@ -214,10 +214,19 @@ impl MemoryBackend {
         };
         let mut model = model;
         if provider.is_loopback() {
-            if (model == "oc/deepseek-v4.1-flash-free" || !provider.preflight(&model).await)
-                && provider.preflight("Deepseek").await
-            {
-                model = "Deepseek".to_string();
+            if model == "oc/deepseek-v4.1-flash-free" || !provider.preflight(&model).await {
+                let candidates = ["Deepseek", "DeepSeekV2", "Gemini", "Nemotron"];
+                let mut found = false;
+                for candidate in candidates {
+                    if provider.preflight(candidate).await {
+                        model = candidate.to_string();
+                        found = true;
+                        break;
+                    }
+                }
+                if !found && !provider.preflight(&model).await {
+                    return Ok(None);
+                }
             } else if !provider.preflight(&model).await {
                 return Ok(None);
             }
@@ -389,6 +398,12 @@ impl MemoryBackend {
                             bytes.extend_from_slice(&chunk);
                         }
                         let error = String::from_utf8_lossy(&bytes).to_lowercase();
+                        let preview: String = String::from_utf8_lossy(&bytes)
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(200)
+                            .collect();
+                        let preview_trimmed = preview.trim();
                         if !reasoning_required
                             && error.contains("reasoning")
                             && (error.contains("mandatory") || error.contains("required"))
@@ -409,8 +424,30 @@ impl MemoryBackend {
                             tracing::warn!(fallback = format, "API de memória rejeitou formato estruturado; schema mantido nas instruções");
                             continue;
                         }
-                        tracing::warn!("API de memória recusou requisição (HTTP 400)");
-                        return Err(Error::new(502, "API de memória recusou o schema ou a entrada (HTTP 400)."));
+                        let provider_rejected = error.contains("channel verification")
+                            || error.contains("request illegal")
+                            || error.contains("no active credentials")
+                            || error.contains("missing authentication")
+                            || error.contains("invalid_api_key")
+                            || error.contains("insufficient_quota")
+                            || error.contains("quota")
+                            || error.contains("credits")
+                            || error.contains("rate limit")
+                            || error.contains("rate_limit");
+                        if provider_rejected {
+                            tracing::warn!(
+                                upstream = %preview_trimmed,
+                                "API de memória recusou requisição por erro de canal/provedor (HTTP 400); adiando tarefa"
+                            );
+                            return Err(unavailable());
+                        }
+                        let sample = if preview_trimmed.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {preview_trimmed}")
+                        };
+                        tracing::warn!(upstream = %preview_trimmed, "API de memória recusou requisição (HTTP 400)");
+                        return Err(Error::new(502, format!("API de memória recusou o schema ou a entrada (HTTP 400){sample}.")));
                     }
                     if matches!(status.as_u16(), 401 | 403 | 404 | 408 | 429)
                         || status.is_server_error()
