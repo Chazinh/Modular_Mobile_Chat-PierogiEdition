@@ -42,13 +42,19 @@ impl Database {
         let mut select = true;
         let (interaction, part) = match p.mode {
             TurnMode::Send | TurnMode::Edit => {
-                if rules::utf16_len(&p.content) > rules::USER_LIMIT {
-                    return Err(Error::new(
-                        422,
-                        "Sua mensagem pode ter no máximo 6.000 caracteres.",
-                    ));
+                let limit = rules::user_limit_for(Some(preset));
+                let mut text = p.content.trim();
+                if rules::utf16_len(&p.content) > limit {
+                    if preset == "muse-spark-13" || preset.starts_with("muse") {
+                        let byte_limit = rules::byte_at(text, limit);
+                        text = &text[..byte_limit];
+                    } else {
+                        return Err(Error::new(
+                            422,
+                            "Sua mensagem pode ter no máximo 6.000 caracteres.",
+                        ));
+                    }
                 }
-                let text = p.content.trim();
                 if text.is_empty() {
                     return Err(Error::new(400, "Mensagem vazia."));
                 }

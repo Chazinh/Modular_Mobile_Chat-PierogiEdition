@@ -255,6 +255,9 @@
       "GLM",
       "cbai/glm-5.2"
     ],
+    "unlistedRoutes": [
+      "cbai/glm-5.2"
+    ],
     "efforts": [
       "low",
       "medium",
@@ -356,7 +359,6 @@
     ],
     "efforts": [],
     "defaultEffort": null,
-    "thinkingCanDisable": true,
     "thinkingDefault": false,
     "thinkingOffShape": "omit",
     "sampling": "temperature",

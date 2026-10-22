@@ -64,7 +64,7 @@ fn disabled_is_only_accepted_for_supported_routes_and_defaults_stay_on() {
 
 #[test]
 fn glm_52_starts_without_thinking_by_default() {
-    for route in ["cbai/glm-5.2"] {
+    for route in ["GLM", "cbai/glm-5.2"] {
         assert_eq!(presets::for_route(route)["id"], "glm-52");
         let conv = json!({"presetId":"glm-52","routeId":route,"effort":"high","settings":{}});
         let mut plan = presets::request(&conv, vec![], &json!({}));
@@ -85,9 +85,47 @@ fn glm_52_starts_without_thinking_by_default() {
         assert_eq!(on.body["reasoning_effort"], "high");
     }
     assert_eq!(presets::for_route("cbai/glm-5.21")["id"], "generic");
-    // the NVIDIA route was shut down by the provider (410): it is not offered even if 9Router lists it
+    // the NVIDIA route was shut down by the provider (410): it is not offered even if 9Router lists it;
+    // dual active routes expose "GLM" (groupRoute) and "cbai/glm-5.2" (unlistedRoute)
     let public = presets::public(&["cbai/glm-5.2".into(), "nvidia/z-ai/glm-5.2".into()], &json!({}));
     let glm = public.iter().find(|p| p["id"] == "glm-52").unwrap();
-    assert_eq!(glm["routes"].as_array().unwrap().len(), 1);
-    assert_eq!(glm["routes"][0]["id"], "cbai/glm-5.2");
+    assert_eq!(glm["routes"].as_array().unwrap().len(), 2);
+    assert_eq!(glm["routes"][0]["id"], "GLM");
+    assert_eq!(glm["routes"][1]["id"], "cbai/glm-5.2");
+    assert!(!glm["routes"].as_array().unwrap().iter().any(|r| r["id"] == "nvidia/z-ai/glm-5.2"));
 }
+
+#[test]
+fn mobile_local_does_not_offer_thinking_controls_or_thinking_can_disable_in_catalog() {
+    let public = presets::public(&["mobile-local".into()], &json!({}));
+    let local = public.iter().find(|p| p["id"] == "mobile-local").unwrap();
+    assert_ne!(local["thinkingCanDisable"], true);
+    assert!(local["efforts"].as_array().unwrap().is_empty());
+    assert!(local.get("thinking").is_none() || local["thinking"].is_null());
+
+    let raw = presets::for_route("mobile-local");
+    assert_eq!(raw["id"], "mobile-local");
+    assert_ne!(raw["thinkingCanDisable"], true);
+
+    let conv = json!({
+        "presetId": "mobile-local",
+        "routeId": "mobile-local",
+        "settings": { "thinkingEnabled": false }
+    });
+    let plan = presets::request(&conv, vec![], &json!({}));
+    assert_eq!(plan.controls["thinkingCanDisable"], false);
+    assert!(plan.body.get("reasoning_effort").is_none());
+    assert!(plan.body.get("thinking").is_none());
+    assert!(plan.controls["requestedEffort"].is_null());
+
+    let conv_on = json!({
+        "presetId": "mobile-local",
+        "routeId": "mobile-local",
+        "settings": { "thinkingEnabled": true }
+    });
+    let plan_on = presets::request(&conv_on, vec![], &json!({}));
+    assert_eq!(plan_on.controls["thinkingCanDisable"], false);
+    assert!(plan_on.body.get("reasoning_effort").is_none());
+    assert!(plan_on.body.get("thinking").is_none());
+}
+

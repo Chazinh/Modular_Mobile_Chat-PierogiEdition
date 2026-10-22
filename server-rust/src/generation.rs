@@ -343,19 +343,29 @@ impl Manager {
             Error::new(503, "Limite global de gerações atingido.")
                 .extra("code", "GENERATION_OVERLOADED")
         })?;
-        if matches!(req.mode, TurnMode::Send | TurnMode::Edit)
-            && rules::utf16_len(&req.content) > rules::USER_LIMIT
-        {
-            return Err(Error::new(
-                422,
-                "Sua mensagem pode ter no máximo 6.000 caracteres.",
-            ));
-        }
         self.sync_character(&req.conv_id).await?;
         let conv = self
             .store
             .call(Request::GetMeta(req.conv_id.clone()))
             .await?;
+        let preset_id = req
+            .preset_id
+            .as_deref()
+            .or_else(|| conv["presetId"].as_str());
+        let limit = rules::user_limit_for(preset_id);
+        if matches!(req.mode, TurnMode::Send | TurnMode::Edit)
+            && rules::utf16_len(&req.content) > limit
+        {
+            if preset_id == Some("muse-spark-13") || preset_id.map_or(false, |p| p.starts_with("muse")) {
+                let byte_limit = rules::byte_at(&req.content, limit);
+                req.content.truncate(byte_limit);
+            } else {
+                return Err(Error::new(
+                    422,
+                    "Sua mensagem pode ter no máximo 6.000 caracteres.",
+                ));
+            }
+        }
         let mode = match req.mode {
             TurnMode::Send => "send",
             TurnMode::Edit => "edit",
@@ -504,6 +514,7 @@ impl Manager {
             plan.body["messages"] = Value::Array(std::mem::take(&mut ctx.messages));
         }
         let conv = data["conv"].take();
+        let preset_id = s(&conv, "presetId");
         let global_settings = data["globalSettings"].take();
         drop(data);
         drop(query);
@@ -558,18 +569,92 @@ impl Manager {
         };
         let mut error_code = Value::Null;
         let consume = async {
-            let response = match &backend {
-                crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
-                    Ok(session) => session.send(&plan.body, Duration::from_secs(900)).await?,
-                    Err(e) => return Err(e.clone()),
-                },
-                crate::providers::SelectedBackend::Cloud { provider, model, .. } => provider.chat_request(&self.client, model, &plan.body, Duration::from_secs(900)).send().await
-                    .map_err(|_| Error::new(502, "Requisição ao provedor falhou; nenhum destino alternativo foi enviado.").extra("code", "PROVIDER_UNAVAILABLE"))?,
+            let mut current_model = match &backend {
+                crate::providers::SelectedBackend::Cloud { model, .. } => model.clone(),
+                _ => String::new(),
             };
-            if !response.status().is_success() {
-                let status = response.status();
-                let body_text = response.text().await.unwrap_or_default();
+            let mut retries = 0usize;
+            let response = loop {
+                let resp = match &backend {
+                    crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
+                        Ok(session) => session.send(&plan.body, Duration::from_secs(900)).await?,
+                        Err(e) => return Err(e.clone()),
+                    },
+                    crate::providers::SelectedBackend::Cloud { provider, .. } => {
+                        provider
+                            .chat_request(&self.client, &current_model, &plan.body, Duration::from_secs(900))
+                            .send()
+                            .await
+                            .map_err(|_| Error::new(502, "Requisição ao provedor falhou; nenhum destino alternativo foi enviado.").extra("code", "PROVIDER_UNAVAILABLE"))?
+                    }
+                };
+                if resp.status().is_success() {
+                    break resp;
+                }
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
                 warn!(generation = %g.id, http = status.as_u16(), body = %body_text, "provedor respondeu com erro");
+
+                let is_token_limit = status == reqwest::StatusCode::PAYMENT_REQUIRED
+                    || status == reqwest::StatusCode::PAYLOAD_TOO_LARGE
+                    || {
+                        let lower = body_text.to_lowercase();
+                        ((status == reqwest::StatusCode::SERVICE_UNAVAILABLE || status == reqwest::StatusCode::BAD_GATEWAY)
+                            && (lower.contains("token") || lower.contains("credit") || lower.contains("max_tokens") || lower.contains("prompt")))
+                            || (lower.contains("token")
+                                && (lower.contains("limit exceeded")
+                                    || lower.contains("exceeded")
+                                    || lower.contains("too many")
+                                    || lower.contains("too long")
+                                    || lower.contains("max_tokens")
+                                    || lower.contains("context length")
+                                    || lower.contains("context_length")))
+                            || lower.contains("requires more credits")
+                            || lower.contains("fewer max_tokens")
+                            || lower.contains("prompt tokens limit exceeded")
+                    };
+
+                if is_token_limit && retries < 2 {
+                    retries += 1;
+                    let current_max = plan.body["max_tokens"].as_u64().unwrap_or(2048);
+                    if current_max > 2048 {
+                        plan.body["max_tokens"] = json!(2048);
+                    }
+                    let pruned = if let Some(msgs) = plan.body["messages"].as_array_mut() {
+                        let start = if msgs.first().map_or(false, |m| m["role"] == "system") {
+                            1
+                        } else if msgs.len() >= 2
+                            && msgs[0]["role"] == "user"
+                            && msgs[1]["role"] == "assistant"
+                        {
+                            2
+                        } else {
+                            1
+                        };
+                        let end = msgs.len().saturating_sub(1);
+                        if end > start {
+                            let history_len = end - start;
+                            let prune_count = (history_len / 2).max(1);
+                            msgs.drain(start..start + prune_count);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let is_muse = current_model.to_lowercase().contains("muse")
+                        || preset_id == "muse-spark-13";
+                    if is_muse && current_model != "oc/muse-spark-1.3-contributor-free" && (!pruned || retries >= 2) {
+                        current_model = "oc/muse-spark-1.3-contributor-free".to_string();
+                        warn!(generation = %g.id, to = %current_model, "limite de tokens excedido; alternando para rota alternativa");
+                    } else {
+                        warn!(generation = %g.id, retries, "limite de tokens excedido; compactando prompt e tentando novamente");
+                    }
+                    continue;
+                }
+
                 let detail = serde_json::from_str::<Value>(&body_text)
                     .ok()
                     .and_then(|v| {
@@ -589,7 +674,7 @@ impl Manager {
                     None => format!("Provedor {provider_name} HTTP {status}"),
                 };
                 return Err(Error::new(502, err_msg).extra("body", json!(body_text)));
-            }
+            };
             let mut stream = response.bytes_stream();
             let mut buffer = Vec::<u8>::new();
             let mut event = String::new();

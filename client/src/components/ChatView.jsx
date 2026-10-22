@@ -32,6 +32,13 @@ const STATUS_NOTE = {
 
 // Only a reply the provider really truncated (token limit) gets a notice; the server's own character ceiling
 // already ends the text at its last complete sentence, so no warning is shown for it.
+export const SCROLL_BOTTOM_THRESHOLD = 16;
+
+export function isAtBottom(scrollHeight, clientHeight, scrollTop, threshold = SCROLL_BOTTOM_THRESHOLD) {
+  if (scrollHeight == null || clientHeight == null || scrollTop == null) return true;
+  return (scrollHeight - clientHeight - scrollTop) <= threshold;
+}
+
 function lengthNotice(m) {
   const finish = m.usage?.finish;
   if (finish === 'length' || finish === 'max_tokens') return tr("O provedor encerrou a resposta pelo limite de tokens. Toque em Continuar para completá-la.");
@@ -85,6 +92,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   const chatRef = useRef(null);
   const streamRef = useRef(null);
   const scrollRef = useRef(null);
+  const viewportRef = scrollRef;
   const composerRef = useRef(null);
   const listRef = useRef(null);
   const readingRef = useRef(null);
@@ -300,9 +308,12 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     }
     if (previous?.top === current.top) return; // Our restoration already owns this position.
     // scrollTop can be fractional whereas scrollHeight/clientHeight are rounded integers.
-    const atEnd = current.height - current.client - current.top <= 1;
+    const atEnd = current.height - current.client - current.top <= 16;
     followingRef.current = atEnd;
     setStuck(atEnd);
+    if (atEnd) {
+      setNewContent(false);
+    }
     rememberReading();
     scrollMetricsRef.current = current;
   }
@@ -311,6 +322,20 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     setStuck(true);
     setNewContent(false);
     restoreReading();
+    if (viewportRef.current) {
+      try {
+        if (typeof viewportRef.current.scrollTo === 'function') {
+          viewportRef.current.scrollTo({
+            top: viewportRef.current.scrollHeight,
+            behavior: 'smooth'
+          });
+        } else {
+          viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+        }
+      } catch {
+        viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+      }
+    }
   };
 
   const updateChat = (fn) =>
@@ -523,7 +548,8 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   function send(text) {
     const content = text.trim();
     if (!content || busy) return;
-    if (text.length > 6000) return setError(tr("Sua mensagem pode ter no máximo 6.000 caracteres."));
+    const maxChars = chat?.presetId === 'muse-spark-13' ? 64000 : 6000;
+    if (text.length > maxChars) return setError(tr(maxChars === 64000 ? "Sua mensagem pode ter no máximo 64.000 caracteres." : "Sua mensagem pode ter no máximo 6.000 caracteres."));
     run({ mode: 'send', content }, { fromComposer: true });
   }
 
@@ -806,7 +832,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
             </div>
           )}
         </div>
-        {(!stuck || newContent) && (
+        {!stuck && (
           <button
             onClick={toBottom}
             className="mc-glass-pill fixed bottom-[calc(var(--sab)+82px)] right-4 z-20 flex h-11 w-11 items-center justify-center rounded-full active:scale-90"
@@ -817,7 +843,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
         )}
       </div>
 
-      <Composer ref={composerRef} chatId={chatId} busy={busy} offline={offline} onSend={send} onStorageError={setError} />
+      <Composer ref={composerRef} chatId={chatId} busy={busy} offline={offline} onSend={send} onStorageError={setError} maxChars={chat?.presetId === 'muse-spark-13' ? 64000 : 6000} />
       {drawer && chat && (
         <SettingsDrawer
           hostStatus={hostStatus}
@@ -862,7 +888,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
         </Sheet>
       )}
 
-      {editMsg && <EditSheet msg={editMsg} onCancel={() => setEditMsg(null)} onSave={(t) => saveEdit(editMsg, t)} />}
+      {editMsg && <EditSheet msg={editMsg} onCancel={() => setEditMsg(null)} onSave={(t) => saveEdit(editMsg, t)} maxChars={chat?.presetId === 'muse-spark-13' ? 64000 : 6000} />}
       {versionsFor && (
         <VersionsSheet
           chatId={chatId}
@@ -975,7 +1001,7 @@ const AssistantCard = memo(function AssistantCard({ m, isLast, busy, offline, on
 
 // Composer with its own state: typing re-renders only this component, not the history. The draft is saved
 // with a delay (and on exit/when the app is hidden), since every write encrypts the whole private storage.
-const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, onStorageError }, ref) {
+const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, onStorageError, maxChars = 6000 }, ref) {
   useLanguage();
   const [value, setValue] = useState(() => api.getDraft(chatId));
   const [collapsed, setCollapsed] = useState(true);
@@ -1077,7 +1103,7 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, o
               ref={textRef}
               rows={1}
               value={value}
-              maxLength={6000}
+              maxLength={maxChars}
               placeholder={tr("Digite uma mensagem")}
               enterKeyHint="enter"
               onChange={change}
@@ -1090,7 +1116,7 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, o
             />
             <button
               onClick={() => onSend(value)}
-              disabled={!value.trim() || busy || offline || value.length > 6000}
+              disabled={!value.trim() || busy || offline || value.length > maxChars}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accentPurple text-white transition-[transform,opacity] active:scale-90 disabled:opacity-30 mb-0.5"
               aria-label={tr("Enviar")}
             >
@@ -1098,9 +1124,9 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, o
             </button>
             </div>
           </div>
-          {value.length > 4800 && (
+          {value.length > (maxChars * 0.8) && (
             <p className="pointer-events-auto px-4 pt-1 text-right text-xs text-textMuted">
-              {value.length.toLocaleString('pt-BR')}{tr(" / 6.000 caracteres\n            ")}</p>
+              {value.length.toLocaleString('pt-BR')}{tr(maxChars === 64000 ? " / 64.000 caracteres\n            " : " / 6.000 caracteres\n            ")}</p>
           )}
         </div>
       </div>
@@ -1201,12 +1227,13 @@ function StreamCard({ onStop, idle }) {
   );
 }
 
-function EditSheet({ msg, onCancel, onSave }) {
+function EditSheet({ msg, onCancel, onSave, maxChars = 6000 }) {
   useLanguage();
   const [v, setV] = useState(msg.content);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const isUser = msg.role === 'user';
+  const limit = isUser ? maxChars : 10800;
   useLayer(true, onCancel);
   return (
     <div className="mc-editor fixed inset-0 z-50 flex flex-col bg-bgDark" style={{ paddingTop: 'calc(var(--sat) + 8px)', paddingBottom: 'calc(var(--sab) + 12px)' }}>
@@ -1217,7 +1244,7 @@ function EditSheet({ msg, onCancel, onSave }) {
           setSaving(true); setError('');
           try { await onSave(v); } catch (e) { setError(e.message); }
           finally { setSaving(false); }
-        }} disabled={saving || !v.trim() || v.length > (isUser ? 6000 : 10800)} className="py-1 font-semibold text-accentPurpleLight disabled:opacity-30">
+        }} disabled={saving || !v.trim() || v.length > limit} className="py-1 font-semibold text-accentPurpleLight disabled:opacity-30">
           {saving ? tr("Salvando…") : isUser ? tr("Reenviar") : tr("Salvar")}
         </button>
       </div>
@@ -1226,7 +1253,7 @@ function EditSheet({ msg, onCancel, onSave }) {
       <textarea
         autoFocus
         value={v}
-        maxLength={isUser ? 6000 : 10800}
+        maxLength={limit}
         onChange={(e) => setV(e.target.value)}
         aria-label={tr("Texto da mensagem")}
         spellCheck={true}

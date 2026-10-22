@@ -307,8 +307,13 @@ pub fn retrieval_window_start(data: &Value) -> i64 {
     let pairs = array(&data["pairs"]);
     let (minimum, maximum, preferred) = pair_limits(&data["conv"]);
     let settings = &data["conv"]["settings"]["context"];
-    let hard = settings["hardLimit"].as_u64().unwrap_or(128000) as usize;
-    let soft = settings["softLimit"].as_u64().unwrap_or(110000).clamp(1, hard as u64) as usize;
+    let preset = crate::presets::by_id(&crate::s(&data["conv"], "presetId"));
+    let preset_capacity = preset["contextWindow"].as_u64().unwrap_or(128000);
+    let hard = settings["hardLimit"].as_u64().unwrap_or(preset_capacity) as usize;
+    let soft = settings["softLimit"]
+        .as_u64()
+        .unwrap_or_else(|| ((hard as f64) * 0.85) as u64)
+        .clamp(1, hard as u64) as usize;
 
     let available = &pairs[pairs.len().saturating_sub(maximum)..];
     let mut ladder = vec![
@@ -372,17 +377,22 @@ pub fn assemble(
         .unwrap_or(128000)
         .saturating_sub(plan.body["max_tokens"].as_u64().unwrap_or(0) + 64)
         .max(1);
+    let hard_cap = if compact {
+        input_capacity
+    } else {
+        input_capacity.max(128000)
+    };
     let hard = settings["hardLimit"]
         .as_u64()
-        .unwrap_or(128000)
-        .clamp(1, if compact { input_capacity } else { 128000 }) as usize;
+        .unwrap_or(hard_cap)
+        .clamp(1, hard_cap) as usize;
     let soft = settings["softLimit"]
         .as_u64()
-        .unwrap_or(110000)
+        .unwrap_or_else(|| ((hard as f64) * 0.85) as u64)
         .clamp(1, hard as u64) as usize;
     let target = settings["targetTokens"]
         .as_u64()
-        .unwrap_or(96000)
+        .unwrap_or_else(|| ((soft as f64) * 0.87) as u64)
         .clamp(1, soft as u64) as usize;
     // The ladder below repeats up to ~10 times: everything it reads from `data`/`retrieval` is borrowed, not cloned.
     let pairs = array(&data["pairs"]);

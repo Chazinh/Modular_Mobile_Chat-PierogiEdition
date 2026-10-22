@@ -40,6 +40,12 @@ export function StairList({ className = '', children }) {
   return <div className={`mc-elastic-wrapper ${className}`}>{stairItems(children)}</div>;
 }
 
+export function isReasoningModel(preset) {
+  if (!preset) return false;
+  if (preset.id === 'mobile-local' || preset.id === 'generic' || preset.family === 'local') return false;
+  return Boolean((Array.isArray(preset.efforts) && preset.efforts.length > 0) || (preset.thinking && preset.thinking !== 'none'));
+}
+
 // Side drawer with the conversation settings.
 export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClose, onSaved, onHistoryCleared, onOpenCast, onCreate, onDeleted }) {
   const confirm = useConfirm();
@@ -171,13 +177,15 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
                   <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && pickAvatar(e.target.files[0])} />
                 </div>
                 <Row lead={<Cpu size={20} />} label={tr("Modelo e esforço")} value={`${preset?.label || chat.routeId}${chat.effort ? ` · ${chat.effort}` : ''}`} onClick={() => setPage('model')} />
-                {(preset?.thinkingCanDisable || (preset?.thinking && preset.thinking !== 'none')) && <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-[18px] py-3.5">
-                  <button role="switch" aria-label={tr("Pensamento do modelo")} aria-checked={thinkingOn} disabled={busy || thinkingSaving} onClick={async () => { setThinkingSaving(true); try { await save({ settings: { thinkingEnabled: !thinkingOn } }); } finally { setThinkingSaving(false); } }} className="flex w-full items-center justify-between gap-3 text-left disabled:opacity-50">
-                    <span><span className="block font-medium">{tr("Pensamento do modelo")}</span><span className="block text-xs text-textMuted">{thinkingSaving ? tr("Salvando…") : thinkingOn ? tr("Ligado") : tr("Desligado")}{tr(" · nesta conversa")}</span></span>
-                    <Switch on={thinkingOn} />
-                  </button>
-                  <p className="mt-2 text-xs text-textMuted">{tr("Vale na próxima resposta. O esforço escolhido fica guardado para quando você ligar novamente.")}</p>
-                </div>}
+                {isReasoningModel(preset) && preset?.thinkingCanDisable === true && (
+                  <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-[18px] py-3.5">
+                    <button role="switch" aria-label={tr("Pensamento do modelo")} aria-checked={thinkingOn} disabled={busy || thinkingSaving} onClick={async () => { setThinkingSaving(true); try { await save({ settings: { thinkingEnabled: !thinkingOn } }); } finally { setThinkingSaving(false); } }} className="flex w-full items-center justify-between gap-3 text-left disabled:opacity-50">
+                      <span><span className="block font-medium">{tr("Pensamento do modelo")}</span><span className="block text-xs text-textMuted">{thinkingSaving ? tr("Salvando…") : thinkingOn ? tr("Ligado") : tr("Desligado")}{tr(" · nesta conversa")}</span></span>
+                      <Switch on={thinkingOn} />
+                    </button>
+                    <p className="mt-2 text-xs text-textMuted">{tr("Vale na próxima resposta. O esforço escolhido fica guardado para quando você ligar novamente.")}</p>
+                  </div>
+                )}
                 {error && <p role="alert" className="mx-4 text-xs text-red-400">{tr(error)}</p>}
                 <Row lead={<UserRound size={20} />} label={tr("Persona")} value={chat.persona || '—'} onClick={() => setPersonaOpen(true)} />
                 <Row lead={<FileText size={20} />} label={tr("Personalização (.txt)")} value={chat.prompt?.trim() ? tr("definida") : tr("vazia")} onClick={() => setPage('prompt')} />
@@ -289,7 +297,7 @@ const THINKING_TEXT = {
   always: 'pensamento sempre ativo',
   none: 'sem seleção de pensamento (o provedor usa o mínimo)',
 };
-const thinkingText = (p) => p.thinkingCanDisable ? 'pensamento: você pode ligar ou desligar' : THINKING_TEXT[p.thinking] || 'sem modo de pensamento';
+const thinkingText = (p) => isReasoningModel(p) && p.thinkingCanDisable ? 'pensamento: você pode ligar ou desligar' : isReasoningModel(p) && THINKING_TEXT[p.thinking] ? THINKING_TEXT[p.thinking] : 'sem modo de pensamento';
 
 function ModelPage({ chat, presets, error, onBack, onPick }) {
   useLanguage();
@@ -305,7 +313,7 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
   const savedThinking = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
   const [sel, setSel] = useState({ presetId: chat.presetId, routeId: chat.routeId, effort: chat.effort, thinkingEnabled: savedThinking });
   const cur = list.find((p) => p.id === sel.presetId);
-  const curCanDisable = cur?.thinkingCanDisable || (cur?.thinking && cur.thinking !== 'none');
+  const curCanDisable = isReasoningModel(cur) && cur?.thinkingCanDisable === true;
   const dirty = sel.presetId !== chat.presetId || sel.routeId !== chat.routeId || sel.effort !== chat.effort || (curCanDisable && sel.thinkingEnabled !== savedThinking);
   const selectedPatch = () => ({ presetId: sel.presetId, routeId: sel.routeId, effort: sel.effort, ...(curCanDisable ? { settings: { thinkingEnabled: sel.thinkingEnabled } } : {}) });
 
@@ -349,9 +357,13 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
             </button>
             {sel.presetId === p.id && (
               <div className="border-t border-borderDark px-4 pb-3 pt-2">
-                {p.thinkingCanDisable || (p.thinking && p.thinking !== 'none') ? <button role="switch" aria-label={tr("Pensamento do modelo selecionado")} aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
-                  <span>{tr("Pensamento do modelo")}</span><Switch on={sel.thinkingEnabled} />
-                </button> : <p className="mb-3 text-xs text-textMuted">{p.thinking === 'none' ? tr("Esta rota usa o menor pensamento disponível e não permite desligá-lo.") : tr("Controle de desligamento indisponível nesta rota.")}</p>}
+                {isReasoningModel(p) && p.thinkingCanDisable === true ? (
+                  <button role="switch" aria-label={tr("Pensamento do modelo selecionado")} aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
+                    <span>{tr("Pensamento do modelo")}</span><Switch on={sel.thinkingEnabled} />
+                  </button>
+                ) : isReasoningModel(p) ? (
+                  <p className="mb-3 text-xs text-textMuted">{p.thinking === 'none' ? tr("Esta rota usa o menor pensamento disponível e não permite desligá-lo.") : tr("Controle de desligamento indisponível nesta rota.")}</p>
+                ) : null}
                 <p className="mb-1 text-xs text-textMuted">{tr("Rota ou grupo de modelos")}</p>
                 {p.routes.map((r) => {
                   const isGroup = r.id === p.groupRoute;
@@ -480,7 +492,7 @@ function SamplingInfo({ preset, chat, temp, thinkingOn, onTemp }) {
   const usesTemp = preset?.sampling === 'temperature';
   const facts = [
     preset?.label || chat.routeId,
-    preset?.thinkingCanDisable && !thinkingOn ? tr('sem pensamento') : chat.effort ? tr('esforço {0}', [chat.effort]) : null,
+    isReasoningModel(preset) && preset?.thinkingCanDisable && !thinkingOn ? tr('sem pensamento') : chat.effort ? tr('esforço {0}', [chat.effort]) : null,
     usesTemp ? tr('temperatura {0}', [Number(temp).toLocaleString(currentLanguage(), { minimumFractionDigits: 2, maximumFractionDigits: 2 })]) : tr('amostragem da rota'),
   ].filter(Boolean);
   return (

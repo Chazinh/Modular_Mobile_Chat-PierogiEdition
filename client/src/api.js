@@ -225,10 +225,24 @@ export function mergeWithDefaults(data) {
       if (Array.isArray(dp.efforts) && (!Array.isArray(existing.efforts) || existing.efforts.length < dp.efforts.length)) {
         existing.efforts = [...dp.efforts];
       }
-      if (Array.isArray(dp.routes) && Array.isArray(existing.routes)) {
-        const routeIds = new Set(existing.routes.map((r) => r.id));
-        for (const dr of dp.routes) {
-          if (!routeIds.has(dr.id)) existing.routes.push({ ...dr });
+      if (Array.isArray(dp.routes)) {
+        if (!Array.isArray(existing.routes)) {
+          existing.routes = dp.routes.map((r) => ({ ...r }));
+        } else {
+          const routeIds = new Set(existing.routes.map((r) => r.id));
+          for (const dr of dp.routes) {
+            if (!routeIds.has(dr.id)) existing.routes.push({ ...dr });
+          }
+        }
+        if (existing.groupRoute) {
+          const grpIndex = existing.routes.findIndex((r) => r.id === existing.groupRoute);
+          if (grpIndex > 0) {
+            const [grp] = existing.routes.splice(grpIndex, 1);
+            existing.routes.unshift(grp);
+          }
+        }
+        if (existing.available === false && existing.routes.length > 0 && dp.available !== false) {
+          existing.available = true;
         }
       }
       if (Array.isArray(dp.preferredRoutes) && Array.isArray(existing.preferredRoutes)) {

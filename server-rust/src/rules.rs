@@ -4,6 +4,15 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashSet, sync::LazyLock};
 use unicode_normalization::UnicodeNormalization;
 pub const USER_LIMIT: usize = 6000;
+pub const USER_LIMIT_LARGE: usize = 64000;
+
+pub fn user_limit_for(preset_id: Option<&str>) -> usize {
+    match preset_id {
+        Some("muse-spark-13") => USER_LIMIT_LARGE,
+        Some(id) if id.starts_with("muse") => USER_LIMIT_LARGE,
+        _ => USER_LIMIT,
+    }
+}
 pub const BOT_LIMIT: usize = 8000;
 /// Largest stored model reply: the biggest selectable size (BOT_LIMIT) plus the 35% an approximate target may use.
 pub const REPLY_STORE_LIMIT: usize = BOT_LIMIT * TARGET_CEILING_PCT / 100;

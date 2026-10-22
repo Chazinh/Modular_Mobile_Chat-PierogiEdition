@@ -133,6 +133,8 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                 if let Some(pos) = route_ids.iter().position(|r| r == grp) {
                     let item = route_ids.remove(pos);
                     route_ids.insert(0, item);
+                } else if p["id"] == "glm-52" && !route_ids.is_empty() {
+                    route_ids.insert(0, grp.to_string());
                 }
             }
             let routes: Vec<_> = route_ids
@@ -167,6 +169,9 @@ pub fn resolve_available(body: &Value, current: Option<&Value>, available: &[Str
         .or(current.and_then(|c| c["routeId"].as_str()))
         .unwrap_or(&default)
         .trim();
+    if !selectable_route(route) {
+        return Err(Error::new(400, "Rota indisponível ou desativada."));
+    }
     let preset = if let Some(id) = body["presetId"].as_str() {
         if !PRESETS.iter().any(|p| p["id"] == id) {
             return Err(Error::new(400, "Preset desconhecido."));
@@ -193,7 +198,7 @@ pub fn resolve_available(body: &Value, current: Option<&Value>, available: &[Str
     let requested = body.get("effort").unwrap_or(&Value::Null);
     let requested = if requested.is_null() {
         current
-            .filter(|c| c["presetId"] == preset["id"] && c["routeId"] == route)
+            .filter(|c| c["presetId"] == preset["id"])
             .map(|c| c["effort"].clone())
             .unwrap_or(Value::Null)
     } else {

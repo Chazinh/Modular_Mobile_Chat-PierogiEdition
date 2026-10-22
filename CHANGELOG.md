@@ -5,6 +5,26 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.0.3: GLM Dual Routes, Muse Spark 64k Context, Reasoning Toggle Filtering & Dynamic Scroll Indicator — 2026-10-22
+
+- **GLM Preset Dual Route Exposure (`server-rust/src/presets.json`, `server-rust/src/presets.rs`, `client/src/api.js`, `client/src/default-presets.js`)**:
+  - Configured both active routes (`GLM` group route and `cbai/glm-5.2`) for preset `glm-52`, placing `groupRoute` at index 0.
+  - Preserved user-selected reasoning effort when switching between GLM routes.
+  - Added automated anti-regression suites `server-rust/tests/regression_glm_routes.rs` (7 tests) and `tests/regression-glm-routes.test.js` (6 tests).
+- **Muse Spark Large Payload & High-Capacity Context Resilience (`server-rust/src/context.rs`, `server-rust/src/rules.rs`, `server-rust/src/store/turns.rs`, `server-rust/src/generation.rs`, `client/src/components/ChatView.jsx`)**:
+  - Extended input character limit for Muse Spark from 6,000 to 64,000 in both frontend compositor/edit sheets and backend turn validation without HTTP 422 rejections.
+  - Removed static 128k token clamp in context assembly, dynamically scaling up to 1M tokens.
+  - Added adaptive history pruning, max token clamping, and automatic route fallback on upstream 402/413/503 errors.
+  - Added automated anti-regression suite `server-rust/tests/regression_muse_large_context.rs` (4 tests).
+- **Reasoning Toggle Conditional Restriction (`server-rust/src/presets.json`, `client/src/components/SettingsDrawer.jsx`)**:
+  - Removed erroneous `thinkingCanDisable: true` from `mobile-local` preset.
+  - Implemented `isReasoningModel(preset)` to strictly hide deep thinking controls and disclaimers on non-reasoning models (`mobile-local`, `generic`).
+  - Added automated anti-regression suites `tests/regression-reasoning-toggle.test.js` (5 tests) and updated `server-rust/tests/thinking_controls.rs`.
+- **Dynamic Scroll-to-Bottom Arrow Behavior (`client/src/components/ChatView.jsx`)**:
+  - Fixed persistent scroll-down arrow by binding visibility strictly to `!stuck` with 16px subpixel tolerance (`isAtBottom`).
+  - Automatically resets `newContent` on scroll-to-end, immediately re-shows arrow when scrolling up, and smoothly scrolls and hides upon clicking.
+  - Added automated anti-regression suite `tests/regression-scroll-indicator.test.js` (12 tests).
+
 ### ModularChat 4.0.2: Pairing Code Window Extension, Number Coercion & Connection Resilience — 2026-10-22
 
 - **Pairing Code Window Extension (`server-rust/src/auth.rs`, `server-rust/src/main.rs`, `client/src/components/HomeDrawer.jsx`, `client/src/components/GlobalSettings.jsx`, `client/src/components/ServerSetup.jsx`)**:
