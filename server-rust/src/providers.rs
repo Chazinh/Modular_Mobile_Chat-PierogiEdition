@@ -368,7 +368,7 @@ impl SelectedBackend {
                 serde_json::json!({"requestedRoute":requested,"effectiveRoute":format!("{}:{model}", provider.id),"backend":"api","provider":provider.id,"model":model,"preflightFallback":preflight_fallback})
             }
             Self::Local => {
-                serde_json::json!({"requestedRoute":requested,"effectiveRoute":"mobile-local","backend":"local","model":"Qwen2.5-1.5B-Instruct","originalRoutePreserved":true})
+                serde_json::json!({"requestedRoute":requested,"effectiveRoute":"mobile-local","backend":"local","model":"Nemotron-3.5-Bolt-E4B-4GB","originalRoutePreserved":true})
             }
         }
     }

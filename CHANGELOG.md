@@ -5,6 +5,22 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.1.4: NVIDIA Nemotron 3.5 Bolt E4B 4GB Local Memory Model Migration — 2026-10-23
+
+- **NVIDIA Nemotron 3.5 Bolt E4B 4GB Official Pin (`server-rust/src/local/model_files.rs`, `server-rust/src/local.rs`)**:
+  - Migrated the default pinned local memory model to NVIDIA's newly released `nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB` in medium quantization (`Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`, 6.18 GB).
+  - Pinned exact revision `4008514238a0b4ae17af3988818f75bf084541a5` and SHA-256 `5442bfb3b1384ff3774c9989e9457dad81bbb5830fbcf96adfdde40078831d5a`.
+  - Updated desktop `LOCAL_CHAT_MODEL` fallback search list to prioritize `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`.
+- **Client Curated Models & Model Manager (`client/src/huggingface.js`, `client/src/components/ModelManager.jsx`, `client/dist/`)**:
+  - Updated curated model list to feature Nemotron 3.5 Bolt E4B 4GB as the recommended official chat model for local execution and memory extraction.
+  - Rebuilt production client assets (`client/dist`).
+- **Route Presets & Diagnostics (`server-rust/src/presets.json`, `server-rust/src/providers.rs`)**:
+  - Updated `mobile-local` preset label to `Nemotron 3.5 Bolt E4B (local no celular)`.
+  - Updated local diagnostic route to report `model: "Nemotron-3.5-Bolt-E4B-4GB"`.
+- **Anti-Regression Test Suite (`server-rust/src/local/mobile_tests.rs`)**:
+  - Updated pin verification test assertions for the 6.18 GB medium GGUF file.
+  - Added new regression test `regression_nemotron_35_bolt_pin_and_diagnostic` validating model pin metadata, Hugging Face resolve URL, and local diagnostic reporting.
+
 ### ModularChat 4.1.3: Sonnet Multilingual Token Budget & Sentence Trimming, GLM 5.3 & 5.2 Direct Routes, MiniMax Resilience & Route Validator — 2026-10-23
 
 - **Sonnet Thinking-Disabled Multilingual Token Headroom (`server-rust/src/presets.rs`)**:

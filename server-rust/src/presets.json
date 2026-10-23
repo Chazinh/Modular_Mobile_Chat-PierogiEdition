@@ -356,7 +356,7 @@
   },
   {
     "id": "mobile-local",
-    "label": "Qwen2.5 1.5B (local no celular)",
+    "label": "Nemotron 3.5 Bolt E4B (local no celular)",
     "selectable": true,
     "family": "local",
     "match": [

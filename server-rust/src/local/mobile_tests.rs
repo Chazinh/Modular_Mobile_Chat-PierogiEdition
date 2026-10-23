@@ -369,7 +369,7 @@ async fn android_profile_pins_cpu_context_and_standby_without_io() {
     assert_eq!(arg(&local.chat, "-ub"), "64");
     assert_eq!(arg(&local.embed, "--pooling"), "mean");
     assert_eq!(EMBED.size, 333_590_944);
-    assert_eq!(CHAT.size, 1_117_320_736);
+    assert_eq!(CHAT.size, 6_180_446_208);
     assert_eq!(
         local.mobile.as_ref().unwrap().status()["idleUnloadSeconds"],
         240
@@ -576,4 +576,25 @@ async fn activate_does_not_automatically_download_models() {
     }
 
     state.shutdown().await;
+}
+
+#[tokio::test]
+async fn regression_nemotron_35_bolt_pin_and_diagnostic() {
+    assert_eq!(CHAT.repo, "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB");
+    assert_eq!(CHAT.filename, "Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf");
+    assert_eq!(CHAT.revision, "4008514238a0b4ae17af3988818f75bf084541a5");
+    assert_eq!(CHAT.size, 6_180_446_208);
+    assert_eq!(
+        CHAT.sha256,
+        "5442bfb3b1384ff3774c9989e9457dad81bbb5830fbcf96adfdde40078831d5a"
+    );
+    assert_eq!(
+        CHAT.url(),
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB/resolve/4008514238a0b4ae17af3988818f75bf084541a5/Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf"
+    );
+
+    let diagnostic = crate::providers::SelectedBackend::Local.diagnostic("mobile-local");
+    assert_eq!(diagnostic["model"], "Nemotron-3.5-Bolt-E4B-4GB");
+    assert_eq!(diagnostic["backend"], "local");
+    assert_eq!(diagnostic["effectiveRoute"], "mobile-local");
 }

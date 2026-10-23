@@ -145,14 +145,14 @@ export default function ModelManager({ onClose }) {
   if (chatDownloaded || chatDownloading) {
     downloadedList.push({
       kind: 'chat',
-      name: 'Qwen 2.5 1.5B Instruct',
+      name: 'Nemotron 3.5 Bolt E4B 4GB',
       badge: chatDownloaded ? tr('Ativo') : tr('Baixando'),
       active: chatDownloaded,
-      description: tr('Modelo oficial de conversa e extração contextual para celular.'),
-      languages: tr('28 idiomas'),
+      description: tr('Modelo oficial de conversa e extração contextual para memória.'),
+      languages: tr('Multilíngue'),
       tag: tr('Streaming'),
-      size: '1,1 GB',
-      precision: 4,
+      size: '6,2 GB',
+      precision: 5,
       speed: 4,
       progress: chatDownloading ? chatProgress : null,
     });

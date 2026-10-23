@@ -22,7 +22,7 @@ pub(super) struct Pin {
     pub sha256: &'static str,
 }
 impl Pin {
-    fn url(&self) -> String {
+    pub(super) fn url(&self) -> String {
         format!(
             "https://huggingface.co/{}/resolve/{}/{}",
             self.repo, self.revision, self.filename
@@ -37,11 +37,11 @@ pub(super) const EMBED: Pin = Pin {
     sha256: "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
 };
 pub(super) const CHAT: Pin = Pin {
-    repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-    revision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
-    filename: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    size: 1_117_320_736,
-    sha256: "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+    repo: "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB",
+    revision: "4008514238a0b4ae17af3988818f75bf084541a5",
+    filename: "Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
+    size: 6_180_446_208,
+    sha256: "5442bfb3b1384ff3774c9989e9457dad81bbb5830fbcf96adfdde40078831d5a",
 };
 
 pub(super) fn unavailable(message: impl Into<String>) -> Error {

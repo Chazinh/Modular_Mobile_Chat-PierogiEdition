@@ -508,17 +508,21 @@ impl LocalModels {
         let default_home = base_profile.join("ModularChat-local");
         let home = env_path("MC_LOCAL_HOME", default_home);
         let exe = env_path("LLAMA_SERVER", home.join("llama-cuda/llama-server.exe"));
-        // Memory model: Qwen3.5-9B (Q4_K_M, ~5.3 GiB) is markedly better at structured extraction than the 4B. It does not
-        // fit entirely in a 6 GiB GPU next to the desktop, so `--fit` keeps as many layers as fit in VRAM and the rest in RAM.
-        // Without the 9B file the previous 4B keeps working.
+        // Memory model: Nemotron 3.5 Bolt E4B 4GB (Q4_K_M, ~6.18 GiB) is optimized for local memory extraction,
+        // voice and structured tasks. `--fit` keeps as many layers as fit in VRAM and the rest in RAM.
+        // Falling back to Qwen3.5-9B or 4B if present.
         let models = home.join("models");
         let chat_model = env_path(
             "LOCAL_CHAT_MODEL",
-            ["Qwen3.5-9B-Q4_K_M.gguf", "Qwen3.5-4B-Q5_K_M.gguf"]
-                .iter()
-                .map(|f| models.join(f))
-                .find(|p| p.is_file())
-                .unwrap_or_else(|| models.join("Qwen3.5-9B-Q4_K_M.gguf")),
+            [
+                "Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
+                "Qwen3.5-9B-Q4_K_M.gguf",
+                "Qwen3.5-4B-Q5_K_M.gguf",
+            ]
+            .iter()
+            .map(|f| models.join(f))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| models.join("Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf")),
         );
         let embed_model = env_path(
             "LOCAL_EMBED_MODEL",
