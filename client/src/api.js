@@ -225,6 +225,7 @@ export function mergeWithDefaults(data) {
       if (Array.isArray(dp.efforts) && (!Array.isArray(existing.efforts) || existing.efforts.length < dp.efforts.length)) {
         existing.efforts = [...dp.efforts];
       }
+      if (dp.label && (existing.label === 'GLM 5.2' || !existing.label)) existing.label = dp.label;
       if (Array.isArray(dp.routes)) {
         if (!Array.isArray(existing.routes)) {
           existing.routes = dp.routes.map((r) => ({ ...r }));

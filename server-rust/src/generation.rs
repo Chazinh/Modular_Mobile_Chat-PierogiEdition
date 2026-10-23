@@ -796,7 +796,11 @@ impl Manager {
         };
         let mut visible = g.output.lock().await.buffer.clone();
         // A reply that ran into the hard cut ends at its last complete sentence instead of mid-word.
-        if capped && !stopped {
+        if (capped
+            || finish.as_deref() == Some("length")
+            || finish.as_deref() == Some("max_tokens"))
+            && !stopped
+        {
             let trimmed = rules::trim_to_sentence(&visible);
             if trimmed.len() < visible.len() {
                 visible = trimmed.to_owned();

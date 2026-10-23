@@ -91,8 +91,20 @@ export const DEFAULT_PRESETS = {
       label: "GLM",
       selectable: true,
       family: "glm",
-      preferredRoutes: ["GLM", "cbai/glm-5.2"],
-      routes: [{ id: "GLM" }, { id: "cbai/glm-5.2" }],
+      preferredRoutes: [
+        "GLM",
+        "openrouter/z-ai/glm-5.3-flash",
+        "openrouter/z-ai/glm-5.2",
+        "oc/glm-5.3-flash-free",
+        "cbai/glm-5.2"
+      ],
+      routes: [
+        { id: "GLM" },
+        { id: "openrouter/z-ai/glm-5.3-flash" },
+        { id: "openrouter/z-ai/glm-5.2" },
+        { id: "oc/glm-5.3-flash-free" },
+        { id: "cbai/glm-5.2" }
+      ],
       efforts: ["low", "medium", "high"],
       defaultEffort: "high",
       thinkingCanDisable: true,
@@ -136,12 +148,16 @@ export const DEFAULT_PRESETS = {
       family: "minimax",
       preferredRoutes: [
         "MiniMaxM3.1",
+        "openrouter/minimax/minimax-m3.1-flash",
+        "openrouter/minimax/minimax-01",
         "openrouter/minimax/minimax-m3.1-flash:free",
         "oc/minimax-m3.1-flash-free",
         "minimax/minimax-m3.1-flash:free"
       ],
       routes: [
         { id: "MiniMaxM3.1" },
+        { id: "openrouter/minimax/minimax-m3.1-flash" },
+        { id: "openrouter/minimax/minimax-01" },
         { id: "openrouter/minimax/minimax-m3.1-flash:free" },
         { id: "oc/minimax-m3.1-flash-free" },
         { id: "minimax/minimax-m3.1-flash:free" }

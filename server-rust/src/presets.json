@@ -248,14 +248,20 @@
     "selectable": true,
     "family": "glm",
     "match": [
-      "glm-5\\.2(?:[^0-9]|$)",
+      "glm-5\\.[23](?:[^0-9]|$)",
       "^glm$"
     ],
     "preferredRoutes": [
       "GLM",
+      "openrouter/z-ai/glm-5.3-flash",
+      "openrouter/z-ai/glm-5.2",
+      "oc/glm-5.3-flash-free",
       "cbai/glm-5.2"
     ],
     "unlistedRoutes": [
+      "openrouter/z-ai/glm-5.3-flash",
+      "openrouter/z-ai/glm-5.2",
+      "oc/glm-5.3-flash-free",
       "cbai/glm-5.2"
     ],
     "efforts": [
@@ -289,6 +295,8 @@
     ],
     "preferredRoutes": [
       "MiniMaxM3.1",
+      "openrouter/minimax/minimax-m3.1-flash",
+      "openrouter/minimax/minimax-01",
       "openrouter/minimax/minimax-m3.1-flash:free",
       "oc/minimax-m3.1-flash-free",
       "minimax/minimax-m3.1-flash:free"

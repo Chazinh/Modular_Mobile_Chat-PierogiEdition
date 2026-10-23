@@ -5,6 +5,24 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.1.3: Sonnet Multilingual Token Budget & Sentence Trimming, GLM 5.3 & 5.2 Direct Routes, MiniMax Resilience & Route Validator — 2026-10-23
+
+- **Sonnet Thinking-Disabled Multilingual Token Headroom (`server-rust/src/presets.rs`)**:
+  - Resolved issue where Claude Sonnet truncated Portuguese replies and reported token limit errors (`"limite de tokens atingido"`) when reasoning was toggled off (`thinkingEnabled: false`).
+  - Added dedicated multilingual token headroom (`480 + ((hard - 1200) * 4).div_ceil(5)`) for larger character targets without reasoning, preventing provider-side `max_tokens` cutoffs while strictly preserving baseline unit contracts for standard targets and thinking-enabled runs.
+- **Provider-Length Sentence Trimming Protection (`server-rust/src/generation.rs`)**:
+  - Extended sentence boundary trimmer to trigger whenever upstream reports finish reason `"length"` or `"max_tokens"`, ensuring replies cut by token ceilings never end in half-sentences, severed words, or dangling dialogue tags.
+- **GLM 5.3 & 5.2 Direct Routes and Catalog Exposure (`server-rust/src/presets.json`, `client/src/default-presets.js`, `client/src/api.js`)**:
+  - Expanded `glm-52` regex matcher to `glm-5\.[23](?:[^0-9]|$)` to discover both 5.2 and 5.3 models while rejecting arbitrary subversions to `generic`.
+  - Added `openrouter/z-ai/glm-5.3-flash`, `openrouter/z-ai/glm-5.2`, and `oc/glm-5.3-flash-free` to `preferredRoutes` and `unlistedRoutes`, guaranteeing GLM 5.3 and working GLM 5.2 appear in the model selection drawer even when unlisted by upstream `/v1/models`.
+  - Updated 9Router GLM combo to route to working OpenRouter endpoints with automatic fallback.
+- **MiniMax & Provider Route Resiliency (`scripts/validate-routes.mjs`, `%APPDATA%\9router\db\data.sqlite`)**:
+  - Replaced deprecated `oc/minimax-m3.1-flash-free` in 9Router `MiniMaxM3.1` combo with verified `openrouter/minimax/minimax-m3.1-flash` and `openrouter/minimax/minimax-01`.
+  - Added `nemotron`, `minimax`, and `gemma` families to route validator `FAMILY_SHAPES` with safe fallback for shape execution.
+- **Automated Anti-Regression Suites**:
+  - Added `server-rust/tests/regression_sonnet_glm_routes.rs` covering Sonnet multilingual token headroom, sentence boundary trimming on length cutoff, GLM 5.3 route matching, catalog discovery, and generic boundary isolation.
+  - Added GLM 5.3 and 5.2 route validation assertions to `tests/default-presets.test.js`.
+
 ### ModularChat 4.0.3: GLM Dual Routes, Muse Spark 64k Context, Reasoning Toggle Filtering & Dynamic Scroll Indicator — 2026-10-22
 
 - **GLM Preset Dual Route Exposure (`server-rust/src/presets.json`, `server-rust/src/presets.rs`, `client/src/api.js`, `client/src/default-presets.js`)**:

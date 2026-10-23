@@ -54,6 +54,9 @@ const FAMILY_SHAPES = {
   muse: ['reasoning_effort', 'reasoning_object'],
   step: ['reasoning_effort'],
   glm: ['reasoning_effort'],
+  nemotron: ['reasoning_effort'],
+  minimax: ['reasoning_effort'],
+  gemma: ['reasoning_effort'],
   generic: [],
 };
 
@@ -182,7 +185,11 @@ async function validateRoute({ routeId, url, key, log = () => {} }) {
     const marker = `validacao-${crypto.randomUUID()}`; // found in the 9Router request log
     const sinceIso = new Date(Date.now() - 2000).toISOString();
     const body = { model: routeId, stream: false, max_tokens: 2000, messages: [{ role: 'user', content: `Responda apenas: ok (${marker})` }] };
-    SHAPES[out.shape](body, effort);
+    if (out.shape && typeof SHAPES[out.shape] === 'function') {
+      SHAPES[out.shape](body, effort);
+    } else {
+      body.reasoning_effort = effort;
+    }
     const r = await call({ ...ctx, body });
     out.calls++;
     if (!r.ok) {

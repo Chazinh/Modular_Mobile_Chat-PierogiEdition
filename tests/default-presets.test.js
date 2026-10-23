@@ -69,6 +69,11 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   // GLM: rota cbai ativa, nvidia desligada removida
   const glm = DEFAULT_PRESETS.presets.find(p => p.id === 'glm-52');
   assert.ok(glm.preferredRoutes.includes('cbai/glm-5.2'), 'GLM deve incluir cbai/glm-5.2');
+  assert.ok(glm.preferredRoutes.includes('openrouter/z-ai/glm-5.3-flash'), 'GLM deve incluir openrouter/z-ai/glm-5.3-flash');
+  assert.ok(glm.preferredRoutes.includes('openrouter/z-ai/glm-5.2'), 'GLM deve incluir openrouter/z-ai/glm-5.2');
+  assert.ok(glm.preferredRoutes.includes('oc/glm-5.3-flash-free'), 'GLM deve incluir oc/glm-5.3-flash-free');
+  assert.ok(glm.routes.some(r => r.id === 'openrouter/z-ai/glm-5.3-flash'), 'GLM deve expor a rota openrouter/z-ai/glm-5.3-flash');
+  assert.ok(glm.routes.some(r => r.id === 'openrouter/z-ai/glm-5.2'), 'GLM deve expor a rota openrouter/z-ai/glm-5.2');
   assert.ok(!glm.preferredRoutes.includes('nvidia/z-ai/glm-5.2'), 'GLM NÃO deve incluir rota desligada nvidia/z-ai/glm-5.2');
 
   const gemini = DEFAULT_PRESETS.presets.find(p => p.id === 'gemini-38-flash');

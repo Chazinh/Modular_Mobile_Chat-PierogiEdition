@@ -244,7 +244,6 @@ pub fn apply_length(plan: &mut Plan, settings: &Value) -> Value {
     // still inside the acceptable range.
     let (minimum, stretch, hard) = crate::rules::reply_bounds(settings);
     let visible = (hard as u64).div_ceil(3);
-    let text_budget = (visible * 6).div_ceil(5);
     let effort = plan.controls["requestedEffort"].as_str();
     let thinking = if plan.controls["thinkingEnabled"] == false {
         0
@@ -256,6 +255,13 @@ pub fn apply_length(plan: &mut Plan, settings: &Value) -> Value {
             Some("medium") => 4096,
             _ => 8192,
         }
+    };
+    let text_budget = if hard <= 1200 || thinking > 0 {
+        (visible * 6).div_ceil(5)
+    } else {
+        // When thinking is disabled for larger targets and multilingual text (e.g. Portuguese, accents, dialogue),
+        // ensure adequate token budget so the provider never stops before the hard cut.
+        480 + ((hard as u64 - 1200) * 4).div_ceil(5)
     };
     let max_output = plan.capacity["maxOutput"].as_u64().unwrap_or(8192);
     let total = (text_budget + thinking).min(max_output);
