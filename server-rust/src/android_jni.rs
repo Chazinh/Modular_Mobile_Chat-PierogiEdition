@@ -48,6 +48,7 @@ pub(crate) fn vault_key(bytes: &[u8], protect: bool) -> Result<Zeroizing<Vec<u8>
         );
         // Java also wipes this copy in finally, including on cipher failure.
         if env.exception_check()? {
+            let _ = env.exception_describe();
             env.exception_clear()?;
         }
         env.set_byte_array_region(&input, 0, &vec![0; bytes.len()])?;
@@ -57,9 +58,13 @@ pub(crate) fn vault_key(bytes: &[u8], protect: bool) -> Result<Zeroizing<Vec<u8>
         Ok(copied)
     });
     if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
         let _ = env.exception_clear();
     }
-    result.map_err(|_| unavailable())
+    result.map_err(|e| {
+        crate::android::log_android(6, &format!("vault_key failed (protect={protect}): {e}"));
+        unavailable()
+    })
 }
 
 fn input(env: &JNIEnv<'_>, array: &JByteArray<'_>, max: usize) -> Result<Zeroizing<String>> {

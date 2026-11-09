@@ -146,6 +146,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         fail('INCOMPLETE_ACK', 'O destino não confirmou todas as conversas do lote.');
       }
       skippedVectors += ack.ignoredEmbeddings?.length || 0;
+      return ack.accepted;
     }
 
     async function commit(dest, sourceId, destId, records, entries, to, batchId = uuid()) {
@@ -155,7 +156,8 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       }
       state.pending = { to, batchId, records };
       await persist();
-      try { await applyBatch(dest, sourceId, destId, records, entries, batchId); }
+      let accepted;
+      try { accepted = await applyBatch(dest, sourceId, destId, records, entries, batchId); }
       catch (error) {
         const data = error.data;
         const separate = records.length > 1 && error.status === 409 && error.code === 'CONFLICT' && data?.serverId === destId
@@ -190,6 +192,16 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         }
         throw error;
       }
+      for (const record of records) {
+        const acked = accepted.find(a => a.convId === record.convId);
+        if (!acked || !record.contentHash) continue;
+        const converged = compatible() ? acked.hash === record.hash : (acked.contentHash && acked.contentHash === record.contentHash);
+        state.baselines[record.convId] = converged
+          ? (to === 'pc'
+            ? { pcHash: acked.hash, mobileHash: record.hash, contentHash: record.contentHash }
+            : { pcHash: record.hash, mobileHash: acked.hash, contentHash: record.contentHash })
+          : { pcHash: record.hash, mobileHash: record.hash, contentHash: record.contentHash };
+      }
       state.pending = null;
       await persist();
     }
@@ -203,7 +215,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
           const m = mobileState.manifests.get(r.convId);
           if (p && m) {
             state.baselines[r.convId] = strategy === 'prefer-pc'
-              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash, preferred: 'pc' }
+              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: m.contentHash, preferred: 'pc' }
               : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash, preferred: 'mobile' };
           }
         }
@@ -225,8 +237,13 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         };
         const alreadyApplied = pending.records.every(isRecordResolved);
         const rejectedJobMetadata = pending.code === 'CONFLICT' && pending.conflicts?.length > 0
-          && pending.conflicts.every(c => c.reason?.startsWith('ROW_DIVERGED:jobs:') || c.reason?.startsWith('TERMINAL_JOB:') || c.reason?.startsWith('JOB_DEFINITION_DIVERGED:') || c.reason?.startsWith('MERGE_VALIDATE:') || c.reason === 'MERGED_REFERENCES_OR_UNIQUE_KEYS');
+          && pending.conflicts.every(c => c.reason?.startsWith('ROW_DIVERGED:jobs:') || c.reason?.startsWith('TERMINAL_JOB:') || c.reason?.startsWith('JOB_DEFINITION_DIVERGED:') || c.reason?.startsWith('MERGE_VALIDATE:') || c.reason === 'MERGED_REFERENCES_OR_UNIQUE_KEYS' || c.reason === 'BASE_UNKNOWN' || c.reason?.startsWith('ROW_DIVERGED:interactions:') || c.reason?.startsWith('ROW_DIVERGED:parts:'));
         if (alreadyApplied || rejectedJobMetadata) {
+          if (pending.conflicts) {
+            for (const c of pending.conflicts) {
+              if (c.reason === 'BASE_UNKNOWN' && c.convId) delete state.baselines[c.convId];
+            }
+          }
           // Only a previously rejected queue-metadata conflict can be replanned.
           // No generation/write receipt with uncertain acceptance is discarded.
           state.pending = null;
@@ -313,8 +330,8 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
           if (resolveConflict) {
             const strategy = resolveStrategy || 'prefer-pc';
             state.baselines[id] = strategy === 'prefer-pc'
-              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash }
-              : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash };
+              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: m.contentHash, preferred: 'pc' }
+              : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash, preferred: 'mobile' };
           } else {
             fail('CONFLICT', 'As duas versões foram preservadas. Nenhum checkpoint comum foi encontrado para recuperar a comparação desta conversa.');
           }
@@ -338,18 +355,39 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
         if (resolveConflict) {
           const strategy = resolveStrategy || 'prefer-pc';
           base = state.baselines[id] = strategy === 'prefer-pc'
-            ? { pcHash: p.hash, mobileHash: m.hash, contentHash: p.contentHash }
-            : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash };
+            ? { pcHash: p.hash, mobileHash: m.hash, contentHash: m.contentHash, preferred: 'pc' }
+            : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash, preferred: 'mobile' };
           await persist();
         } else {
           fail('CONFLICT', 'Há conversas diferentes com o mesmo ID e nenhuma baseline compartilhada.');
         }
       }
-      const mobileChanged = compatible() ? m.hash !== base.mobileHash : m.contentHash !== base.contentHash;
+      const mobileChanged = base.preferred === 'pc'
+        ? false
+        : (compatible() ? m.hash !== base.mobileHash : m.contentHash !== base.contentHash);
       if (mobileChanged) { pushIds.push(id); pushBases.set(id, base.pcHash); }
     }
     if (pushIds.length) {
-      await transfer(mobile, pc, mobileId, pcId, pushIds, pushBases, 'pc');
+      try {
+        await transfer(mobile, pc, mobileId, pcId, pushIds, pushBases, 'pc');
+      } catch (error) {
+        if (!resolveConflict || error.code !== 'CONFLICT') throw error;
+        const strategy = resolveStrategy || 'prefer-pc';
+        for (const id of pushIds) {
+          const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
+          if (p && m) {
+            state.baselines[id] = strategy === 'prefer-pc'
+              ? { pcHash: p.hash, mobileHash: m.hash, contentHash: m.contentHash, preferred: 'pc' }
+              : { pcHash: p.hash, mobileHash: p.hash, contentHash: p.contentHash, preferred: 'mobile' };
+          }
+        }
+        state.pending = null;
+        await persist();
+        if (strategy === 'prefer-mobile') {
+          const retryBases = new Map(pushIds.map(id => [id, state.baselines[id]?.pcHash ?? null]));
+          await transfer(mobile, pc, mobileId, pcId, pushIds, retryBases, 'pc');
+        }
+      }
       pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
     }
     const pullIds = [], pullBases = new Map();
@@ -366,8 +404,6 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
       const pushbackIds = [], pushbackBases = new Map();
       for (const id of pullIds) {
-        if (resolveConflict && resolveStrategy === 'prefer-pc') continue;
-        if (state.baselines[id]?.preferred === 'pc') continue;
         const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
         if (p && m && !p.purged && !m.purged && (compatible() ? p.hash !== m.hash : p.contentHash !== m.contentHash)) {
           pushbackIds.push(id);
@@ -376,6 +412,18 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       }
       if (pushbackIds.length) {
         await transfer(mobile, pc, mobileId, pcId, pushbackIds, pushbackBases, 'pc');
+        pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
+      }
+      const finalPullIds = [], finalPullBases = new Map();
+      for (const id of pullIds) {
+        const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
+        if (p && m && !p.purged && !m.purged && p.contentHash !== m.contentHash) {
+          finalPullIds.push(id);
+          finalPullBases.set(id, m.hash);
+        }
+      }
+      if (finalPullIds.length) {
+        await transfer(pc, mobile, pcId, mobileId, finalPullIds, finalPullBases, 'mobile');
         pcState = await status(pc, pcId); mobileState = await status(mobile, mobileId);
       }
     }

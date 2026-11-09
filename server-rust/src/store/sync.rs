@@ -1354,6 +1354,9 @@ impl Database {
             out["code"] = json!("CONFLICT");
         } else {
             for (c, incoming, merged, ours) in &plans {
+                if let Some(ours) = ours {
+                    self.sync_checkpoint(peer, c, ours)?;
+                }
                 if ours.as_ref() != Some(merged) {
                     self.sync_apply(c, merged, ours.as_ref())?;
                 }
@@ -2184,6 +2187,47 @@ fn merge_job_runtime(ours: &Value, theirs: &Value) -> Option<Value> {
     merged["updated_at"] = json!(s(ours, "updated_at").max(s(theirs, "updated_at")));
     Some(merged)
 }
+/// Soft-deletion on an otherwise identical interaction or part converges symmetrically
+/// when the row was created after the baseline checkpoint (or soft-deleted on both sides).
+fn merge_soft_delete(old: Option<&Value>, ours: &Value, theirs: &Value) -> Option<Value> {
+    let mut a = ours.clone();
+    let mut b = theirs.clone();
+    for k in ["deleted_at", "deleted_batch"] {
+        a.as_object_mut()?.remove(k);
+        b.as_object_mut()?.remove(k);
+    }
+    if a != b {
+        return None;
+    }
+    let ours_del = !ours["deleted_at"].is_null();
+    let theirs_del = !theirs["deleted_at"].is_null();
+    if old.is_none() {
+        return match (ours_del, theirs_del) {
+            (true, false) => Some(ours.clone()),
+            (false, true) => Some(theirs.clone()),
+            (true, true) => {
+                if (s(ours, "deleted_at"), s(ours, "deleted_batch"))
+                    >= (s(theirs, "deleted_at"), s(theirs, "deleted_batch"))
+                {
+                    Some(ours.clone())
+                } else {
+                    Some(theirs.clone())
+                }
+            }
+            (false, false) => Some(ours.clone()),
+        };
+    }
+    if ours_del && theirs_del {
+        return if (s(ours, "deleted_at"), s(ours, "deleted_batch"))
+            >= (s(theirs, "deleted_at"), s(theirs, "deleted_batch"))
+        {
+            Some(ours.clone())
+        } else {
+            Some(theirs.clone())
+        };
+    }
+    None
+}
 /// Secondary unique key of a table, if it declares one.
 fn secondary_key(table: &str) -> Option<&'static [&'static str]> {
     SECONDARY_KEYS
@@ -2490,6 +2534,13 @@ pub(super) fn merge_snapshot(
                 }
             }
             if base_row_same(old, &remote) {
+                continue;
+            }
+            if matches!(table, "interactions" | "parts")
+                && !base_row_same(old, local.unwrap())
+                && let Some(soft_deleted) = merge_soft_delete(old, local.unwrap(), &remote)
+            {
+                rows.insert(id, soft_deleted);
                 continue;
             }
             if !base_row_same(old, local.unwrap()) {
@@ -2847,6 +2898,79 @@ mod tests {
         assert_eq!(merged["conversation"]["character_rev"], 3);
         let merged_crs = merged["character_revisions"].as_array().unwrap();
         assert_eq!(merged_crs.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_snapshot_soft_delete_interaction_created_after_base() {
+        let base_conv = json!({
+            "id": "conv-soft-del",
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:00:00Z",
+            "revision": 1,
+            "character_rev": 0,
+            "head_interaction_id": null,
+            "title": "Test",
+            "route_id": "Gemini",
+            "preset_id": "gemini-flash",
+            "deleted_at": null,
+            "deleted_batch": null
+        });
+        let base = json!({
+            "full": true,
+            "purged": false,
+            "convId": "conv-soft-del",
+            "conversation": base_conv,
+            "publicSettings": {},
+            "removed": [],
+            "character_revisions": [],
+            "interactions": [],
+            "parts": [],
+            "versions": [],
+            "characters": [],
+            "memories": [],
+            "memory_knowledge": [],
+            "scene_states": [],
+            "character_states": [],
+            "relationships": [],
+            "threads": [],
+            "interaction_notes": [],
+            "episodes": [],
+            "review_flags": [],
+            "knowledge_events": [],
+            "memory_replacements": [],
+            "jobs": [],
+            "operations": [],
+            "generations": [],
+            "personas": [],
+            "embeddings": []
+        });
+        let int_alive = json!({
+            "id": "4f815bf3-7e66-4f50-809e-716d7da5ba3f",
+            "conv_id": "conv-soft-del",
+            "seq": 43,
+            "kind": "turn",
+            "parent_id": null,
+            "edit_of": null,
+            "user_text": "Hello",
+            "user_edited": 0,
+            "user_ts": "2026-10-28T18:20:11.785Z",
+            "created_at": "2026-10-28T18:20:11.785Z",
+            "deleted_at": null,
+            "deleted_batch": null
+        });
+        let mut int_deleted = int_alive.clone();
+        int_deleted["deleted_at"] = json!("2026-11-07T07:34:55.872Z");
+        int_deleted["deleted_batch"] = json!("36a572a7-8ae0-4e16-b1e6-8b08dc157e3d");
+
+        let mut ours = base.clone();
+        ours["interactions"] = json!([int_alive]);
+        let mut theirs = base.clone();
+        theirs["interactions"] = json!([int_deleted.clone()]);
+
+        let m1 = merge_snapshot(Some(&base), Some(&ours), &theirs, "test-model").expect("PC merge should accept mobile soft-delete");
+        let m2 = merge_snapshot(Some(&base), Some(&theirs), &ours, "test-model").expect("Mobile merge should preserve mobile soft-delete");
+        assert_eq!(m1["interactions"][0], int_deleted);
+        assert_eq!(m2["interactions"][0], int_deleted);
     }
 }
 

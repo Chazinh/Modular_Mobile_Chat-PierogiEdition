@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2,
   ArrowDown, Keyboard, Layers, Info, WifiOff, Check, AlertTriangle,
 } from 'lucide-react';
-import { api, config, uuid, isNative } from '../api.js';
+import { api, config, uuid, isNative, staleReceiptError } from '../api.js';
 import { connectionSnapshot } from '../server-connection.js';
 import { watchProviderCatalog } from '../provider-catalog.js';
 import { useLayer } from '../nav.js';
@@ -149,7 +149,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     api.cachedChat(chatId).then((c) => alive && c && !chatRef.current && setChat({ ...c, history: c.history.filter(m => m.status !== 'generating') }));
     load().then((c) => {
       if (!alive || !c || busyRef.current) return;
-      if (api.getPending(chatId)) recoverPending(api.getPending(chatId));
+      if (api.getPending(chatId)) recoverPending(api.getPending(chatId), c);
       else if (c.generation) attach(c.generation);
     });
     return () => {
@@ -210,7 +210,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
           busyRef.current = false;
         }
         const c = await load();
-        if (c && api.getPending(chatId)) await recoverPending(api.getPending(chatId));
+        if (c && api.getPending(chatId)) await recoverPending(api.getPending(chatId), c);
         else if (c?.generation) await attach(c.generation);
       }
     } finally { recoveringRef.current = false; }
@@ -423,7 +423,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
       }, ctrl.signal);
     } catch (e) {
       if (ctrl.signal.aborted || ctx.epoch !== epoch || ctx.cancelled) return 'superseded';
-      if (e.status > 0 || e.code) { ctx.recoveryError = e.message; setError(e.message); return 'failed'; }
+      if (e.status > 0 || e.code) { ctx.recoveryError = e.message; ctx.recoveryStatus = e.status; ctx.recoveryCode = e.code; setError(e.message); return 'failed'; }
       if (tries < 6 && !ctx.done) {
         await new Promise((r) => setTimeout(r, Math.min(8000, 1000 * 2 ** tries)));
         if (!ctx.done && busyRef.current && ctx.epoch === epoch && !ctx.cancelled) return reattach(ctx, tries + 1);
@@ -434,6 +434,18 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   }
 
   const ctxRef = useRef(null);
+  // A receipt whose origin can no longer be reached (or whose generation no longer
+  // exists) is stale: it must not fake an offline state nor block the composer forever.
+  const staleReceipt = ctx => staleReceiptError({ status: ctx.recoveryStatus, code: ctx.recoveryCode });
+  async function discardStaleReceipt() {
+    await api.setPending(chatId, null).catch(() => {});
+    setStream(null);
+    busyRef.current = false;
+    gidRef.current = null;
+    abortRef.current = null;
+    setError('');
+    setOffline(false);
+  }
   async function reattachNow() {
     const ctx = ctxRef.current;
     if (!ctx || ctx.cancelled) return;
@@ -441,7 +453,11 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     setError('');
     const result=await reattach(ctx);
     if (result==='done') await finishRun(ctx);
-    else if (result==='failed') { setOffline(true); setError(ctx.recoveryError || tr("A resposta continua salva no servidor de origem. Reconecte para recebê-la.")); }
+    else if (result==='failed') {
+      if (staleReceipt(ctx)) { await discardStaleReceipt(); await load(); return; }
+      setOffline(true);
+      setError(ctx.recoveryError || tr("A resposta continua salva no servidor de origem. Reconecte para recebê-la."));
+    }
   }
 
   async function attach(gen) {
@@ -457,16 +473,27 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     if (ctx.cancelled) return;
     const result=await reattach(ctx);
     if (result==='done') await finishRun(ctx);
-    else if (result==='failed') { setOffline(true); setError(ctx.recoveryError || tr("Conexão interrompida. A resposta permanece no servidor de origem; aguarde a recuperação.")); }
+    else if (result==='failed') {
+      if (staleReceipt(ctx)) { await discardStaleReceipt(); await load(); return; }
+      setOffline(true);
+      setError(ctx.recoveryError || tr("Conexão interrompida. A resposta permanece no servidor de origem; aguarde a recuperação."));
+    }
   }
 
-  async function recoverPending(pending) {
+  async function recoverPending(pending, loadedChat = chatRef.current) {
     try {
       const generation = await api.queryOperation(chatId, pending);
       return attach(generation);
     } catch (e) {
+      if (staleReceipt({ recoveryStatus: e.status, recoveryCode: e.code })) {
+        // The active chat proves whether a generation is still running. Dropping the
+        // receipt also drops the false "offline"/"reconfigure the origin PC" banner.
+        await discardStaleReceipt();
+        if (loadedChat?.generation) return attach(loadedChat.generation);
+        return false;
+      }
       setError(e.message);
-      if (!e.status) setOffline(true);
+      if (!e.status && (!e.code || e.code === 'ORIGIN_UNAVAILABLE' || e.data?.offline)) setOffline(true);
       return false;
     }
   }
@@ -481,9 +508,15 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
         return false;
       }
     }
-    if (api.getPending(chatId)) {
-      setError(tr('Há um envio pendente de confirmação no servidor de origem. Recupere-o antes de enviar novamente.'));
-      return false;
+    const pending = api.getPending(chatId);
+    if (pending) {
+      // Reconcile first: a receipt whose origin disappeared must not block new messages.
+      await recoverPending(pending, chatRef.current);
+      if (busyRef.current) return false;
+      if (api.getPending(chatId)) {
+        setError(tr('Há um envio pendente de confirmação no servidor de origem. Recupere-o antes de enviar novamente.'));
+        return false;
+      }
     }
     busyRef.current = true;
     setError('');

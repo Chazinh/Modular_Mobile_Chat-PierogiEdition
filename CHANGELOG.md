@@ -5,6 +5,23 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.1.5: Android Vault Reopening, Keystore JNI Resilience & Desktop Loopback Memory Extraction — 2026-11-08
+
+- **Vault Lock Reopen & Android Keystore Resilience (`server-rust/src/privacy.rs`, `server-rust/src/android_jni.rs`, `client/android/app/src/main/java/io/github/modularchat/pierogiedition/NativeVaultKey.java`)**:
+  - Fixed issue where reopening the mobile app caused a 409 "O cofre já está aberto por outro servidor" error due to checking whether the dead previous PID (or own current PID when kept in cache) was active. On Android, kernel file locks exclusively guard vault access and untrusted_app SELinux denials no longer misclassify dead processes as active writers.
+  - Enhanced `NativeVaultKey.java` to safeguard key retrieval from Android KeyStore against null aliases and added verbose error logging to logcat via JNI.
+- **Client Model Manager Download Status (`client/src/components/ModelManager.jsx`, `tests/autohost-ui.test.js`)**:
+  - Fixed issue where un-downloaded models with phase "pending" were misclassified as active downloads, incorrectly showing "Baixando" and a progress bar in the mobile UI.
+  - Added anti-regression test `ModelManager: modelos ausentes ou com phase pending não exibem badge baixando`.
+- **Desktop Memory Backend Loopback Prioritization & Queue Recovery (`server-rust/src/memory_backend.rs`, `server-rust/src/jobs.rs`, `server-rust/src/store/mod.rs`)**:
+  - Resolved issue where memory extraction jobs were blocked and deferred indefinitely because the default loopback route selected `Deepseek`, which failed with HTTP 429/402 on OpenRouter due to insufficient credit headroom with 3200 requested max tokens.
+  - Prioritized fast, free loopback candidates (`Nemotron`, `Gemini`) on 9Router and expanded quota/credit error reclassification.
+  - Re-budgeted extraction headroom to accommodate reasoning tokens without exceeding credit limits, and enabled partial valid JSON recovery on length finish reasons.
+  - Enhanced `RequeueJobs` to automatically unstick deferred jobs on server launch.
+- **Anti-Regression Test Suite (`server-rust/tests/regression_desktop_memory_fallback.rs`)**:
+  - Added unit test `test_regression_loopback_prefers_nemotron_over_deepseek` verifying loopback candidate resolution order.
+  - Added unit test `test_regression_openrouter_credits_error_handling_and_requeue` verifying credit error handling and startup queue recovery.
+
 ### ModularChat 4.1.4: NVIDIA Nemotron 3.5 Bolt E4B 4GB Local Memory Model Migration — 2026-10-23
 
 - **NVIDIA Nemotron 3.5 Bolt E4B 4GB Official Pin (`server-rust/src/local/model_files.rs`, `server-rust/src/local.rs`)**:

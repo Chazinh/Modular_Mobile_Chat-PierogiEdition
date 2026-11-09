@@ -73,6 +73,12 @@ function handleAuth(res, data, target) {
 export const originGuard = target => ({ originServer: target.server, originKind: target.kind });
 const originTarget = pending => pending?.originKind ? { server: pending.originServer, kind: pending.originKind } : undefined;
 
+// A persisted receipt is stale when the origin that produced it can no longer be
+// reached or the server no longer knows the generation it points to. It must never be
+// reported as a network outage, nor keep the composer blocked forever.
+export const staleReceiptError = error => error?.status === 404
+  || ['ORIGIN_CHANGED', 'UNKNOWN_ORIGIN', 'OPERATION_MISMATCH'].includes(error?.code);
+
 export function createApiTransport({ acquire = acquireTarget, fetch: send = (...args) => fetch(...args), failed = connectionFailed, auth = handleAuth } = {}) {
   const networkError = target => new ApiError(target?.kind === 'local' ? 'Sem conexão com o host Android.' : 'Sem conexão com o PC.', 0, { offline: true });
   async function request(method, path, body, options = {}) {

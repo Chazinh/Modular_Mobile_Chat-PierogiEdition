@@ -590,6 +590,108 @@ test('sync: resolveConflict com prefer-pc adota hash do PC quando não há check
   assert.ok(state.baselines['diverged-conv']);
 });
 
+test('sync: resolveConflict com prefer-pc e fingerprints diferentes reconcilia merge móvel via pushback sem HASH_DIVERGENCE', async () => {
+  let mobileMerged = false;
+  const f = fixture({
+    pcFingerprint: 'pc-embed',
+    mobileFingerprint: 'mobile-embed',
+    onCall: ({ kind, state, body, header }) => {
+      if (kind === 'mobile' && body?.pushes?.length && !mobileMerged) {
+        mobileMerged = true;
+        const push = body.pushes[0];
+        const merged = {
+          ...clone(push.snapshot),
+          conversation: { id: push.convId, name: `${push.snapshot.conversation.name} + mobile-merged` },
+          embeddings: [],
+        };
+        const row = {
+          convId: push.convId,
+          hash: hash(merged),
+          contentHash: hash(merged),
+          snapshot: merged,
+          cursor: ++state.cursor,
+          revision: (state.rows.get(push.convId)?.revision || 0) + 1,
+        };
+        state.rows.set(push.convId, row);
+        return Response.json({
+          ...header,
+          ackBatch: body.batchId,
+          accepted: [{ convId: row.convId, hash: row.hash, contentHash: row.contentHash, revision: row.revision, cursor: row.cursor, deleted: false, purged: false, busy: false }],
+          conflicts: [],
+          ignoredEmbeddings: [],
+          manifests: [],
+          snapshots: [],
+          nextCursor: 0,
+          hasMore: false,
+        });
+      }
+      return null;
+    },
+  });
+  f.put('pc', 'conv-1', 'versao pc');
+  f.put('mobile', 'conv-1', 'versao mobile');
+  const [key] = [ `mc.sync.${f.states.pc.serverId}.${f.states.mobile.serverId}` ];
+  f.store.values.set(key, JSON.stringify({
+    version: 1,
+    pcId: f.states.pc.serverId,
+    mobileId: f.states.mobile.serverId,
+    baselines: {},
+    pending: {
+      to: 'pc',
+      batchId: randomUUID(),
+      code: 'CONFLICT',
+      conflicts: [{ convId: 'conv-1', reason: 'ROW_DIVERGED:interactions:["4f815bf3"]' }],
+      records: [{ convId: 'conv-1', hash: f.states.mobile.rows.get('conv-1').hash, contentHash: f.states.mobile.rows.get('conv-1').contentHash, baseHash: null }],
+    },
+  }));
+
+  const res = await f.sync.synchronize({ ...f.options, resolveConflict: true, resolveStrategy: 'prefer-pc' });
+  assert.equal(res.converged, true);
+  assert.equal(f.states.pc.rows.get('conv-1').contentHash, f.states.mobile.rows.get('conv-1').contentHash);
+  assert.equal(f.states.pc.rows.get('conv-1').snapshot.conversation.name, 'versao pc + mobile-merged');
+});
+
+test('sync: recupera recibo BASE_UNKNOWN limpando baseline obsoleta e redescobrindo checkpoint comum', async () => {
+  const f = fixture({
+    onCall: ({ kind, state, body, header }) => {
+      if ( body && !body.pushes ) {
+        const page = [...state.rows.values()];
+        return Response.json({
+          ...header,
+          ackBatch: null,
+          accepted: [],
+          conflicts: [],
+          ignoredEmbeddings: [],
+          manifests: page.map(r => ({ convId: r.convId, hash: r.hash, contentHash: r.contentHash, revision: r.revision, cursor: r.cursor, deleted: false, purged: false, busy: false })),
+          snapshots: page.map(r => ({ convId: r.convId, hash: r.hash, contentHash: r.contentHash, snapshot: r.snapshot, checkpointHashes: [r.hash, 'c'.repeat(64)] })),
+          nextCursor: page.at(-1)?.cursor || 0,
+          hasMore: false,
+        });
+      }
+      return null;
+    },
+  });
+  f.put('pc', 'conv-base', 'atualizado no pc');
+  const mRow = f.put('mobile', 'conv-base', 'atualizado no pc');
+  const key = `mc.sync.${f.states.pc.serverId}.${f.states.mobile.serverId}`;
+  f.store.values.set(key, JSON.stringify({
+    version: 1,
+    pcId: f.states.pc.serverId,
+    mobileId: f.states.mobile.serverId,
+    baselines: { 'conv-base': { pcHash: '1'.repeat(64), mobileHash: '2'.repeat(64), contentHash: '1'.repeat(64) } },
+    pending: {
+      to: 'pc',
+      batchId: randomUUID(),
+      code: 'CONFLICT',
+      conflicts: [{ convId: 'conv-base', reason: 'BASE_UNKNOWN' }],
+      records: [{ convId: 'conv-base', hash: mRow.hash, contentHash: mRow.contentHash, baseHash: '1'.repeat(64) }],
+    },
+  }));
+  const res = await f.sync.synchronize(f.options);
+  assert.equal(res.converged, true);
+  assert.equal(JSON.parse(f.store.values.get(key)).pending, null);
+});
+
 test('sync: clearConflict no createMobileSync limpa lote CONFLICT preservado', async () => {
   const f = fixture();
   f.put('pc', 'c1', 'inicial');

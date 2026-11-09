@@ -137,8 +137,8 @@ export default function ModelManager({ onClose }) {
   const chatDownloaded = localStatus?.chat?.ok || chatProgress.phase === 'ready';
   const embedDownloaded = localStatus?.embed?.ok || embedProgress.phase === 'ready';
 
-  const chatDownloading = ['downloading', 'verifying', 'pending'].includes(chatProgress.phase) && !chatDownloaded;
-  const embedDownloading = ['downloading', 'verifying', 'pending'].includes(embedProgress.phase) && !embedDownloaded;
+  const chatDownloading = ['downloading', 'verifying'].includes(chatProgress.phase) && !chatDownloaded;
+  const embedDownloading = ['downloading', 'verifying'].includes(embedProgress.phase) && !embedDownloaded;
 
   // Build the list of downloaded items
   const downloadedList = [];

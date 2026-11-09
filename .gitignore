@@ -26,6 +26,7 @@ llama-server
 client/dist/
 
 # Android build outputs, packages & native libraries
+.gradle-home/
 client/android/app/build/
 client/android/build/
 client/android/.gradle/

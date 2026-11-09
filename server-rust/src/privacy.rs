@@ -476,20 +476,24 @@ impl Lock {
             }
             fs::TryLockError::Error(e) => e.into(),
         })?;
-        // Keep compatibility with legacy PID-only locks. An unlocked file still belonging to a
-        // live legacy writer must not be stolen; a crashed writer's PID can be recovered.
-        let mut owner = String::new();
-        Read::by_ref(&mut file)
-            .take(128)
-            .read_to_string(&mut owner)?;
-        if !owner.trim().is_empty() {
-            let pid = owner.trim().parse::<u32>().ok().filter(|p| *p > 0)
-                .ok_or_else(|| Error::new(409, "Lock do cofre inválido. Preserve os dados e revise o processo proprietário."))?;
-            if active(pid) {
-                return Err(Error::new(
-                    409,
-                    "O cofre já está aberto por outro servidor.",
-                ));
+        // Keep compatibility with legacy PID-only locks on desktop Unix. An unlocked file still
+        // belonging to a live legacy writer must not be stolen; a crashed writer's PID can be recovered.
+        // Android has never had legacy PID-only locks; the kernel file lock strictly gates exclusive access.
+        #[cfg(not(target_os = "android"))]
+        {
+            let mut owner = String::new();
+            Read::by_ref(&mut file)
+                .take(128)
+                .read_to_string(&mut owner)?;
+            if !owner.trim().is_empty() {
+                let pid = owner.trim().parse::<u32>().ok().filter(|p| *p > 0)
+                    .ok_or_else(|| Error::new(409, "Lock do cofre inválido. Preserve os dados e revise o processo proprietário."))?;
+                if pid != std::process::id() && active(pid) {
+                    return Err(Error::new(
+                        409,
+                        "O cofre já está aberto por outro servidor.",
+                    ));
+                }
             }
         }
         verify_regular(&path, &file, true)?;
@@ -526,25 +530,21 @@ fn active(pid: u32) -> bool {
 }
 #[cfg(target_os = "android")]
 fn active(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
     unsafe extern "C" {
         fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
     }
     let Ok(pid) = std::ffi::c_int::try_from(pid) else {
-        return true;
+        return false;
     };
     // On Android, untrusted_app SELinux blocks /proc/<pid> inspection with EACCES.
     // Within the app sandbox, all processes share the app's Linux UID.
     // POSIX kill(pid, 0) == 0 means a process with our UID exists.
     // ESRCH (3) means no such process exists (it was killed/crashed).
-    // EPERM (1) means the PID was recycled by the OS for another UID (not this app).
-    unsafe {
-        if kill(pid, 0) == 0 {
-            true
-        } else {
-            let err = std::io::Error::last_os_error().raw_os_error();
-            err != Some(3) && err != Some(1)
-        }
-    }
+    // EPERM (1) or EACCES (13) indicates foreign domains / recycled PIDs outside this UID.
+    unsafe { kill(pid, 0) == 0 }
 }
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 fn active(pid: u32) -> bool {

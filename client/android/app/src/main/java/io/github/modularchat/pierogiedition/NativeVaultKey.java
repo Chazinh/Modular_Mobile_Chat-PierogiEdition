@@ -19,7 +19,10 @@ final class NativeVaultKey {
     private static SecretKey key(boolean create) throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
         store.load(null);
-        if (store.containsAlias(ALIAS)) return (SecretKey)store.getKey(ALIAS, null);
+        if (store.containsAlias(ALIAS)) {
+            SecretKey existing = (SecretKey)store.getKey(ALIAS, null);
+            if (existing != null) return existing;
+        }
         if (!create) throw new GeneralSecurityException("Vault key unavailable.");
         KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
         generator.init(new KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
@@ -40,6 +43,9 @@ final class NativeVaultKey {
             byte[] result = Arrays.copyOf(iv, iv.length + encrypted.length);
             System.arraycopy(encrypted, 0, result, iv.length, encrypted.length);
             return result;
+        } catch (Exception error) {
+            android.util.Log.e("NativeVaultKey", "protect failed", error);
+            throw error;
         } finally { if (input != null) Arrays.fill(input, (byte)0); }
     }
 
@@ -50,6 +56,9 @@ final class NativeVaultKey {
             cipher.init(Cipher.DECRYPT_MODE, key(false), new GCMParameterSpec(128, input, 0, 12));
             cipher.updateAAD(AAD);
             return cipher.doFinal(input, 12, input.length - 12);
+        } catch (Exception error) {
+            android.util.Log.e("NativeVaultKey", "unprotect failed", error);
+            throw error;
         } finally { if (input != null) Arrays.fill(input, (byte)0); }
     }
 }

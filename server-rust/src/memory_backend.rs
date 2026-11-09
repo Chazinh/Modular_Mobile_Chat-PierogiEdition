@@ -169,10 +169,16 @@ impl MemoryBackend {
             let model = std::env::var("MC_MEMORY_MODEL")
                 .or_else(|_| std::env::var("MEMORY_MODEL"))
                 .unwrap_or_else(|_| {
+                    if provider.is_loopback() {
+                        let candidates = ["Nemotron", "Gemini", "Deepseek", "DeepSeekV2"];
+                        if let Some(c) = candidates.iter().find(|c| provider.models.iter().any(|m| m.eq_ignore_ascii_case(c))) {
+                            return (*c).to_string();
+                        }
+                    }
                     if let Some(m) = provider.models.first() {
                         m.clone()
                     } else if provider.is_loopback() {
-                        "Deepseek".to_string()
+                        "Nemotron".to_string()
                     } else {
                         "oc/deepseek-v4.1-flash-free".to_string()
                     }
@@ -202,10 +208,16 @@ impl MemoryBackend {
             let model = std::env::var("MC_MEMORY_MODEL")
                 .or_else(|_| std::env::var("MEMORY_MODEL"))
                 .unwrap_or_else(|_| {
+                    if provider.is_loopback() {
+                        let candidates = ["Nemotron", "Gemini", "Deepseek", "DeepSeekV2"];
+                        if let Some(c) = candidates.iter().find(|c| provider.models.iter().any(|m| m.eq_ignore_ascii_case(c))) {
+                            return (*c).to_string();
+                        }
+                    }
                     if let Some(m) = provider.models.first() {
                         m.clone()
                     } else if provider.is_loopback() {
-                        "Deepseek".to_string()
+                        "Nemotron".to_string()
                     } else {
                         "oc/deepseek-v4.1-flash-free".to_string()
                     }
@@ -214,20 +226,16 @@ impl MemoryBackend {
         };
         let mut model = model;
         if provider.is_loopback() {
-            if model == "oc/deepseek-v4.1-flash-free" || !provider.preflight(&model).await {
-                let candidates = ["Deepseek", "DeepSeekV2", "Gemini", "Nemotron"];
-                let mut found = false;
+            let candidates = ["Nemotron", "Gemini", "Deepseek", "DeepSeekV2"];
+            if model == "Deepseek" || !provider.preflight(&model).await {
                 for candidate in candidates {
                     if provider.preflight(candidate).await {
                         model = candidate.to_string();
-                        found = true;
                         break;
                     }
                 }
-                if !found && !provider.preflight(&model).await {
-                    return Ok(None);
-                }
-            } else if !provider.preflight(&model).await {
+            }
+            if !provider.preflight(&model).await {
                 return Ok(None);
             }
         }
@@ -430,6 +438,9 @@ impl MemoryBackend {
                             || error.contains("missing authentication")
                             || error.contains("invalid_api_key")
                             || error.contains("insufficient_quota")
+                            || error.contains("requires more credits")
+                            || error.contains("fewer max_tokens")
+                            || error.contains("can only afford")
                             || error.contains("quota")
                             || error.contains("credits")
                             || error.contains("rate limit")
@@ -449,7 +460,7 @@ impl MemoryBackend {
                         tracing::warn!(upstream = %preview_trimmed, "API de memória recusou requisição (HTTP 400)");
                         return Err(Error::new(502, format!("API de memória recusou o schema ou a entrada (HTTP 400){sample}.")));
                     }
-                    if matches!(status.as_u16(), 401 | 403 | 404 | 408 | 429)
+                    if matches!(status.as_u16(), 401 | 402 | 403 | 404 | 408 | 429)
                         || status.is_server_error()
                         || status.is_redirection()
                     {
@@ -598,6 +609,12 @@ fn parse_model_content(bytes: &[u8]) -> Result<Value> {
 
     let response: Value = serde_json::from_slice(bytes)
         .map_err(|_| Error::new(502, "Envelope JSON de memória inválido."))?;
+    let content = response["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default();
+    if let Ok(val) = parse_json_content(content) {
+        return Ok(val);
+    }
     if matches!(
         response["choices"][0]["finish_reason"].as_str(),
         Some("length" | "max_tokens")
@@ -607,9 +624,6 @@ fn parse_model_content(bytes: &[u8]) -> Result<Value> {
             "JSON de memória ficou incompleto; retry necessário.",
         ));
     }
-    let content = response["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default();
     parse_json_content(content)
 }
 

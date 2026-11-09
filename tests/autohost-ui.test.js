@@ -203,6 +203,23 @@ test('UI wiring: trocar/cancelar PC não apaga configuração/token e formulári
   assert.match(view, /showHostStatus = hostStatus && !drawer/);
 });
 
+test('UI wiring: recibo obsoleto limpa a pendência em vez de anunciar queda de conexão', async () => {
+  const view = await fs.readFile(new URL('../client/src/components/ChatView.jsx', import.meta.url), 'utf8');
+  const discard = view.slice(view.indexOf('async function discardStaleReceipt'), view.indexOf('async function reattachNow'));
+  assert.ok(discard.includes('api.setPending(chatId, null)'), 'o recibo obsoleto é descartado');
+  assert.ok(discard.includes('setOffline(false)'), 'o aviso falso de "sem conexão" é removido');
+  const recover = view.slice(view.indexOf('async function recoverPending'), view.indexOf('async function run('));
+  const stale = recover.indexOf('staleReceipt({');
+  const offline = recover.indexOf('setOffline(true)');
+  assert.ok(stale > 0, 'a recuperação classifica recibo obsoleto');
+  assert.ok(offline > stale, 'só a falha de rede real marca offline, depois do ramo obsoleto');
+  assert.ok(recover.includes('discardStaleReceipt()'));
+  const send = view.slice(view.indexOf('async function run('), view.indexOf('async function stop('));
+  const reconcile = send.indexOf('recoverPending(pending, chatRef.current)');
+  const block = send.indexOf('Há um envio pendente de confirmação');
+  assert.ok(reconcile > 0 && block > reconcile, 'o envio reconcilia o recibo antes de bloquear a nova mensagem');
+});
+
 test('download: contrato phase/downloaded/total, compatibilidade bytes e percentual sem RAM estimada', () => {
   assert.deepEqual(downloadProgress({ download: { phase: 'downloading', downloaded: 25, total: 100, error: null } }), { phase: 'downloading', downloaded: 25, total: 100, percent: 25, error: '' });
   assert.equal(downloadProgress({ download: { state: 'ready', downloadedBytes: 200, totalBytes: 100 } }).percent, 100);
@@ -210,6 +227,13 @@ test('download: contrato phase/downloaded/total, compatibilidade bytes e percent
   assert.equal(statusPollDelay({ activated: true, embed: { download: { phase: 'verifying' } } }), 2000);
   assert.equal(statusPollDelay({ activated: false, chat: { download: { phase: 'pending' } } }), 10000);
   assert.equal(statusPollDelay({}, true), 2000);
+});
+
+test('ModelManager: modelos ausentes ou com phase pending não exibem badge baixando', async () => {
+  const code = await fs.readFile(new URL('../client/src/components/ModelManager.jsx', import.meta.url), 'utf8');
+  assert.ok(!code.includes("['downloading', 'verifying', 'pending'].includes(chatProgress.phase)"), 'chatProgress não inclui pending como baixando');
+  assert.ok(!code.includes("['downloading', 'verifying', 'pending'].includes(embedProgress.phase)"), 'embedProgress não inclui pending como baixando');
+  assert.ok(code.includes("['downloading', 'verifying'].includes(chatProgress.phase)"), 'apenas downloading e verifying contam como progresso ativo');
 });
 
 function pollingFixture(getStatus, enabled = () => true) {

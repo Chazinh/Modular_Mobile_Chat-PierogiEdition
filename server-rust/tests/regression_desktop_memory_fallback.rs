@@ -582,4 +582,188 @@ async fn test_regression_provider_channel_rejection_defers_job() {
     server_task.abort();
 }
 
+#[tokio::test]
+async fn test_regression_loopback_prefers_nemotron_over_deepseek() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/v1");
+
+    let app = Router::new().route(
+        "/v1/models",
+        get(|| async {
+            Json(json!({
+                "data": [
+                    { "id": "Deepseek" },
+                    { "id": "Gemini" },
+                    { "id": "Nemotron" }
+                ]
+            }))
+        }),
+    );
+
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.ok();
+    });
+
+    let providers_json = json!({
+        "providers": [{
+            "id": "fixture-9router",
+            "baseUrl": url,
+            "apiKey": "dummy-key",
+            "models": ["Deepseek", "Gemini", "Nemotron"]
+        }],
+        "default": "fixture-9router"
+    });
+    let providers_obj = Arc::new(Providers::from_json(&providers_json).unwrap());
+    let runtime = RuntimeProviders::new(Some(providers_obj));
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().canonicalize().unwrap();
+    let config = Config {
+        dist: data_dir.join("client-dist"),
+        data_dir: data_dir.clone(),
+        address: "127.0.0.1:3014".parse().unwrap(),
+        require_pairing: false,
+        providers: None,
+        max_generations: 1,
+        production: false,
+        native_lib_dir: None,
+        review: false,
+    };
+    let client = reqwest::Client::new();
+    let local = LocalModels::new(&config, client.clone()).unwrap();
+
+    let policy = MemoryPolicy {
+        mode: MemoryMode::Local,
+        api: None,
+    };
+
+    let model = MemoryBackend::desktop_upstream_model(&runtime, &policy);
+    assert_eq!(model, Some("Nemotron".to_string()));
+
+    let backend = MemoryBackend::resolve(&local, &runtime, &policy, &client)
+        .await
+        .unwrap()
+        .unwrap();
+
+    match backend {
+        MemoryBackend::Api { api, .. } => {
+            assert_eq!(api.model, "Nemotron");
+            assert_eq!(api.provider, "fixture-9router");
+        }
+        _ => panic!("Expected Api backend for loopback upstream"),
+    }
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_regression_openrouter_credits_error_handling_and_requeue() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/v1");
+
+    let app = Router::new()
+        .route(
+            "/v1/models",
+            get(|| async {
+                Json(json!({
+                    "data": [{ "id": "Nemotron" }]
+                }))
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(|Json(_body): Json<Value>| async {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    r#"{"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 3200 tokens, but can only afford 1574. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account","code":402}}"#,
+                )
+                    .into_response()
+            }),
+        );
+
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.ok();
+    });
+
+    let providers_json = json!({
+        "providers": [{
+            "id": "fixture-9router",
+            "baseUrl": url,
+            "apiKey": "dummy-key",
+            "models": ["Nemotron"]
+        }],
+        "default": "fixture-9router"
+    });
+    let providers_obj = Arc::new(Providers::from_json(&providers_json).unwrap());
+    let runtime = RuntimeProviders::new(Some(providers_obj));
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().canonicalize().unwrap();
+    let config = Config {
+        dist: data_dir.join("client-dist"),
+        data_dir: data_dir.clone(),
+        address: "127.0.0.1:3015".parse().unwrap(),
+        require_pairing: false,
+        providers: None,
+        max_generations: 1,
+        production: false,
+        native_lib_dir: None,
+        review: false,
+    };
+    let client = reqwest::Client::new();
+    let local = LocalModels::new(&config, client.clone()).unwrap();
+
+    let policy = MemoryPolicy {
+        mode: MemoryMode::Local,
+        api: None,
+    };
+
+    let backend = MemoryBackend::resolve(&local, &runtime, &policy, &client)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let schema = json!({
+        "type": "object",
+        "properties": { "location": {"type": "string"} },
+        "required": ["location"]
+    });
+    let messages = vec![json!({"role": "user", "content": "teste"})];
+
+    let err = backend.chat_json(messages, schema, 1000, 0.1).await.unwrap_err();
+    assert_eq!(err.status, 503);
+    assert_eq!(err.extra["code"], "MEMORY_BACKEND_UNAVAILABLE");
+
+    // Test RequeueJobs recovers jobs with credits/quota errors
+    let store = modularchat_server::store::Store::open(&data_dir).unwrap();
+    let conv = store.call(Request::CreateConversation(json!({"name": "Credits Conv", "routeId": "Nemotron", "presetId": "default"}))).await.unwrap();
+    let conv_id = conv["id"].as_str().unwrap();
+
+    let job = store.call(Request::EnqueueJob(json!({
+        "convId": conv_id,
+        "kind": "turn",
+        "interactionId": "i-credits-1",
+        "versionId": "v-credits-1",
+        "payload": {}
+    }))).await.unwrap();
+    let job_id = job["id"].as_str().unwrap();
+
+    store.call(Request::FinishJob {
+        id: job_id.into(),
+        status: "failed".into(),
+        error: Some("API de memória recusou requisição por erro de canal/provedor: requires more credits, or fewer max_tokens".into()),
+    }).await.unwrap();
+
+    store.call(Request::RequeueJobs).await.unwrap();
+
+    let claimed = store.call(Request::ClaimJob).await.unwrap();
+    assert_eq!(claimed["id"], job_id);
+    assert_eq!(claimed["attempts"], 1);
+
+    store.call(Request::Close).await.unwrap();
+    server_task.abort();
+}
+
 

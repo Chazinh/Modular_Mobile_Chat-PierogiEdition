@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { api, config, createApiTransport } from '../client/src/api.js';
+import { api, config, createApiTransport, staleReceiptError } from '../client/src/api.js';
 import { createServerConnection } from '../client/src/server-connection.js';
 
 test('pareamento: chamadas públicas não enviam token antigo e operações protegidas continuam autenticadas', async () => {
@@ -179,6 +179,7 @@ test('API: pendência salva antes do POST, recuperação/stop presos à origem e
     assert.ok(calls.filter(c => c.url.includes('/generations/')).every(c => c.url.startsWith('https://pc.example.com/')));
     config.configureConnection({ local: 'https://new-pc.example.com' });
     await assert.rejects(api.attachGeneration('guard', 'g1', 0, () => {}), { code: 'ORIGIN_CHANGED' });
+    await assert.rejects(api.queryOperation('guard'), { code: 'ORIGIN_CHANGED' });
   } finally {
     config.configureConnection({});
     if (originals.window === undefined) delete globalThis.window; else globalThis.window = originals.window;
@@ -210,4 +211,13 @@ test('auth: UNPAIRED local/PC informa origem e preserva credencial PC independen
     if (originals.window === undefined) delete globalThis.window; else globalThis.window = originals.window;
     if (originals.storage === undefined) delete globalThis.localStorage; else globalThis.localStorage = originals.storage;
   }
+});
+
+test('pendência: recibo cuja origem desapareceu é obsoleto e não vira queda de rede', () => {
+  for (const error of [{ status: 404 }, { code: 'ORIGIN_CHANGED' }, { code: 'UNKNOWN_ORIGIN' }, { code: 'OPERATION_MISMATCH' }]) {
+    assert.equal(staleReceiptError(error), true, `recibo obsoleto: ${JSON.stringify(error)}`);
+  }
+  assert.equal(staleReceiptError({ code: 'AMBIGUOUS_WRITE' }), false, 'recebimento incerto preserva o recibo para revisão');
+  assert.equal(staleReceiptError({ status: 0, data: { offline: true } }), false, 'queda real de rede não é recibo obsoleto');
+  assert.equal(staleReceiptError(undefined), false);
 });
