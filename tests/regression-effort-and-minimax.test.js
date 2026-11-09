@@ -3,21 +3,12 @@ import assert from 'node:assert/strict';
 import { DEFAULT_PRESETS } from '../client/src/default-presets.js';
 import { mergeWithDefaults, normalizeChatPreset } from '../client/src/api.js';
 
-test('Regressão: MiniMax M3.1 deve estar completo com rotas 9Router e controle de esforço', () => {
-  const minimax = DEFAULT_PRESETS.presets.find((p) => p.id === 'minimax-m31');
-  assert.ok(minimax, 'minimax-m31 deve existir em DEFAULT_PRESETS');
-  assert.equal(minimax.groupRoute, 'MiniMaxM3.1', 'MiniMax deve ter groupRoute MiniMaxM3.1');
-  assert.ok(minimax.routes.some((r) => r.id === 'MiniMaxM3.1'), 'Deve ter rota de grupo MiniMaxM3.1');
-  assert.ok(minimax.routes.some((r) => r.id === 'openrouter/minimax/minimax-m3.1-flash:free'), 'Deve ter rota openrouter');
-  assert.ok(minimax.routes.some((r) => r.id === 'oc/minimax-m3.1-flash-free'), 'Deve ter rota oc');
-  assert.ok(minimax.preferredRoutes.includes('oc/minimax-m3.1-flash-free'), 'preferredRoutes deve incluir oc');
-  assert.deepEqual(minimax.efforts, ['low', 'medium', 'high'], 'MiniMax deve suportar low, medium, high');
-  assert.equal(minimax.thinkingCanDisable, true, 'MiniMax deve permitir desligar pensamento');
-  assert.notEqual(minimax.thinkingDefault, false, 'MiniMax não deve iniciar com pensamento desligado');
+test('MiniMax removido não é oferecido para novas seleções', () => {
+  assert.ok(!DEFAULT_PRESETS.presets.some(p => p.id === 'minimax-m31'));
 });
 
 test('Regressão: Modelos com pensamento profundo devem ter esforços low, medium, high e não iniciar desligados', () => {
-  const models = ['deepseek-v41-flash', 'muse-spark-13', 'nemotron-35', 'minimax-m31'];
+  const models = ['deepseek-v41-flash'];
   for (const id of models) {
     const p = DEFAULT_PRESETS.presets.find((x) => x.id === id);
     assert.ok(p, `${id} deve existir`);
@@ -62,7 +53,7 @@ test('Regressão: mergeWithDefaults recupera modelos novos e atualiza cache desa
   };
 
   const merged = mergeWithDefaults(staleCached);
-  assert.ok(merged.presets.some((p) => p.id === 'minimax-m31'), 'mergeWithDefaults deve injetar minimax-m31');
+  assert.ok(!merged.presets.some((p) => p.id === 'minimax-m31'), 'cache não deve reinjetar MiniMax removido');
   const ds = merged.presets.find((p) => p.id === 'deepseek-v41-flash');
   assert.deepEqual(ds.efforts, ['low', 'medium', 'high'], 'mergeWithDefaults deve atualizar lista de esforços');
   assert.ok(ds.routes.some((r) => r.id === 'oc/deepseek-v4.1-flash-free'), 'mergeWithDefaults deve sincronizar rotas');
@@ -80,10 +71,7 @@ test('Regressão: Outro modelo (generic) SEMPRE deve ficar em último lugar na l
   const lastPreset = merged.presets[merged.presets.length - 1];
   assert.equal(lastPreset.id, 'generic', '"generic" (Outro modelo) deve ser obrigatoriamente o último item da lista');
 
-  const minimaxIndex = merged.presets.findIndex(p => p.id === 'minimax-m31');
-  const genericIndex = merged.presets.findIndex(p => p.id === 'generic');
-  assert.ok(minimaxIndex !== -1, 'minimax-m31 deve estar presente');
-  assert.ok(minimaxIndex < genericIndex, 'minimax-m31 deve aparecer antes de "generic" (Outro modelo)');
+  assert.equal(merged.presets.findIndex(p => p.id === 'minimax-m31'), -1);
 });
 
 test('Regressão: normalizeChatPreset normaliza chats com rota minimax mesmo com preset genérico', () => {

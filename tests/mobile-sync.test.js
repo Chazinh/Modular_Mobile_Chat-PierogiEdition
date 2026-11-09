@@ -440,10 +440,9 @@ test('sync: lote agregado acima de 8MiB é dividido, sem truncar nenhuma convers
   assert.equal(f.states.mobile.rows.size, 4);
 });
 
-test('sync: hash divergente com fingerprint compatível e conversa perdida bloqueiam convergência', async () => {
-  let changed = false;
+test('sync: hash persistentemente divergente com fingerprint compatível e conversa perdida bloqueiam convergência', async () => {
   const f = fixture({ onCall: ({ kind, state, body }) => {
-    if (!body && kind === 'mobile' && state.rows.size && !changed) { state.rows.get('c').hash = 'f'.repeat(64); changed = true; }
+    if (!body && kind === 'mobile' && state.rows.size) state.rows.get('c').hash = 'f'.repeat(64);
   } });
   f.put('pc', 'c', 'original');
   await assert.rejects(f.sync.synchronize(f.options), { code: 'HASH_DIVERGENCE' });
@@ -538,6 +537,28 @@ for (const loseCheckpoint of [false, true]) test(loseCheckpoint
     assert.ok(resolved.startsWith(path.resolve(tempRoot) + path.sep));
     rmSync(resolved, { recursive: true, force: true });
   }
+});
+
+test('sync: pull final reconcilia hash de embeddings compatíveis mesmo com contentHash igual', async () => {
+  const changed = new Set();
+  const f = fixture({ onCall: ({ kind, state, body, header }) => {
+    if (!body?.pushes?.length || changed.has(kind)) return;
+    changed.add(kind);
+    const accepted = body.pushes.map(push => {
+      const snapshot = { ...clone(push.snapshot), embeddings: [{ vector: kind === 'pc' ? 3 : 2 }] };
+      const row = { convId: push.convId, snapshot, hash: hash(snapshot),
+        contentHash: hash({ ...snapshot, embeddings: [] }), cursor: ++state.cursor, revision: 1 };
+      state.rows.set(push.convId, row);
+      return { convId: row.convId, hash: row.hash, contentHash: row.contentHash };
+    });
+    return Response.json({ ...header, ackBatch: body.batchId, accepted, conflicts: [], ignoredEmbeddings: [] });
+  } });
+  f.put('pc', 'vectors', 'Conteúdo preservado', [{ vector: 1 }]);
+  const result = await f.sync.synchronize(f.options);
+  assert.equal(result.converged, true);
+  assert.equal(f.states.pc.rows.get('vectors').hash, f.states.mobile.rows.get('vectors').hash);
+  assert.equal(f.states.mobile.rows.get('vectors').snapshot.conversation.name, 'Conteúdo preservado');
+  assert.equal(f.calls.filter(c => c.kind === 'mobile' && c.body?.pushes?.length).length, 2);
 });
 
 test('sync: resolveConflict desfaz lote pendente CONFLICT, recalcula baselines e converge sem deadlocks', async () => {

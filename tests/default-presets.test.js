@@ -51,10 +51,9 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.ok(ids.has('claude-sonnet-5-5'));
   assert.ok(ids.has('gemini-38-flash'));
   assert.ok(ids.has('glm-52'));
-  assert.ok(ids.has('muse-spark-13'));
-  assert.ok(ids.has('nemotron-35'));
-  assert.ok(ids.has('minimax-m31'));
-  assert.ok(ids.has('gemma-4'));
+  for (const id of ['muse-spark-13', 'nemotron-35', 'minimax-m31', 'gemma-4']) {
+    assert.ok(!ids.has(id), `${id} removido do catálogo narrativo`);
+  }
 
   // Modelos mortos/desligados devem ser removidos da lista ativa
   assert.ok(!ids.has('kimi-k3'), 'kimi-k3 desligado deve ser removido');
@@ -86,20 +85,6 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.ok(gemini.routes.some(r => r.id === 'Gemini'), 'Gemini deve expor a rota do grupo Gemini');
   assert.equal(glm.groupRoute, 'GLM');
   assert.ok(glm.routes.some(r => r.id === 'GLM'), 'GLM deve expor a rota do grupo GLM');
-  const muse = DEFAULT_PRESETS.presets.find(p => p.id === 'muse-spark-13');
-  assert.equal(muse.groupRoute, 'Muse');
-  assert.ok(muse.routes.some(r => r.id === 'Muse'), 'Muse deve expor a rota do grupo Muse');
-  const nemotron = DEFAULT_PRESETS.presets.find(p => p.id === 'nemotron-35');
-  assert.equal(nemotron.groupRoute, 'Nemotron');
-  assert.ok(nemotron.routes.some(r => r.id === 'Nemotron'), 'Nemotron deve expor a rota do grupo Nemotron');
-  const minimax = DEFAULT_PRESETS.presets.find(p => p.id === 'minimax-m31');
-  assert.equal(minimax.groupRoute, 'MiniMaxM3.1');
-  assert.ok(minimax.routes.some(r => r.id === 'MiniMaxM3.1'), 'MiniMax deve expor a rota do grupo MiniMaxM3.1');
-  assert.ok(minimax.preferredRoutes.includes('openrouter/minimax/minimax-m3.1-flash:free'), 'MiniMax deve incluir rota openrouter');
-  const gemma = DEFAULT_PRESETS.presets.find(p => p.id === 'gemma-4');
-  assert.equal(gemma.groupRoute, 'Gemma4');
-  assert.ok(gemma.routes.some(r => r.id === 'Gemma4'), 'Gemma 4 deve expor a rota do grupo Gemma4');
-  assert.ok(gemma.preferredRoutes.includes('openrouter/google/gemma-4-31b-it:free'), 'Gemma 4 deve incluir rota openrouter');
 
   // Regressão: Argon EXPLICITAMENTE excluído ("menos o argon")
   for (const preset of DEFAULT_PRESETS.presets) {

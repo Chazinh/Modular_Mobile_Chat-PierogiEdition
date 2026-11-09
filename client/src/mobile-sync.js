@@ -417,7 +417,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       const finalPullIds = [], finalPullBases = new Map();
       for (const id of pullIds) {
         const p = pcState.manifests.get(id), m = mobileState.manifests.get(id);
-        if (p && m && !p.purged && !m.purged && p.contentHash !== m.contentHash) {
+        if (p && m && !p.purged && !m.purged && (compatible() ? p.hash !== m.hash : p.contentHash !== m.contentHash)) {
           finalPullIds.push(id);
           finalPullBases.set(id, m.hash);
         }

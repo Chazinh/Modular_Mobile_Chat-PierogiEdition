@@ -459,19 +459,7 @@ fn new_presets_routes_thinking_and_unlisted_routes() {
     // known direct routes appear even outside /models, only when the provider answered
     let listed = vec!["cbai/deepseek-v4.1-flash".to_string(), "Muse".to_string()];
     let pub_list = presets::public(&listed, &json!({}));
-    let muse = pub_list
-        .iter()
-        .find(|p| p["id"] == "muse-spark-13")
-        .unwrap();
-    assert_eq!(muse["available"], true);
-    assert_eq!(
-        muse["routes"][0]["id"],
-        "Muse"
-    );
-    assert_eq!(
-        muse["routes"][1]["id"],
-        "oc/muse-spark-1.3-contributor-free"
-    );
+    assert!(pub_list.iter().all(|p| p["id"] != "muse-spark-13"));
     let kimi = pub_list.iter().find(|p| p["id"] == "kimi-k3").unwrap();
     assert_eq!(kimi["available"], false);
     assert!(

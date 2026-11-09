@@ -5,6 +5,15 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.1.6: catálogo narrativo e memória exclusivamente local — 2026-11-08
+
+- Removidos Gemma 4, MiniMax, Nemotron 3.5 Super e Muse Spark do seletor narrativo “Modelo e esforço”, incluindo catálogos em cache e rotas genéricas anunciadas pelo servidor.
+- Preservados os contratos históricos das conversas, suas mensagens e os modelos locais de memória: Nemotron 3.5 Bolt E4B Q4_K_M e embeddinggemma. O Bolt não é uma opção narrativa do 9Router; os perfis locais do Android também não são exibidos em “Modelo e esforço”.
+- Corrigida a reconciliação final dos cofres: comparação por hash completo com embeddings compatíveis e por contentHash quando incompatíveis; a promoção ao PC continua exigindo convergência.
+- Memória em modo local não troca automaticamente para 9Router/API. Ausência de modelo local adia jobs sem consumir tentativas; modo API exige consentimento e destino explícitos. JSON incompleto não é aceito como extração válida.
+- Corrigida a escolha de npm/npx no pipeline Android quando existem múltiplas instalações no PATH, preservando assinatura e dados durante atualização.
+- Ajustados os testes existentes do catálogo e mantidos os testes de sincronização, política de memória e launcher adicionados durante as correções anteriores.
+
 ### ModularChat 4.1.5: Android Vault Reopening, Keystore JNI Resilience & Desktop Loopback Memory Extraction — 2026-11-08
 
 - **Vault Lock Reopen & Android Keystore Resilience (`server-rust/src/privacy.rs`, `server-rust/src/android_jni.rs`, `client/android/app/src/main/java/io/github/modularchat/pierogiedition/NativeVaultKey.java`)**:

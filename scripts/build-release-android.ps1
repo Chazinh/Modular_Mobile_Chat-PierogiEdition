@@ -198,8 +198,8 @@ try {
     [void](Invoke-ReleaseTool $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         (Join-Path $PSScriptRoot 'build-android-llama.ps1'), '-Local', $Local) 'llama-arm64' -TimeoutSeconds 1500)
     Assert-SourceSnapshot
-    [void](Invoke-ReleaseTool (Get-Command npm.cmd -CommandType Application).Source @('run', 'build') 'vite-build' $client 240)
-    [void](Invoke-ReleaseTool (Get-Command npx.cmd -CommandType Application).Source @('--no-install', 'cap', 'sync', 'android') 'capacitor-sync' $client 180)
+    [void](Invoke-ReleaseTool (Get-Command npm.cmd -CommandType Application -All | Select-Object -First 1).Source @('run', 'build') 'vite-build' $client 240)
+    [void](Invoke-ReleaseTool (Get-Command npx.cmd -CommandType Application -All | Select-Object -First 1).Source @('--no-install', 'cap', 'sync', 'android') 'capacitor-sync' $client 180)
     $init = Join-Path $build 'isolated-release.gradle'
     $gradleRoot = $build.Replace('\', '/').Replace("'", "\\'")
     [IO.File]::WriteAllText($init, "allprojects { layout.buildDirectory.set(new File('$gradleRoot', project.path.replace(':', '_'))) }", $utf8)

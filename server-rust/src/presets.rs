@@ -3,7 +3,14 @@ use serde_json::{Value, json};
 use std::sync::LazyLock;
 
 /// Version of the preset definitions; every generation records it.
-pub const PRESET_VERSION: u32 = 11;
+pub const PRESET_VERSION: u32 = 12;
+// Keep historical request contracts for existing chats, but do not offer these narrative models.
+const HIDDEN_NARRATIVE_PRESETS: &[&str] = &["gemma-4", "minimax-m31", "nemotron-35", "muse-spark-13"];
+pub fn narrative_route_visible(route: &str) -> bool {
+    let lower = route.to_lowercase();
+    !["gemma4", "gemma-4", "gemma_4", "gemma 4", "minimax", "nemotron", "muse"]
+        .iter().any(|mark| lower.contains(mark))
+}
 /// Retired presets: old conversations that use them still open and generate with the current default preset.
 const RETIRED_PRESETS: &[&str] = &["space-bunny"];
 /// Routes that must not be exposed or selected (e.g. argon is excluded by request; space-bunny is retired).
@@ -107,9 +114,11 @@ pub fn effort_for(preset: &Value, route: &str, requested: &Value) -> Value {
     }
 }
 pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
+    let ids: Vec<String> = ids.iter().filter(|id| narrative_route_visible(id)).cloned().collect();
     let has_server_routes = ids.iter().any(|id| id != "mobile-local" && !id.starts_with("mobile-api:"));
     PRESETS
         .iter()
+        .filter(|p| !HIDDEN_NARRATIVE_PRESETS.contains(&s(p, "id").as_str()))
         .map(|p| {
             let mut out = p.clone();
             // routes listed by the providers + known direct routes served without being listed in /models

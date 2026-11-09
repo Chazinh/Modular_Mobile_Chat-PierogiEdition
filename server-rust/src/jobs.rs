@@ -190,13 +190,9 @@ impl Runner {
         let policy = self.policy.read().unwrap().clone();
         let backend = match MemoryBackend::resolve(&self.local, &self.providers, &policy, &self.client).await? {
             Some(b) => b,
-            None if !self.local.is_mobile() => MemoryBackend::Local {
-                local: self.local.clone(),
-                compact: false,
-            },
             None => return Ok(false),
         };
-        if self.local.is_mobile() && !backend.available() {
+        if !backend.available() {
             return Ok(false);
         }
         let job = self.store.call(Request::ClaimJob).await?;
@@ -915,6 +911,31 @@ mod mobile_backend_tests {
         tokio::time::timeout(Duration::from_secs(1), worker).await.unwrap().unwrap();
         release.notify_waiters(); server.abort();
         local.stop().await.unwrap(); store.call(Request::Close).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn desktop_unavailable_local_and_deferred_do_not_claim_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            data_dir: dir.path().to_path_buf(), dist: dir.path().join("dist"),
+            address: "127.0.0.1:0".parse().unwrap(), require_pairing: false,
+            providers: None, max_generations: 1, production: false, native_lib_dir: None, review: false,
+        };
+        let store = Store::open_for_config(&config).unwrap();
+        let local = LocalModels::new(&config, reqwest::Client::new()).unwrap();
+        assert!(!local.chat_available());
+        let conv = store.call(Request::CreateConversation(json!({"routeId":"fixture","presetId":"generic"}))).await.unwrap();
+        let job = store.call(Request::EnqueueJob(json!({"convId":conv["id"],"kind":"cast"}))).await.unwrap();
+        let (events, _) = broadcast::channel(8);
+        let runner = Runner::new(store.clone(), local, Arc::new(Notify::new()), events, false);
+        for mode in [MemoryMode::Local, MemoryMode::Deferred] {
+            *runner.policy.write().unwrap() = MemoryPolicy { mode, api: None };
+            assert!(!runner.cycle().await.unwrap());
+            let input = store.call(Request::JobInput(s(&job, "id"))).await.unwrap();
+            assert_eq!(input["job"]["status"], "pending");
+            assert_eq!(input["job"]["attempts"], 0);
+        }
+        store.call(Request::Close).await.unwrap();
     }
 
     #[tokio::test]

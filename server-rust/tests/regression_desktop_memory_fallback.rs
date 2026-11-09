@@ -11,7 +11,7 @@ use modularchat_server::{
     api::{self, AppState},
     config::Config,
     local::LocalModels,
-    memory_backend::{MemoryBackend, MemoryMode, MemoryPolicy},
+    memory_backend::{MemoryApi, MemoryBackend, MemoryMode, MemoryPolicy},
     providers::{Providers, RuntimeProviders},
     store::Request,
 };
@@ -27,6 +27,16 @@ struct FixtureServer {
 impl Drop for FixtureServer {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+fn api_policy(provider: &str, model: &str) -> MemoryPolicy {
+    MemoryPolicy {
+        mode: MemoryMode::Api,
+        api: Some(MemoryApi {
+            provider: provider.into(), model: model.into(), history_consent: true,
+            max_tokens: 1200, max_input_tokens: 6000, timeout_seconds: 60,
+        }),
     }
 }
 
@@ -129,7 +139,7 @@ The user and companion are at the harbor.
 }
 
 #[tokio::test]
-async fn regression_desktop_memory_fallback_resolves_and_processes() {
+async fn regression_desktop_local_never_falls_back_and_api_requires_consent() {
     let model = "oc/deepseek-v4.1-flash-free";
     let fixture = start_fixture(model, true).await;
 
@@ -167,19 +177,25 @@ async fn regression_desktop_memory_fallback_resolves_and_processes() {
     let providers_obj = Arc::new(Providers::from_json(&providers_json).unwrap());
     let providers = RuntimeProviders::new(Some(providers_obj.clone()));
 
-    // 1. Resolve on Desktop with default Local policy -> falls back to desktop upstream API
-    let default_policy = MemoryPolicy {
-        mode: MemoryMode::Local,
-        api: None,
-    };
+    let local_policy = MemoryPolicy { mode: MemoryMode::Local, api: None };
+    assert!(MemoryBackend::resolve(&local, &providers, &local_policy, &client).await.unwrap().is_none());
+    assert_eq!(MemoryBackend::desktop_upstream_model(&providers, &local_policy), None);
 
+    // Remote processing requires an explicit destination and history consent.
+    let default_policy = api_policy("fixture-provider", model);
+    let mut no_consent = default_policy.clone();
+    no_consent.api.as_mut().unwrap().history_consent = false;
+    assert!(MemoryBackend::resolve(&local, &providers, &no_consent, &client).await.is_err());
+    let mut wrong_destination = default_policy.clone();
+    wrong_destination.api.as_mut().unwrap().provider = "missing-provider".into();
+    assert!(MemoryBackend::resolve(&local, &providers, &wrong_destination, &client).await.is_err());
     let backend = MemoryBackend::resolve(&local, &providers, &default_policy, &client)
         .await
         .expect("Resolution must succeed");
 
     assert!(
         backend.is_some(),
-        "MemoryBackend must resolve to upstream API when local is unavailable on desktop"
+        "Explicit API policy must resolve its configured destination"
     );
 
     let backend = backend.unwrap();
@@ -246,17 +262,10 @@ async fn regression_desktop_memory_fallback_resolves_and_processes() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let status: Value = serde_json::from_slice(&bytes).unwrap();
 
-    assert_eq!(
-        status["local"]["chat"]["ok"], true,
-        "Desktop /api/status must report local.chat.ok = true when upstream is available"
-    );
-    assert!(
-        status["local"]["chat"]["model"]
-            .as_str()
-            .unwrap()
-            .contains(model),
-        "Desktop /api/status must report the upstream model name"
-    );
+    assert_eq!(status["local"]["memoryPolicy"]["mode"], "local");
+    assert_eq!(status["local"]["chat"]["ok"], false,
+        "Missing GGUF must not be masked by an available remote provider");
+    assert_ne!(status["local"]["chat"]["backend"], "upstream");
 
     app_state.store.call(Request::Close).await.unwrap();
 }
@@ -416,10 +425,7 @@ async fn regression_desktop_format_cache_and_requeue() {
     let client = reqwest::Client::new();
     let local = LocalModels::new(&config, client.clone()).unwrap();
 
-    let policy = MemoryPolicy {
-        mode: MemoryMode::Local,
-        api: None,
-    };
+    let policy = api_policy("fixture-9router", "Deepseek");
 
     // 1. First resolution and call: negotiates json_schema -> json_object
     let backend1 = MemoryBackend::resolve(&local, &runtime, &policy, &client)
@@ -558,10 +564,7 @@ async fn test_regression_provider_channel_rejection_defers_job() {
     let client = reqwest::Client::new();
     let local = LocalModels::new(&config, client.clone()).unwrap();
 
-    let policy = MemoryPolicy {
-        mode: MemoryMode::Local,
-        api: None,
-    };
+    let policy = api_policy("fixture-9router", "Deepseek");
 
     let backend = MemoryBackend::resolve(&local, &runtime, &policy, &client)
         .await
@@ -583,7 +586,7 @@ async fn test_regression_provider_channel_rejection_defers_job() {
 }
 
 #[tokio::test]
-async fn test_regression_loopback_prefers_nemotron_over_deepseek() {
+async fn test_regression_loopback_preserves_explicit_memory_destination() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let url = format!("http://127.0.0.1:{port}/v1");
@@ -633,13 +636,10 @@ async fn test_regression_loopback_prefers_nemotron_over_deepseek() {
     let client = reqwest::Client::new();
     let local = LocalModels::new(&config, client.clone()).unwrap();
 
-    let policy = MemoryPolicy {
-        mode: MemoryMode::Local,
-        api: None,
-    };
+    let policy = api_policy("fixture-9router", "Deepseek");
 
     let model = MemoryBackend::desktop_upstream_model(&runtime, &policy);
-    assert_eq!(model, Some("Nemotron".to_string()));
+    assert_eq!(model, Some("Deepseek".to_string()));
 
     let backend = MemoryBackend::resolve(&local, &runtime, &policy, &client)
         .await
@@ -648,7 +648,7 @@ async fn test_regression_loopback_prefers_nemotron_over_deepseek() {
 
     match backend {
         MemoryBackend::Api { api, .. } => {
-            assert_eq!(api.model, "Nemotron");
+            assert_eq!(api.model, "Deepseek");
             assert_eq!(api.provider, "fixture-9router");
         }
         _ => panic!("Expected Api backend for loopback upstream"),
@@ -715,10 +715,7 @@ async fn test_regression_openrouter_credits_error_handling_and_requeue() {
     let client = reqwest::Client::new();
     let local = LocalModels::new(&config, client.clone()).unwrap();
 
-    let policy = MemoryPolicy {
-        mode: MemoryMode::Local,
-        api: None,
-    };
+    let policy = api_policy("fixture-9router", "Nemotron");
 
     let backend = MemoryBackend::resolve(&local, &runtime, &policy, &client)
         .await

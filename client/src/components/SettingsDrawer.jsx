@@ -2,7 +2,7 @@ import { useConfirm } from './ConfirmProvider.jsx';
 import { tr, useLanguage, currentLanguage } from '../i18n.js';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronRight, ChevronLeft, Trash2, MessageSquarePlus, Upload, Check, Users, Camera, Copy, Cpu, UserRound, Pencil, FileText, Layers, SlidersHorizontal, History } from 'lucide-react';
-import { api, config } from '../api.js';
+import { api } from '../api.js';
 import { useLayer } from '../nav.js';
 import { Avatar, fileToAvatar } from '../ui.jsx';
 import { VerdictDot } from './ChatView.jsx';
@@ -301,10 +301,9 @@ const thinkingText = (p) => isReasoningModel(p) && p.thinkingCanDisable ? 'pensa
 
 function ModelPage({ chat, presets, error, onBack, onPick }) {
   useLanguage();
-  const isPc = config.kind === 'pc';
   const rawList = (presets?.presets || [])
     .filter(p => p.selectable !== false)
-    .filter(p => !isPc || (p.id !== 'mobile-local' && p.id !== 'mobile-api'));
+    .filter(p => p.id !== 'mobile-local' && p.id !== 'mobile-api');
   const list = [...rawList].sort((a, b) => {
     if (a.id === 'generic') return 1;
     if (b.id === 'generic') return -1;

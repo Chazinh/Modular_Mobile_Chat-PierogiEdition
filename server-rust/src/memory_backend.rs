@@ -132,59 +132,33 @@ impl MemoryBackend {
         policy: &MemoryPolicy,
         client: &reqwest::Client,
     ) -> Result<Option<Self>> {
-        if policy.mode == MemoryMode::Deferred {
-            return Ok(None);
-        }
-        if policy.mode == MemoryMode::Local && local.chat_available() {
-            return Ok(Some(Self::Local {
+        match policy.mode {
+            MemoryMode::Deferred => Ok(None),
+            MemoryMode::Local if local.chat_available() => Ok(Some(Self::Local {
                 local: local.clone(),
                 compact: false,
-            }));
+            })),
+            MemoryMode::Local => Ok(None),
+            MemoryMode::Api => Self::desktop_upstream(runtime, policy, client).await,
         }
-        if let Ok(val) = std::env::var("MC_TEST_LOCAL_URL") {
-            if val.trim().is_empty() {
-                return Ok(None);
-            }
-        }
-        Self::desktop_upstream(runtime, policy, client).await
     }
 
     pub fn desktop_upstream_model(
         runtime: &RuntimeProviders,
         policy: &MemoryPolicy,
     ) -> Option<String> {
-        if policy.mode == MemoryMode::Deferred {
+        if policy.mode != MemoryMode::Api {
             return None;
         }
-        if let Ok(val) = std::env::var("MC_TEST_LOCAL_URL") {
-            if val.trim().is_empty() {
-                return None;
-            }
+        let api = policy.api.as_ref()?;
+        if !api.history_consent {
+            return None;
         }
-        let snapshot = runtime.snapshot()?;
-        if let Some(api) = &policy.api {
-            Some(api.model.clone())
-        } else {
-            let provider = snapshot.default_provider();
-            let model = std::env::var("MC_MEMORY_MODEL")
-                .or_else(|_| std::env::var("MEMORY_MODEL"))
-                .unwrap_or_else(|_| {
-                    if provider.is_loopback() {
-                        let candidates = ["Nemotron", "Gemini", "Deepseek", "DeepSeekV2"];
-                        if let Some(c) = candidates.iter().find(|c| provider.models.iter().any(|m| m.eq_ignore_ascii_case(c))) {
-                            return (*c).to_string();
-                        }
-                    }
-                    if let Some(m) = provider.models.first() {
-                        m.clone()
-                    } else if provider.is_loopback() {
-                        "Nemotron".to_string()
-                    } else {
-                        "oc/deepseek-v4.1-flash-free".to_string()
-                    }
-                });
-            Some(model)
-        }
+        runtime.snapshot()?.target(&RouteTarget {
+            provider: api.provider.clone(),
+            model: api.model.clone(),
+        }).ok()?;
+        Some(api.model.clone())
     }
 
     async fn desktop_upstream(
@@ -192,62 +166,21 @@ impl MemoryBackend {
         policy: &MemoryPolicy,
         client: &reqwest::Client,
     ) -> Result<Option<Self>> {
-        let Some(snapshot) = runtime.snapshot() else {
-            return Ok(None);
-        };
-        let (provider, model) = if let Some(api) = &policy.api {
-            match snapshot.target(&RouteTarget {
+        let api = policy.api.clone().ok_or_else(unavailable)?;
+        if !api.history_consent {
+            return Err(unavailable());
+        }
+        let (provider, _) = runtime
+            .snapshot()
+            .ok_or_else(unavailable)?
+            .target(&RouteTarget {
                 provider: api.provider.clone(),
                 model: api.model.clone(),
-            }) {
-                Ok((p, m)) => (p, m),
-                Err(_) => (snapshot.default_provider().clone(), api.model.clone()),
-            }
-        } else {
-            let provider = snapshot.default_provider().clone();
-            let model = std::env::var("MC_MEMORY_MODEL")
-                .or_else(|_| std::env::var("MEMORY_MODEL"))
-                .unwrap_or_else(|_| {
-                    if provider.is_loopback() {
-                        let candidates = ["Nemotron", "Gemini", "Deepseek", "DeepSeekV2"];
-                        if let Some(c) = candidates.iter().find(|c| provider.models.iter().any(|m| m.eq_ignore_ascii_case(c))) {
-                            return (*c).to_string();
-                        }
-                    }
-                    if let Some(m) = provider.models.first() {
-                        m.clone()
-                    } else if provider.is_loopback() {
-                        "Nemotron".to_string()
-                    } else {
-                        "oc/deepseek-v4.1-flash-free".to_string()
-                    }
-                });
-            (provider, model)
-        };
-        let mut model = model;
-        if provider.is_loopback() {
-            let candidates = ["Nemotron", "Gemini", "Deepseek", "DeepSeekV2"];
-            if model == "Deepseek" || !provider.preflight(&model).await {
-                for candidate in candidates {
-                    if provider.preflight(candidate).await {
-                        model = candidate.to_string();
-                        break;
-                    }
-                }
-            }
-            if !provider.preflight(&model).await {
-                return Ok(None);
-            }
+            })?;
+        if provider.is_loopback() && !provider.preflight(&api.model).await {
+            return Err(unavailable());
         }
-        let api = MemoryApi {
-            provider: provider.id.clone(),
-            model: model.clone(),
-            history_consent: true,
-            max_tokens: 3500,
-            max_input_tokens: 32000,
-            timeout_seconds: 90,
-        };
-        let cached_format = runtime.get_format(&provider.id, &model).unwrap_or(0);
+        let cached_format = runtime.get_format(&provider.id, &api.model).unwrap_or(0);
         Ok(Some(Self::Api {
             client: client.clone(),
             provider,

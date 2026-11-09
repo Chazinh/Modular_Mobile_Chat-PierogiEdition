@@ -1,7 +1,7 @@
 // Browser requests keep their same origin. Native requests capture a PC or embedded target and its credential.
 import { kv } from './kv.js';
 import { privateGet, privateSet, initializePrivacy, privacyNeedsPairing, clearPrivateConflicts } from './private-storage.js';
-import { DEFAULT_PRESETS } from './default-presets.js';
+import { DEFAULT_PRESETS, narrativePresetVisible, narrativeRouteVisible } from './default-presets.js';
 import { createCacheWriter } from './storage-writes.js';
 import { createLatestRequest } from './connection-lifetime.js';
 import { currentServer, configuredConnection, configureConnection, setConfiguredServer, hasConfiguredServer,
@@ -191,13 +191,19 @@ const settingsReads = createLatestRequest(connectionSnapshot);
 function invalidateSettings() { globalSettingsCache = null; settingsReads.cancel(); }
 const CACHE_LIST = 'chats';
 const CACHE_CHAT = (id) => `chat.${id}`;
-const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'kimi-k3', 'muse-spark-13', 'nemotron-35', 'step-5-preview', 'glm-52', 'minimax-m31', 'gemma-4', 'mobile-local', 'mobile-api']);
+const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'kimi-k3', 'step-5-preview', 'glm-52', 'mobile-local', 'mobile-api']);
 export const publicPresets = data => data ? {
   ...data,
   presets: (data.presets || [])
+    .filter(narrativePresetVisible)
     .filter(p => p.selectable !== false && (p.selectable === true || PUBLIC_PRESETS.has(p.id)))
     .filter(p => config.kind !== 'pc' || (p.id !== 'mobile-local' && p.id !== 'mobile-api'))
-    .map(p => p.id === 'glm-52' ? { ...p, label: 'GLM' } : p),
+    .map(p => {
+      const out = p.id === 'glm-52' ? { ...p, label: 'GLM' } : { ...p };
+      if (Array.isArray(p.routes)) out.routes = p.routes.filter(r => narrativeRouteVisible(r.id || r.route));
+      if (Array.isArray(p.preferredRoutes)) out.preferredRoutes = p.preferredRoutes.filter(narrativeRouteVisible);
+      return out;
+    }),
 } : null;
 
 export function normalizeChatPreset(chat) {
@@ -215,6 +221,11 @@ export function normalizeChatPreset(chat) {
 }
 
 export function mergeWithDefaults(data) {
+  if (data?.presets) data = { ...data, presets: data.presets.filter(narrativePresetVisible).map(p => ({
+    ...p,
+    ...(Array.isArray(p.routes) ? { routes: p.routes.filter(r => narrativeRouteVisible(r.id || r.route)) } : {}),
+    ...(Array.isArray(p.preferredRoutes) ? { preferredRoutes: p.preferredRoutes.filter(narrativeRouteVisible) } : {}),
+  })) };
   const defaults = publicPresets(DEFAULT_PRESETS);
   if (!data?.presets?.length) return defaults;
   const hasStandardPresets = data.presets.some(p => p.id === 'deepseek-v41-flash' || p.id === 'gemini-38-flash');

@@ -1,3 +1,8 @@
+const HIDDEN_PRESETS = new Set(['gemma-4', 'minimax-m31', 'nemotron-35', 'muse-spark-13']);
+export const narrativeRouteVisible = route => !/(?:gemma[-_ ]?4|minimax|nemotron|muse)/i.test(route || '');
+export const narrativePresetVisible = preset => !HIDDEN_PRESETS.has(preset.id)
+  && narrativeRouteVisible(preset.family) && narrativeRouteVisible(preset.groupRoute);
+
 export const DEFAULT_PRESETS = {
   presets: [
     {
@@ -109,88 +114,6 @@ export const DEFAULT_PRESETS = {
       defaultEffort: "high",
       thinkingCanDisable: true,
       thinkingDefault: false,
-      thinking: "enabled",
-      available: true
-    },
-    {
-      id: "muse-spark-13",
-      groupRoute: "Muse",
-      selectable: true,
-      label: "Muse Spark",
-      family: "muse",
-      preferredRoutes: ["Muse", "oc-router/meta/muse-spark-open", "oc/muse-spark-1.3-contributor-free"],
-      routes: [{ id: "Muse" }, { id: "oc-router/meta/muse-spark-open" }, { id: "oc/muse-spark-1.3-contributor-free" }],
-      efforts: ["low", "medium", "high"],
-      defaultEffort: "high",
-      thinkingCanDisable: true,
-      thinking: "enabled",
-      available: true
-    },
-    {
-      id: "nemotron-35",
-      groupRoute: "Nemotron",
-      selectable: true,
-      label: "Nemotron 3.5 Super",
-      family: "nemotron",
-      preferredRoutes: ["Nemotron", "oc-router/nvidia/nemotron-3.5-super-v1:free", "nvidia/nemotron-3.5-super-v1:free"],
-      routes: [{ id: "Nemotron" }, { id: "oc-router/nvidia/nemotron-3.5-super-v1:free" }, { id: "nvidia/nemotron-3.5-super-v1:free" }],
-      efforts: ["low", "medium", "high"],
-      defaultEffort: "high",
-      thinkingCanDisable: true,
-      thinking: "enabled",
-      available: true
-    },
-    {
-      id: "minimax-m31",
-      groupRoute: "MiniMaxM3.1",
-      selectable: true,
-      label: "MiniMax M3.1",
-      family: "minimax",
-      preferredRoutes: [
-        "MiniMaxM3.1",
-        "openrouter/minimax/minimax-m3.1-flash",
-        "openrouter/minimax/minimax-01",
-        "openrouter/minimax/minimax-m3.1-flash:free",
-        "oc/minimax-m3.1-flash-free",
-        "minimax/minimax-m3.1-flash:free"
-      ],
-      routes: [
-        { id: "MiniMaxM3.1" },
-        { id: "openrouter/minimax/minimax-m3.1-flash" },
-        { id: "openrouter/minimax/minimax-01" },
-        { id: "openrouter/minimax/minimax-m3.1-flash:free" },
-        { id: "oc/minimax-m3.1-flash-free" },
-        { id: "minimax/minimax-m3.1-flash:free" }
-      ],
-      efforts: ["low", "medium", "high"],
-      defaultEffort: "high",
-      thinkingCanDisable: true,
-      thinking: "enabled",
-      available: true
-    },
-    {
-      id: "gemma-4",
-      groupRoute: "Gemma4",
-      selectable: true,
-      label: "Gemma 4",
-      family: "gemma",
-      preferredRoutes: [
-        "Gemma4",
-        "openrouter/google/gemma-4-31b-it:free",
-        "google/gemma-4-31b-it:free",
-        "google/gemma-4-31b-it",
-        "openrouter/google/gemma-4-31b-it",
-        "oc/gemma-4-31b-it-free"
-      ],
-      routes: [
-        { id: "Gemma4" },
-        { id: "openrouter/google/gemma-4-31b-it:free" },
-        { id: "google/gemma-4-31b-it:free" },
-        { id: "google/gemma-4-31b-it" }
-      ],
-      efforts: ["low", "medium", "high"],
-      defaultEffort: "high",
-      thinkingCanDisable: true,
       thinking: "enabled",
       available: true
     }
