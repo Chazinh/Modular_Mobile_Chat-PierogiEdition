@@ -153,10 +153,11 @@ export async function readSSE(res, onEvent, requireDone = false) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.search(/\r?\n\r?\n/)) >= 0) {
-      const raw = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + (buffer[idx] === '\r' ? 4 : 2));
+    let match;
+    // The separator may be 2-4 chars ("\n\n", "\r\n\n", "\n\r\n", "\r\n\r\n"); skip exactly what matched.
+    while ((match = /\r?\n\r?\n/.exec(buffer))) {
+      const raw = buffer.slice(0, match.index);
+      buffer = buffer.slice(match.index + match[0].length);
       const data = raw.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
       if (!data) continue;
       let event;

@@ -563,7 +563,22 @@ fn gemini_has_routes_per_effort_level() {
         .iter()
         .find(|p| p["id"] == "gemini-38-flash")
         .unwrap();
-    assert_eq!(gemini["routes"].as_array().unwrap().len(), 3);
+    // Since 4.1.8 the preset's groupRoute ("Gemini") is offered first, followed by the three effort routes.
+    let ids: Vec<&str> = gemini["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "Gemini",
+            "ag/gemini-3.8-flash-low",
+            "ag/gemini-3.8-flash-medium",
+            "ag/gemini-3.8-flash-high"
+        ]
+    );
 }
 #[tokio::test]
 async fn retired_space_bunny_conversations_still_open_and_generate_with_the_default_preset() {

@@ -235,7 +235,9 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     let target;
     if (origin || pc !== undefined || wantLocal) {
       // Recovery and pairing never go through automatic selection or cross to another database.
-      if (boundary || pending) await waitFor(pending?.promise || Promise.resolve(), signal);
+      // Wait for an in-flight selection/sync boundary to settle, but never inherit its outcome:
+      // a failed automatic selection says nothing about the fixed origin being recovered.
+      if (boundary || pending) await waitFor((pending?.promise || Promise.resolve()).catch(() => {}), signal);
       const fixed = origin || (wantLocal ? local() : { server: pc || configured().local || configured().remote, kind: native() ? 'pc' : 'browser' });
       if (!fixed) throw error('LOCAL_HOST_NOT_READY', 'O host Android não está pronto.');
       if (fixed.kind === 'local') {

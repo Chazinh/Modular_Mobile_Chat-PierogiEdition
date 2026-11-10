@@ -7,6 +7,22 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.2.0: Robust SSE Boundary Parsing, Isolated Origin Recovery & Contract Alignment — 2026-11-10
+
+- **Exact SSE Event Separator Slicing (`client/src/api.js`)**:
+  - Fixed an issue in `readSSE` where mixed or variable CRLF line separators (`\r\n\n`, `\n\r\n`, 3 chars) were incorrectly sliced assuming fixed 4-character boundaries when leading with `\r`.
+  - Replaced fixed length offset slicing with dynamic regex match length (`match.index + match[0].length`), preventing corrupt event boundaries, truncated event streams, or dropped `d` characters from subsequent `data:` lines.
+- **Isolated Origin Recovery (`client/src/server-connection.js`)**:
+  - Ensured that recovering operations or connections bound to a fixed origin (`wantLocal`, specific PC, or recovery target) ignores failures in background automatic target resolution.
+  - Attached `.catch(() => {})` when waiting for `pending.promise`, ensuring that an in-flight server selection or network probe rejection does not derail or abort the recovery of a known local or origin target.
+- **Client Bundle Update (`client/dist/index.html`)**:
+  - Updated production bundle entrypoint to reference the compiled release artifact `index-Br5iegoa.js`.
+- **Route Contract Test Alignment (`server-rust/tests/contracts.rs`)**:
+  - Updated contract test `gemini_has_routes_per_effort_level` to match the 4.1.8 routing schema where preset `groupRoute` (`Gemini`) is placed first followed by the effort-tier routes (`ag/gemini-3.8-flash-low`, `medium`, `high`).
+- **Automated Anti-Regression Tests (`tests/regression-sse-separator-and-origin-recovery.test.js`)**:
+  - Added automated test asserting correct event extraction across all separator permutations (`\r\n\n`, `\n\r\n`, `\r\n\r\n`, `\n\n`).
+  - Added automated test verifying that fixed-origin target acquisition succeeds even when concurrent automatic PC switching encounters an unavailable endpoint.
+
 ### ModularChat 4.1.10: In-Memory SQLite Vault Exhaustion & Sync Snapshot Bloat Fix — 2026-11-10
 
 - **Bounded Sync Batches and Merge Checkpoints (`server-rust/src/store/sync.rs`)**:
