@@ -7,6 +7,31 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.3.0: Duplicate Chat Opens the Copy, Pairing & Data-Loss Hardening, Keyboard Scrolling — 2026-11-10
+
+- **New/duplicated chat kept writing into the old chat (`client/src/components/SettingsDrawer.jsx`, `client/src/App.jsx`, `client/src/api.js`)**:
+  - "Duplicar personagem em conversa limpa" created the copy on the server (a new tab appeared) but only reloaded the current chat, so messages, character card and memory kept going to the original conversation. It now opens the copy (`onOpenChat`), and `api.duplicateChat` returns the normalized, cached new conversation.
+- **Security (`server-rust/src/api.rs`, `server-rust/src/auth.rs`, `start-server.ps1`)**:
+  - Android: `/api/pair/start` is no longer public on the embedded host, where every installed app is loopback and could fetch the pairing code and read the chats.
+  - DNS rebinding: requests whose `Host` is a name other than `localhost`/an IP literal are refused unless listed in `MC_ALLOWED_HOSTS`; `start-server.ps1` adds the HTTPS gateway domain from `hosting/caddy/state.json`.
+  - Pairing brute force: a code is burned after 10 wrong guesses from any source; loopback (the gateway's shared address) is no longer locked out by per-IP failures.
+  - Revoking a device now ends its already-open `/api/events` stream (`{"type":"devices","revoked":id}`).
+- **Data integrity (`server-rust/src/store/*`, `server-rust/src/generation.rs`, `server-rust/src/jobs.rs`)**:
+  - Emptying the trash with consecutive deleted messages (P→A→B→C) relinked C to an already purged message and cut the start of the conversation; the parent is now re-read per purge.
+  - The 30-day trash now actually expires (`auto_prune` calls `purge_expired`; busy chats are skipped instead of aborting the purge).
+  - A vault write failure after a committed transaction no longer answers an error (clients retried and created duplicates); the flush timer keeps retrying.
+  - Generations/jobs can no longer stay `running` forever: `FinishGeneration`/`FinishJob`/`DeferJob` retry transient store failures (`Store::call_retrying`) and orphaned `running` rows of a chat are interrupted when a new turn starts (`Request::RecoverConversation`).
+  - A transient error in the 2-second partial checkpoint no longer truncates the reply.
+- **Performance and context**: sync snapshots encode embedding BLOBs straight to base64 (no JSON node per byte); editing an old reply scopes the episode lookup to its chat; `invalidate` uses one query for the whole path (new index `ix_jobs_interaction`); the phone's compact mode aligns the retrieval window with its 6-pair history.
+- **Android app**:
+  - Chat: touching/scrolling the history while typing no longer closes the keyboard.
+  - PC address/pairing screen: the form scrolls completely with the keyboard open (centered with auto margins instead of a `justify-center` scroller).
+  - The send confirmation keeps text typed while the message was in flight; a failure clearing the send receipt no longer leaves the chat stuck busy; browser pairing keeps the token if the cache key request fails; "Sair" on the biometric lock stops the local host service.
+  - Local models: nothing is downloaded automatically (only via the model manager); a stale partial chat-model download (`.part`, ~GBs from interrupted/older automatic downloads) is removed when the local host verifies its models.
+- **`start-server.ps1`**: no longer kills every `modularchat-server.exe` (a `-Sandbox` start used to kill production); port checks only consider listening sockets (TIME_WAIT no longer aborts a restart).
+- **Tests**: regression tests for every fix above (Rust: auth, api, persistence, sync, context, model files; JS: duplicate, trash chain, client fixes, keyboard). Model-catalog tests tied to specific volatile models (GLM, Gemini, Argon, MiniMax route/preset lists) were removed at the owner's request; generic mechanics tests remain.
+- **Not changed**: retention of `sync_retained`/`sync_removed` (still grows with deletions) — pruning it on one peer changes snapshot hashes and needs a coordinated sync change.
+
 ### ModularChat 4.2.0: Robust SSE Boundary Parsing, Isolated Origin Recovery & Contract Alignment — 2026-11-10
 
 - **Exact SSE Event Separator Slicing (`client/src/api.js`)**:

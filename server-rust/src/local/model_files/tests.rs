@@ -315,3 +315,22 @@ async fn sandbox_rejects_symlinked_models_directory_or_final_file() {
     assert!(file.provision(&Cancel::new()).await.is_err());
     assert_eq!(std::fs::read(external).unwrap(), b"fixture");
 }
+
+/// Regression: an interrupted (or pre-3.6 automatic) chat-model download left its `.part` in the app's storage
+/// forever (~2 GB on a phone where no chat model was ever chosen). Checking on activation must remove it,
+/// and must never start a download by itself.
+#[tokio::test]
+async fn verify_existing_removes_a_stale_part_without_downloading() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("models");
+    std::fs::create_dir_all(&root).unwrap();
+    let server = fixture(b"model".to_vec(), StatusCode::OK, None, None).await;
+    let pin = pin(b"model");
+    let part = root.join(format!("{}.part", pin.filename));
+    std::fs::write(&part, vec![0u8; 4096]).unwrap();
+    let file = ModelFile::fixture(root.clone(), pin, server.url.clone());
+    file.verify_existing(&Cancel::new()).await.unwrap();
+    assert!(!part.exists(), "stale .part must be removed");
+    assert_eq!(server.requests.load(Ordering::SeqCst), 0, "verification never downloads");
+    assert_eq!(file.status().phase, "pending");
+}

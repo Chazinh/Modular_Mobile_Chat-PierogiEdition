@@ -39,9 +39,42 @@ pub fn loopback(ip: IpAddr) -> bool {
         }
 }
 
+/// Wrong guesses a single code tolerates before it is burned. Counted globally, not per IP: behind the
+/// HTTPS gateway every client arrives from 127.0.0.1, and IPv6 address rotation defeats per-IP limits.
+pub const MAX_CODE_GUESSES: u32 = 10;
+
+/// DNS-rebinding guard. A browser always sends, in `Host`, the name it resolved. IP literals and
+/// `localhost` cannot be rebound to this machine by a third party; any other name must be listed in
+/// `MC_ALLOWED_HOSTS` (comma-separated, e.g. the HTTPS gateway's domain). A missing Host (non-browser
+/// clients, in-process tests) cannot come from a rebound page.
+pub fn host_allowed(host: &str) -> bool {
+    static ALLOWED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    host_allowed_in(host, ALLOWED.get_or_init(|| {
+        std::env::var("MC_ALLOWED_HOSTS").unwrap_or_default().split(',')
+            .map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase()).filter(|h| !h.is_empty()).collect()
+    }))
+}
+pub fn host_allowed_in(host: &str, allowed: &[String]) -> bool {
+    let host = host.trim();
+    if host.is_empty() {
+        return true;
+    }
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split_once(']').is_some_and(|(ip, _)| ip.parse::<std::net::Ipv6Addr>().is_ok());
+    }
+    let name = match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost" || name.parse::<std::net::Ipv4Addr>().is_ok() || allowed.iter().any(|a| *a == name)
+}
+
 #[derive(Default)]
 struct PairState {
     code: Option<(String, Instant)>,
+    /// Wrong guesses against the current code (see `MAX_CODE_GUESSES`).
+    wrong: u32,
     fails: HashMap<IpAddr, VecDeque<Instant>>,
 }
 #[derive(Clone)]
@@ -65,10 +98,13 @@ impl Auth {
         let mut state = self.state.lock().await;
         // Reopening the code on the PC must not invalidate the code already
         // being typed on the phone. Each explicit request renews its full TTL.
-        let code = state.code.as_ref()
+        let current = state.code.as_ref()
             .filter(|(_, expiry)| *expiry > now)
-            .map(|(code, _)| code.clone())
-            .unwrap_or_else(|| format!("{:06}", rand::random_range(0..1_000_000u32)));
+            .map(|(code, _)| code.clone());
+        if current.is_none() {
+            state.wrong = 0;
+        }
+        let code = current.unwrap_or_else(|| format!("{:06}", rand::random_range(0..1_000_000u32)));
         state.code = Some((code.clone(), now + PAIRING_TTL));
         json!({
             "code": code,
@@ -121,16 +157,25 @@ impl Auth {
             }
             !v.is_empty()
         });
-        if state.fails.len() >= 2048 && !state.fails.contains_key(&ip) {
-            return Err(Error::new(429, "Muitas tentativas de pareamento."));
+        // Loopback is the gateway (shared by every remote client) or this machine: a per-IP lock there only
+        // lets a stranger lock the owner out. The global guess budget below bounds brute force for everyone.
+        let per_ip = !loopback(ip);
+        if per_ip {
+            if state.fails.len() >= 2048 && !state.fails.contains_key(&ip) {
+                return Err(Error::new(429, "Muitas tentativas de pareamento."));
+            }
+            if state.fails.get(&ip).is_some_and(|f| f.len() >= 8) {
+                return Err(Error::new(
+                    429,
+                    "Muitas tentativas; aguarde alguns minutos.",
+                ));
+            }
         }
-        let fails = state.fails.entry(ip).or_default();
-        if fails.len() >= 8 {
-            return Err(Error::new(
-                429,
-                "Muitas tentativas; aguarde alguns minutos.",
-            ));
-        }
+        let fail = |state: &mut PairState| {
+            if per_ip {
+                state.fails.entry(ip).or_default().push_back(now);
+            }
+        };
         let code = match &p["code"] {
             Value::String(s) => s.trim().to_string(),
             Value::Number(n) => {
@@ -144,15 +189,21 @@ impl Auth {
         };
         match &state.code {
             None => {
-                state.fails.entry(ip).or_default().push_back(now);
+                fail(&mut state);
                 return Err(Error::new(401, "Nenhum código ativo no momento. Gere um novo código no PC."));
             }
             Some((_, expiry)) if *expiry <= now => {
-                state.fails.entry(ip).or_default().push_back(now);
+                fail(&mut state);
                 return Err(Error::new(401, "Código expirado. Gere um novo código no PC."));
             }
             Some((active_code, _)) if active_code != &code => {
-                state.fails.entry(ip).or_default().push_back(now);
+                fail(&mut state);
+                state.wrong += 1;
+                if state.wrong >= MAX_CODE_GUESSES {
+                    // Burn the code: at most MAX_CODE_GUESSES guesses per 1,000,000 combinations.
+                    state.code = None;
+                    return Err(Error::new(401, "Código invalidado após muitas tentativas. Gere um novo código no PC."));
+                }
                 return Err(Error::new(401, "Código incorreto. Confira os 6 dígitos."));
             }
             _ => {}
@@ -247,5 +298,55 @@ mod tests {
         // No active code after consumption
         let err_none = auth.pair_at(&json!({"code":fresh["code"]}), ip, now + Duration::from_secs(904)).await.unwrap_err();
         assert_eq!(err_none.message, "Nenhum código ativo no momento. Gere um novo código no PC.");
+    }
+
+    fn wrong_code(code: &Value) -> Value {
+        let n: u32 = code.as_str().unwrap().parse().unwrap();
+        json!({"code": format!("{:06}", (n + 1) % 1_000_000)})
+    }
+
+    // Regression: behind the gateway every client is 127.0.0.1, and rotating IPv6 addresses bypassed the
+    // per-IP limit. A code must be burned after MAX_CODE_GUESSES wrong guesses, whatever the source.
+    #[tokio::test]
+    async fn pairing_code_is_burned_after_global_guess_budget_across_ips() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = Auth::new(Store::open(dir.path()).unwrap(), true);
+        let now = Instant::now();
+        let first = auth.start_at(now).await;
+        for i in 0..MAX_CODE_GUESSES {
+            let ip: IpAddr = format!("fd00::{:x}", i + 1).parse().unwrap();
+            assert_eq!(auth.pair_at(&wrong_code(&first["code"]), ip, now).await.unwrap_err().status, 401);
+        }
+        let other: IpAddr = "fd00::ffff".parse().unwrap();
+        let burned = auth.pair_at(&json!({"code": first["code"]}), other, now).await.unwrap_err();
+        assert_eq!(burned.message, "Nenhum código ativo no momento. Gere um novo código no PC.");
+        let fresh = auth.start_at(now).await;
+        auth.pair_at(&json!({"code": fresh["code"]}), other, now).await.unwrap();
+    }
+
+    // Regression: the gateway's shared 127.0.0.1 must not be locked by a stranger's failed attempts.
+    #[tokio::test]
+    async fn loopback_is_not_locked_out_by_per_ip_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = Auth::new(Store::open(dir.path()).unwrap(), true);
+        let now = Instant::now();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        for _ in 0..8 {
+            let _ = auth.pair_at(&json!({"code":"000000"}), ip, now).await;
+        }
+        let code = auth.start_at(now).await;
+        auth.pair_at(&json!({"code": code["code"]}), ip, now).await.unwrap();
+    }
+
+    #[test]
+    fn host_allowlist_blocks_rebound_names_only() {
+        let allowed = vec!["chat.example.org".to_string()];
+        for ok in ["", "localhost", "localhost:3000", "127.0.0.1:3000", "192.168.1.5", "[::1]:3000",
+                   "Chat.Example.org:8443", "chat.example.org."] {
+            assert!(host_allowed_in(ok, &allowed), "{ok}");
+        }
+        for bad in ["evil.com", "evil.com:3000", "localhost.evil.com", "127.0.0.1.nip.io", "[evil]:1"] {
+            assert!(!host_allowed_in(bad, &allowed), "{bad}");
+        }
     }
 }

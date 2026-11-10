@@ -54,3 +54,11 @@ export function findCast(cast, name) {
     null
   );
 }
+
+// True while the composer still shows exactly the message being confirmed (nothing typed since sending).
+// The send confirmation used to wipe the box and the saved draft unconditionally, losing what was typed meanwhile.
+export const composerHoldsSent = (current, sent) => String(current ?? '').trim() === String(sent ?? '').trim();
+
+// Areas marked with data-keep-keyboard (the chat history) may be touched and scrolled while typing
+// without closing the keyboard.
+export const keepsKeyboard = (target) => !!target?.closest?.('[data-keep-keyboard]');

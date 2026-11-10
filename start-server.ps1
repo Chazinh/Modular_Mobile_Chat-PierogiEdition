@@ -199,7 +199,8 @@ if ($Sandbox -and $Port -in 3000, 20481, 20482) { throw 'Protected port; use 301
 $processesToStop = [System.Collections.Generic.List[PSObject]]::new()
 
 # 1. Processo escutando na porta
-$listener = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+# -State Listen: closing connections (TIME_WAIT, owned by PID 0) are not a server holding the port.
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($listener) {
   $process = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $listener.OwningProcess) -ErrorAction SilentlyContinue
   if ($process) {
@@ -226,13 +227,8 @@ if (Test-Path -LiteralPath $lockFile) {
   }
 }
 
-# 3. Qualquer outro processo modularchat-server.exe aberto em segundo plano
-$runningServers = Get-CimInstance Win32_Process -Filter "Name='modularchat-server.exe'" -ErrorAction SilentlyContinue
-foreach ($srv in $runningServers) {
-  if (-not ($processesToStop | Where-Object { $_.ProcessId -eq $srv.ProcessId })) {
-    $processesToStop.Add($srv)
-  }
-}
+# Never stop other ModularChat servers: a -Sandbox run (port 3011, its own vault copy) used to kill the
+# production server on port 3000 before it could write its pending vault state.
 
 foreach ($proc in $processesToStop) {
   Write-Host "Encerrando servidor ModularChat anterior (PID $($proc.ProcessId))..."
@@ -247,7 +243,7 @@ if ($processesToStop.Count -gt 0) {
     foreach ($proc in $processesToStop) {
       if (Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue) { $stillRunning = $true; break }
     }
-    if (-not $stillRunning -and -not (Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue)) { $free = $true; break }
+    if (-not $stillRunning -and -not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { $free = $true; break }
   }
   if (-not $free) { throw "Previous ModularChat instance could not be stopped." }
   if (Test-Path -LiteralPath $lockFile) {
@@ -293,6 +289,17 @@ $env:DATA_DIR = $data
 $env:HOST = if ($Loopback -or ($Sandbox -and -not $Lan)) { '127.0.0.1' } else { '0.0.0.0' }
 $env:PORT = "$Port"
 $env:REQUIRE_PAIRING = '1'
+# Host names (not IPs) the server answers to; anything else is refused as DNS rebinding.
+# The HTTPS gateway forwards its domain as Host, so trust the one recorded by scripts/caddy-host.ps1.
+$allowedHosts = @($env:MC_ALLOWED_HOSTS -split ',' | Where-Object { $_ })
+$gatewayState = Join-Path $PSScriptRoot 'hosting\caddy\state.json'
+if (Test-Path -LiteralPath $gatewayState) {
+  try {
+    $gatewayDomain = (Get-Content -LiteralPath $gatewayState -Raw | ConvertFrom-Json).domain
+    if ($gatewayDomain) { $allowedHosts += $gatewayDomain }
+  } catch { Write-Warning "Could not read $gatewayState; its domain will be refused until fixed." }
+}
+$env:MC_ALLOWED_HOSTS = ($allowedHosts | Select-Object -Unique) -join ','
 $env:MC_ENCRYPTED_STORAGE = '1'
 $env:MC_RUST_MODE = if ($Sandbox) { 'experimental' } else { 'production' }
 $env:MC_RUST_VALIDATED = '2.7.2'   # handshake: production only opens a vault through this launcher

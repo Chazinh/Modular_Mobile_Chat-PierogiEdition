@@ -155,7 +155,11 @@ impl Database {
     /// `request_json`/`context_json` of finished generations and resolved flags.
     /// Never touches messages, versions, memories, notes, episodes or sources. Idempotent.
     pub(super) fn auto_prune(&self) -> Result<Value> {
-        self.prune_logs(&json!({"days":LOG_RETENTION_DAYS}))
+        let mut out = self.prune_logs(&json!({"days":LOG_RETENTION_DAYS}))?;
+        // The trash promises 30 days, but nothing in the server ever called purge_expired: deleted chats,
+        // versions and their embeddings stayed in the in-memory database forever.
+        out["trash"] = self.purge_expired(&json!({}))?;
+        Ok(out)
     }
     pub(super) fn prune_logs(&self, p: &Value) -> Result<Value> {
         let current = p["now"]
@@ -346,13 +350,17 @@ impl Database {
         Ok(())
     }
     fn purge_interaction_detached(&self, i: &Value) -> Result<()> {
+        // Re-read the parent: purging an earlier deleted interaction of the same chain (P→A→B→C) has just
+        // repointed this one. Using the parent read before the loop relinked C to the purged A, cutting off
+        // P and everything before it from context, UI and export.
+        let parent = self.one("SELECT parent_id FROM interactions WHERE id=?", &[i["id"].clone()])?["parent_id"].clone();
         self.exec(
             "UPDATE interactions SET parent_id=? WHERE parent_id=?",
-            &[i["parent_id"].clone(), i["id"].clone()],
+            &[parent.clone(), i["id"].clone()],
         )?;
         self.exec(
             "UPDATE conversations SET head_interaction_id=? WHERE head_interaction_id=?",
-            &[i["parent_id"].clone(), i["id"].clone()],
+            &[parent, i["id"].clone()],
         )?;
         self.purge_interaction(&s(i, "id"))
     }
@@ -439,25 +447,23 @@ impl Database {
             self.purge_conversation_rows(&s(&conv, "id"))?;
             conversations += 1;
         }
-        let expired=self.rows("SELECT id,conv_id,parent_id FROM interactions WHERE deleted_at IS NOT NULL AND deleted_at<?",&[json!(cutoff)])?;
-        for i in &expired {
-            self.ensure_idle(&s(i, "conv_id"))?;
-            self.exec(
-                "UPDATE interactions SET parent_id=? WHERE parent_id=?",
-                &[i["parent_id"].clone(), i["id"].clone()],
-            )?;
-            self.exec(
-                "UPDATE conversations SET head_interaction_id=? WHERE head_interaction_id=?",
-                &[i["parent_id"].clone(), i["id"].clone()],
-            )?;
-            self.purge_interaction(&s(i, "id"))?;
+        // A conversation that is generating right now is skipped (next run takes it), never the whole purge.
+        let (mut interactions, mut parts) = (0, 0);
+        for i in self.rows("SELECT id,conv_id,parent_id FROM interactions WHERE deleted_at IS NOT NULL AND deleted_at<?",&[json!(cutoff)])? {
+            if self.ensure_idle(&s(&i, "conv_id")).is_err() {
+                continue;
+            }
+            self.purge_interaction_detached(&i)?;
+            interactions += 1;
         }
-        let parts=self.rows("SELECT p.id,i.conv_id FROM parts p JOIN interactions i ON i.id=p.interaction_id WHERE p.deleted_at IS NOT NULL AND p.deleted_at<?",&[json!(cutoff)])?;
-        for p in &parts {
-            self.ensure_idle(&s(p, "conv_id"))?;
-            self.purge_part(&s(p, "id"))?;
+        for p in self.rows("SELECT p.id,i.conv_id FROM parts p JOIN interactions i ON i.id=p.interaction_id WHERE p.deleted_at IS NOT NULL AND p.deleted_at<?",&[json!(cutoff)])? {
+            if self.ensure_idle(&s(&p, "conv_id")).is_err() {
+                continue;
+            }
+            self.purge_part(&s(&p, "id"))?;
+            parts += 1;
         }
-        Ok(json!({"conversations":conversations,"interactions":expired.len(),"parts":parts.len()}))
+        Ok(json!({"conversations":conversations,"interactions":interactions,"parts":parts}))
     }
     pub(super) fn summary(&self, c: &str) -> Result<Value> {
         let rows = self.rows(

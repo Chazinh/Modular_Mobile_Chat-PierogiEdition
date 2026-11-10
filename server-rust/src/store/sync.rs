@@ -633,23 +633,15 @@ impl Database {
                     rows.insert(key(&r, keys), self.sync_project(table, &r)?);
                 }
             }
-            for r in self.rows(&sql, &[json!(c)])? {
-                let mut r = self.sync_project(table, &r)?;
+            let source = if table == "embeddings" {
+                self.embedding_rows(c)?
+            } else {
+                self.rows(&sql, &[json!(c)])?
+            };
+            for r in source {
+                let r = self.sync_project(table, &r)?;
                 if removed_ids.contains(&(table.to_owned(), s(&r, "id"))) {
                     continue;
-                }
-                if table == "embeddings" {
-                    let bytes = r["vec"]
-                        .as_array()
-                        .ok_or_else(|| invalid("BLOB de vetor inválido."))?
-                        .iter()
-                        .map(|b| {
-                            b.as_u64()
-                                .and_then(|b| u8::try_from(b).ok())
-                                .ok_or_else(|| invalid("BLOB de vetor inválido."))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    r["vec"] = json!(STANDARD.encode(bytes));
                 }
                 rows.insert(key(&r, keys), r);
             }
@@ -700,6 +692,25 @@ impl Database {
             );
         }
         Ok(canonical(&out))
+    }
+    /// Embedding rows of `c` with `vec` already base64-encoded straight from the SQLite buffer. Going through
+    /// `rows` turned every byte of every vector into a JSON node (hundreds of MB for a long chat).
+    fn embedding_rows(&self, c: &str) -> Result<Vec<Value>> {
+        let mut st = self.db.prepare_cached("SELECT * FROM embeddings WHERE conv_id=?")?;
+        let cols: Vec<String> = st.column_names().iter().map(|x| x.to_string()).collect();
+        let at = cols.iter().position(|c| c == "vec");
+        let mut rows = st.query([c])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut obj = super::row_object(&cols, row, at)?;
+            let vec = match at.map(|i| row.get_ref(i)).transpose()? {
+                Some(rusqlite::types::ValueRef::Blob(b)) => STANDARD.encode(b),
+                _ => return Err(invalid("BLOB de vetor inválido.")),
+            };
+            obj.insert("vec".into(), json!(vec));
+            out.push(Value::Object(obj));
+        }
+        Ok(out)
     }
     fn sync_busy(&self, c: &str) -> Result<bool> {
         Ok(!self.one("SELECT 1 busy FROM generations WHERE conv_id=? AND status='running' UNION ALL SELECT 1 FROM jobs WHERE conv_id=? AND status='running' LIMIT 1",
@@ -3038,6 +3049,21 @@ mod tests {
         assert_eq!(count(&db, "SELECT count(*) FROM sync_batches"), 2 * KEEP_BATCHES_PER_PEER);
         assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints"), 4 * KEEP_CHECKPOINTS_PER_CONV);
         assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints WHERE hash='h39'"), 4);
+    }
+
+    /// Regression: the trash promised 30 days, but the server never called purge_expired, so deleted
+    /// conversations (with versions and embeddings) stayed in the in-memory database forever.
+    #[test]
+    fn automatic_pruning_empties_trash_older_than_30_days() {
+        let (_dir, db) = scratch_db();
+        let old = s(&db.create(&json!({"routeId":"r","presetId":"generic","name":"velho"})).unwrap(), "id");
+        let fresh = s(&db.create(&json!({"routeId":"r","presetId":"generic","name":"novo"})).unwrap(), "id");
+        db.delete_conv(&old).unwrap();
+        db.delete_conv(&fresh).unwrap();
+        db.db.execute("UPDATE conversations SET deleted_at='2000-01-01T00:00:00.000Z' WHERE id=?", [&old]).unwrap();
+        db.auto_prune().unwrap();
+        assert_eq!(count(&db, &format!("SELECT count(*) FROM conversations WHERE id='{old}'")), 0);
+        assert_eq!(count(&db, &format!("SELECT count(*) FROM conversations WHERE id='{fresh}'")), 1);
     }
 
     /// Regression: pruning must also give the space back, otherwise the bloated vault stays near the limit.

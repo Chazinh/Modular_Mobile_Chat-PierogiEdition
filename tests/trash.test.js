@@ -147,3 +147,21 @@ test('lixeira: itens com menos de 30 dias sobrevivem à limpeza automática e os
     await t.cleanup();
   }
 });
+
+// Regressão: com P→A→B→C e A e B apagadas em lotes separados, esvaziar a lixeira religava C à A já
+// purgada (o pai de B era lido antes do laço). P e tudo antes dela sumiam da conversa.
+test('lixeira: esvaziar com mensagens apagadas em sequência mantém a conversa ligada', async () => {
+  const t = await tempStore();
+  try {
+    const { c, turns } = await chatWith(t.store, 4);
+    await t.store.call('deleteMessage', { convId: c.id, messageId: turns[1].interactionId });
+    await t.store.call('deleteMessage', { convId: c.id, messageId: turns[2].interactionId });
+    await t.store.call('purgeTrash', { all: true });
+    const h = await history(t.store, c.id);
+    assert.ok(h.some((m) => m.includes('Pergunta 1')), `início preservado: ${h}`);
+    assert.ok(h.some((m) => m.includes('Pergunta 4')), `fim preservado: ${h}`);
+    assert.equal(h.length, 4);
+  } finally {
+    await t.cleanup();
+  }
+});

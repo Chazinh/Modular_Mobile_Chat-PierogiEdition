@@ -332,6 +332,9 @@ impl Manager {
             return Err(Error::new(409, "Já existe uma resposta em andamento.")
                 .extra("generationId", json!(g.id)));
         }
+        // With the conversation lock held and no live runner, a `running` row is an orphan (its runner failed
+        // before registering or finalizing). Left alone it answered 409 to every send until a restart.
+        self.store.call(Request::RecoverConversation(req.conv_id.clone())).await?;
         let provider_snapshot = self.providers.snapshot();
         if provider_snapshot.is_none() && !self.config.is_android() {
             return Err(Error::new(
@@ -505,7 +508,7 @@ impl Manager {
             } else {
                 None
             };
-            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint().await,"beforeSeq":data["beforeSeq"],"windowStartSeq":context::retrieval_window_start(&data),"limit":24}))).await?;
+            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint().await,"beforeSeq":data["beforeSeq"],"windowStartSeq":context::retrieval_window_start_for(&data, plan.controls["mobileCompact"] == true),"limit":24}))).await?;
             context::assemble(&data, &retrieval, &g.mode, &plan, calibration)
         };
         let enriched = tokio::select! {_=g.cancelled()=>None,v=tokio::time::timeout(Duration::from_secs(6),enrich)=>Some(v)};
@@ -691,8 +694,12 @@ impl Manager {
                             let output = g.output.lock().await;
                             (output.units != flushed).then(|| (output.units, output.buffer.clone()))
                         };
-                        if let Some((units, text)) = grown {
-                            self.store.call(Request::FlushVersion{version_id:g.version.clone(),text}).await?;
+                        // The checkpoint is only a crash safeguard: the final FinishGeneration carries the whole text.
+                        // A transient store error here used to abort the stream and truncate the reply as `error`;
+                        // now it is skipped and the next tick tries again.
+                        if let Some((units, text)) = grown
+                            && self.store.call(Request::FlushVersion{version_id:g.version.clone(),text}).await.is_ok()
+                        {
                             flushed = units;
                         }
                         continue;
@@ -899,16 +906,15 @@ impl Manager {
                 })
                 .await;
         }
-        let finalized = self
-            .store
-            .call(Request::FinishGeneration(FinishRequest {
-                generation_id: g.id.clone(),
-                status: status.into(),
-                text: Some(visible.clone()),
-                usage: usage.clone(),
-                error: error.clone(),
-            }))
-            .await;
+        let finish = FinishRequest {
+            generation_id: g.id.clone(),
+            status: status.into(),
+            text: Some(visible.clone()),
+            usage: usage.clone(),
+            error: error.clone(),
+        };
+        // Idempotent (a retry after an unseen success answers `already`).
+        let finalized = self.store.call_retrying(|| Request::FinishGeneration(finish.clone())).await;
         let final_event = match finalized {
             Ok(fin) => {
                 if self.config.review

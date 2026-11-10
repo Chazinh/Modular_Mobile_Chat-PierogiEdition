@@ -152,7 +152,7 @@ public class MainActivity extends BridgeActivity {
                     }
                     return;
                 }
-                if (resumed && (code == BiometricPrompt.ERROR_NEGATIVE_BUTTON || code == BiometricPrompt.ERROR_USER_CANCELED)) finish();
+                if (resumed && (code == BiometricPrompt.ERROR_NEGATIVE_BUTTON || code == BiometricPrompt.ERROR_USER_CANCELED)) exitLocked();
             }
         });
     }
@@ -180,6 +180,12 @@ public class MainActivity extends BridgeActivity {
         if (privacyCover != null) privacyCover.setVisibility(View.VISIBLE);
         super.onStop();
     }
+    /** "Exit" on the lock screen. onResume already started the local host; finish() alone left the foreground
+     *  service and 127.0.0.1:3011 running with no UI until the task was swiped away. */
+    private void exitLocked() {
+        stopLocalHostService();
+        finish();
+    }
     @Override public void onDestroy() {
         stopHostBinding();
         hostReady.completeExceptionally(new IllegalStateException("Local host screen closed."));
@@ -196,7 +202,7 @@ public class MainActivity extends BridgeActivity {
                     Intent intent = new Intent(Build.VERSION.SDK_INT >= 30 ? Settings.ACTION_BIOMETRIC_ENROLL : Settings.ACTION_SECURITY_SETTINGS);
                     if (Build.VERSION.SDK_INT >= 30) intent.putExtra(Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED, BiometricManager.Authenticators.BIOMETRIC_STRONG);
                     startActivity(intent);
-                }).setNegativeButton(LanguagePlugin.text(this, "Sair", "Exit"), (d, w) -> finish()).setCancelable(false).show();
+                }).setNegativeButton(LanguagePlugin.text(this, "Sair", "Exit"), (d, w) -> exitLocked()).setCancelable(false).show();
             return;
         }
         prompt.authenticate(new BiometricPrompt.PromptInfo.Builder().setTitle(getString(R.string.app_name))

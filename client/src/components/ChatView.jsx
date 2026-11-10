@@ -12,6 +12,7 @@ import { watchProviderCatalog } from '../provider-catalog.js';
 import { useLayer } from '../nav.js';
 import { Avatar, SceneText, UserText, useLongPress, copyText, useEvent } from '../ui.jsx';
 import { plainText } from '../format.js';
+import { composerHoldsSent, keepsKeyboard } from '../ui-helpers.js';
 import { Sheet, SheetButton } from './Sheet.jsx';
 import SettingsDrawer from './SettingsDrawer.jsx';
 import CastScreen from './CastScreen.jsx';
@@ -67,7 +68,7 @@ function mergeChat(prev, next) {
   return { chat: { ...next, history: same ? prev.history : history }, historyChanged: !same };
 }
 
-export default function ChatView({ hostStatus, chatId, initialChat = null, openSettingsInitially, status, onBack, onChanged, onCreate, onDeleted }) {
+export default function ChatView({ hostStatus, chatId, initialChat = null, openSettingsInitially, status, onBack, onChanged, onCreate, onOpenChat, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
   const [chat, setChat] = useState(() => initialChat || null);
@@ -367,7 +368,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
           });
           // the server received the message: the draft can go now
           if (ctx.fromComposer) {
-            composerRef.current?.clear();
+            composerRef.current?.clear(ctx.payload.content);
           }
         }
         if (ev.ack.mode === 'edit') setEditMsg(null);
@@ -403,7 +404,10 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
     const reconciled = await load(api.getPending(chatId));
     if (ctxRef.current !== ctx || ctx.cancelled) return;
     if (!reconciled) { ctx.finishing = false; return; }
-    await api.setPending(chatId, null);
+    // The reply is already reconciled from the server. A failure to drop the local receipt must not leave
+    // the chat "busy" forever (finishing stayed true and blocked every later finish): unlock and report it.
+    // The leftover receipt is reconciled again by recoverPending on the next send.
+    await api.setPending(chatId, null).catch(() => setError(tr("Não foi possível limpar o recibo do envio no cache; ele será conferido no próximo envio.")));
     setStream(null);
     busyRef.current = false;
     gidRef.current = null;
@@ -778,6 +782,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
 
       <div
         ref={scrollRef}
+        data-keep-keyboard=""
         onScroll={onScroll}
         onPointerDown={topBar.open ? topBar.hide : undefined}
         className="mc-scroll relative min-h-0 flex-1 overflow-y-auto px-3"
@@ -902,6 +907,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
           }}
           onOpenCast={() => setCastOpen(true)}
           onCreate={onCreate}
+          onOpenChat={onOpenChat}
           onDeleted={onDeleted}
         />
       )}
@@ -1077,7 +1083,12 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, o
   useLayer(!collapsed, collapse);
   useEffect(() => {
     if (collapsed) return;
-    const outside = event => { if (!shellRef.current?.contains(event.target)) collapse(); };
+    // Touching the history (to scroll back while typing) must keep the keyboard open: it used to collapse
+    // the composer and blur the field on the first touch of every scroll. Other taps outside still close it.
+    const outside = event => {
+      if (shellRef.current?.contains(event.target) || keepsKeyboard(event.target)) return;
+      collapse();
+    };
     let keyboardSeen = false;
     const viewport = () => {
       const height = window.visualViewport?.height || window.innerHeight;
@@ -1095,7 +1106,10 @@ const Composer = forwardRef(function Composer({ chatId, busy, offline, onSend, o
   }, [collapsed, collapse]);
 
   useImperativeHandle(ref, () => ({
-    clear() {
+    // `sent`: the text the server just confirmed. If the box no longer holds it (the user kept typing while the
+    // message was in flight), the new text is kept instead of being wiped together with the saved draft.
+    clear(sent) {
+      if (sent != null && !composerHoldsSent(valueRef.current, sent)) return;
       clearTimeout(draftTimer.current);
       draftTimer.current = 0;
       valueRef.current = '';

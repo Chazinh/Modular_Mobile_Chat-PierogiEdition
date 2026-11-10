@@ -141,6 +141,8 @@ pub enum Request {
         text: String,
     },
     RecoverInterrupted,
+    /// Interrupts `running` rows of one conversation that no live runner owns (see Generations::start).
+    RecoverConversation(String),
     GetGeneration(String),
     EditMessage {
         conv_id: String,
@@ -526,6 +528,21 @@ impl Store {
             encrypted,
         })
     }
+    /// `call` for idempotent requests that must not be lost to a transient failure (full queue, deadline):
+    /// finalizing a generation or a job. Retries with backoff (~16 s total); a 4xx answer is final.
+    /// A single lost FinishGeneration/FinishJob left the row `running`, blocking that chat until a restart.
+    pub async fn call_retrying(&self, make: impl Fn() -> Request) -> Result<Value> {
+        let mut last = None;
+        for attempt in 0..6u32 {
+            match self.call(make()).await {
+                Ok(v) => return Ok(v),
+                Err(e) if (400..500).contains(&e.status) => return Err(e),
+                Err(e) => last = Some(e),
+            }
+            tokio::time::sleep(Duration::from_millis(250 << attempt)).await;
+        }
+        Err(last.unwrap_or_else(|| Error::new(503, "Armazenamento indisponível.")))
+    }
     pub async fn call(&self, request: Request) -> Result<Value> {
         let (reply, rx) = oneshot::channel();
         let env = Envelope {
@@ -733,7 +750,12 @@ impl Database {
                 Durability::Immediate => {
                     self.immediate += 1;
                     self.mark_dirty(DERIVED_DELAY);
-                    self.save_now()?;
+                    // The transaction is already committed and visible. Failing the request here made the
+                    // client repeat a write that did happen (a second chat, memory or cast) and left a begun
+                    // turn without its runner. The deadline stays set, so flush_timer keeps retrying the file.
+                    if let Err(e) = self.save_now() {
+                        tracing::warn!(error = %e.message, "falha ao gravar o cofre após commit; nova tentativa em 1 s");
+                    }
                 }
                 Durability::Derived => self.mark_dirty(DERIVED_DELAY),
                 Durability::Checkpoint => self.mark_dirty(CHECKPOINT_DELAY),
@@ -894,7 +916,8 @@ impl Database {
                 }
                 self.flush(&version_id, &text)
             }
-            Request::RecoverInterrupted => self.recover(),
+            Request::RecoverInterrupted => self.recover(None),
+            Request::RecoverConversation(c) => self.recover(Some(&c)),
             Request::GetGeneration(g) => self.generation(&g),
             Request::EditMessage {
                 conv_id,

@@ -315,8 +315,14 @@ export const api = {
   async pair(code, deviceName, pc = config.connection.local || config.connection.remote || '') {
     const r = await request('POST', '/api/pair', { code, deviceName }, { pc, unauthenticated: true });
     const needsPairing = privacyNeedsPairing();
-    if(needsPairing) await initializePrivacy(pc,r.token);
-    await privateSet(LS_TOKEN,r.token);
+    // The server has already spent the code: keep the token before opening the cache protection. Before, a
+    // timeout fetching the cache key threw first and the token was dropped (a new code was needed).
+    // While waiting for pairing, privateSet stages the value in memory and throws by design; initializePrivacy
+    // then persists the staged state.
+    if(needsPairing) {
+      await privateSet(LS_TOKEN,r.token).catch(() => {});
+      await initializePrivacy(pc,r.token);
+    } else await privateSet(LS_TOKEN,r.token);
     if(needsPairing) await kv.migratePrivacy();
     await clearPrivateConflicts().catch(() => {});
     invalidateConnection();
@@ -383,7 +389,12 @@ export const api = {
     queueCache(CACHE_CHAT(id), result);
     return result;
   },
-  duplicateChat: (id) => request('POST', `/api/chats/${id}/duplicate`),
+  // The copy is a brand-new conversation (new id, empty history): callers must open it, never keep the source.
+  async duplicateChat(id) {
+    const copy = normalizeChatPreset({ ...(await request('POST', `/api/chats/${id}/duplicate`)), history: [] });
+    queueCache(CACHE_CHAT(copy.id), copy);
+    return copy;
+  },
   deleteChat: async (id) => {
     const r = await request('DELETE', `/api/chats/${id}`);
     await cache.remove(CACHE_CHAT(id));

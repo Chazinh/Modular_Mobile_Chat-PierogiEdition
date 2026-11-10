@@ -319,3 +319,41 @@ async fn texto_parcial_identico_nao_conta_como_mudanca() {
     assert!(flush("parcial").await.is_err());
     store.call(Request::Close).await.unwrap();
 }
+
+/// Regression: when the vault file could not be written after a committed transaction, the request failed
+/// although the row already existed; the client retried and created a second conversation.
+#[tokio::test]
+async fn falha_ao_gravar_o_cofre_apos_commit_nao_vira_erro_nem_duplicata() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_encrypted(dir.path()).unwrap();
+    conv(&store).await;
+    // A directory where the vault file should be makes every save fail.
+    std::fs::remove_file(vault(dir.path())).unwrap();
+    std::fs::create_dir(vault(dir.path())).unwrap();
+    let created = store
+        .call(Request::CreateConversation(json!({"name":"Segundo","persona":"Alex","routeId":"cc/claude-sonnet-5-5","presetId":"claude-sonnet-5-5","effort":"low","prompt":""})))
+        .await;
+    assert!(created.is_ok(), "commit já aplicado não pode responder erro: {created:?}");
+    let list = store.call(Request::ListConversations { archived: false, query: String::new() }).await.unwrap();
+    assert_eq!(list.as_array().map_or(0, Vec::len), 2);
+    // Once the path is writable again the pending state reaches the disk.
+    std::fs::remove_dir(vault(dir.path())).unwrap();
+    store.call(Request::Close).await.ok();
+}
+
+/// Regression: a generation whose runner died before finalizing stayed `running` until a restart, and every
+/// send/edit/sync of that chat answered 409/BUSY. Recovery must touch only the given conversation.
+#[tokio::test]
+async fn geracao_orfa_e_interrompida_so_na_conversa_pedida() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_encrypted(dir.path()).unwrap();
+    let (a, b) = (conv(&store).await, conv(&store).await);
+    let ga = begin(&store, &a, "orfa").await;
+    let gb = begin(&store, &b, "viva").await;
+    store.call(Request::RecoverConversation(a.clone())).await.unwrap();
+    let status = |g: &Value| Request::GetGeneration(g["generationId"].as_str().unwrap().to_owned());
+    assert_ne!(store.call(status(&ga)).await.unwrap()["status"], "running");
+    assert_eq!(store.call(status(&gb)).await.unwrap()["status"], "running");
+    // The chat accepts a new turn again.
+    begin(&store, &a, "de novo").await;
+}

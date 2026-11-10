@@ -292,6 +292,14 @@ export default function App() {
   });
   const openGlobal = useEvent((event) => transitionTo(() => setGlobalOpen(true), '.mc-screen', event?.currentTarget));
 
+  // Opens a conversation the server just created (new chat or duplicate) with its own id.
+  const openCreated = useEvent((chat) => {
+    setCreatedChat(chat);
+    setOpenSettings(false);
+    setOpenId(chat.id);
+    refresh();
+  });
+
   async function create() {
     if (creatingRef.current) return;
     creatingRef.current = true;
@@ -368,6 +376,7 @@ export default function App() {
           onBack={closeTopLayer}
           onChanged={refresh}
           onCreate={create}
+          onOpenChat={openCreated}
           onDeleted={() => {
             setOpenId(null);
             refresh();

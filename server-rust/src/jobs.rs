@@ -206,7 +206,7 @@ impl Runner {
         let outcome = tokio::select! {
             biased;
             _=pause.changed()=> {
-                self.store.call(Request::DeferJob { id: s(&job,"id"), error: "Pausado temporariamente para sincronização.".into() }).await?;
+                self.store.call_retrying(|| Request::DeferJob { id: s(&job,"id"), error: "Pausado temporariamente para sincronização.".into() }).await?;
                 return Ok(false);
             },
             outcome=self.handle(&job, &backend)=>outcome,
@@ -226,9 +226,9 @@ impl Runner {
             {
                 self.state.lock().await.last_error = Some(e.message.clone());
                 self.store
-                    .call(Request::DeferJob {
+                    .call_retrying(|| Request::DeferJob {
                         id: s(&job, "id"),
-                        error: e.message,
+                        error: e.message.clone(),
                     })
                     .await?;
                 return Ok(false);
@@ -252,11 +252,12 @@ impl Runner {
             }
         };
         let done_turn = job["kind"] == "turn" && status == "done";
+        // A lost FinishJob left the job `running`: sync answered BUSY for that chat until a restart.
         self.store
-            .call(Request::FinishJob {
+            .call_retrying(|| Request::FinishJob {
                 id: s(&job, "id"),
-                status,
-                error,
+                status: status.clone(),
+                error: error.clone(),
             })
             .await?;
         if done_turn {

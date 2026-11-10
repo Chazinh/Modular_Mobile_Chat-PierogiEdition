@@ -304,8 +304,13 @@ pub fn pairs_to_load(conv: &Value) -> usize {
 /// Does not lock to 8; starts with preferred pairs (clamped by maxPairs) and only descends
 /// to summarized rungs when history token volume exceeds softLimit.
 pub fn retrieval_window_start(data: &Value) -> i64 {
+    retrieval_window_start_for(data, false)
+}
+/// `compact` must mirror `assemble`: the phone's local model keeps only 6 pairs. Using the full 30-pair ladder
+/// here excluded turns 7..30 from retrieval while `assemble` left them out of the history too, so they vanished.
+pub fn retrieval_window_start_for(data: &Value, compact: bool) -> i64 {
     let pairs = array(&data["pairs"]);
-    let (minimum, maximum, preferred) = pair_limits(&data["conv"]);
+    let (minimum, maximum, preferred) = if compact { (0, 6, 6) } else { pair_limits(&data["conv"]) };
     let settings = &data["conv"]["settings"]["context"];
     let preset = crate::presets::by_id(&crate::s(&data["conv"], "presetId"));
     let preset_capacity = preset["contextWindow"].as_u64().unwrap_or(128000);

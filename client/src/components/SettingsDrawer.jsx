@@ -48,7 +48,7 @@ export function isReasoningModel(preset) {
 }
 
 // Side drawer with the conversation settings.
-export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClose, onSaved, onHistoryCleared, onOpenCast, onCreate, onDeleted }) {
+export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClose, onSaved, onHistoryCleared, onOpenCast, onCreate, onOpenChat, onDeleted }) {
   const confirm = useConfirm();
   useLanguage();
   const [page, setPage] = useState(null); // null | model | name | persona | prompt | history | context | style
@@ -275,9 +275,10 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
                 disabled={busy}
                 onClick={async () => {
                   try {
-                    await api.duplicateChat(chat.id);
+                    // Open the copy: staying here kept writing messages, card and memory into the original chat.
+                    const copy = await api.duplicateChat(chat.id);
                     onClose();
-                    onHistoryCleared();
+                    onOpenChat(copy);
                   } catch (e) {
                     setError(e.message);
                   }

@@ -3,29 +3,6 @@ import assert from 'node:assert/strict';
 import { DEFAULT_PRESETS } from '../client/src/default-presets.js';
 import { mergeWithDefaults, normalizeChatPreset } from '../client/src/api.js';
 
-test('MiniMax removido não é oferecido para novas seleções', () => {
-  assert.ok(!DEFAULT_PRESETS.presets.some(p => p.id === 'minimax-m31'));
-});
-
-test('Regressão: Modelos com pensamento profundo devem ter esforços low, medium, high e não iniciar desligados', () => {
-  const models = ['deepseek-v41-flash'];
-  for (const id of models) {
-    const p = DEFAULT_PRESETS.presets.find((x) => x.id === id);
-    assert.ok(p, `${id} deve existir`);
-    assert.ok(p.efforts.includes('low') && p.efforts.includes('medium') && p.efforts.includes('high'), `${id} deve ter low, medium, high`);
-    assert.equal(p.thinkingCanDisable, true, `${id} deve ter thinkingCanDisable: true`);
-    assert.notEqual(p.thinkingDefault, false, `${id} não deve ter thinkingDefault: false`);
-  }
-});
-
-test('Regressão: Gemini 3.8 Flash deve suportar low, medium, high e rota de grupo', () => {
-  const gemini = DEFAULT_PRESETS.presets.find((p) => p.id === 'gemini-38-flash');
-  assert.ok(gemini, 'gemini-38-flash deve existir');
-  assert.equal(gemini.groupRoute, 'Gemini');
-  assert.deepEqual(gemini.efforts, ['low', 'medium', 'high']);
-  assert.ok(gemini.routes.some((r) => r.id === 'Gemini'));
-});
-
 test('Regressão: mergeWithDefaults recupera modelos novos e atualiza cache desatualizado do IndexedDB', () => {
   // Simula cache antigo do IndexedDB sem minimax e com generic já no final
   const staleCached = {

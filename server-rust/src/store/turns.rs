@@ -295,8 +295,13 @@ impl Database {
             json!({"already":false,"status":status,"revision":revision,"message":message,"versionKept":has_text}),
         )
     }
-    pub(super) fn recover(&self) -> Result<Value> {
-        let rows = self.rows("SELECT id FROM generations WHERE status='running'", &[])?;
+    /// Marks `running` generations as interrupted: all of them at startup, or one conversation's orphans
+    /// (rows whose runner died before registering or before finalizing).
+    pub(super) fn recover(&self, conv: Option<&str>) -> Result<Value> {
+        let rows = self.rows(
+            "SELECT id FROM generations WHERE status='running' AND (?1 IS NULL OR conv_id=?1)",
+            &[json!(conv)],
+        )?;
         for g in &rows {
             self.finish(&FinishRequest {
                 generation_id: s(g, "id"),
@@ -434,7 +439,9 @@ impl Database {
             self.exec(&format!("DELETE FROM {table} WHERE {col}=?"), &[json!(i)])?;
         }
         self.exec("UPDATE threads SET resolved_interaction_id=NULL,status='open' WHERE resolved_interaction_id=?",&[json!(i)])?;
-        for e in self.rows("SELECT id FROM episodes WHERE EXISTS(SELECT 1 FROM json_each(episodes.interaction_ids_json) j WHERE j.value=?)",&[json!(i)])?{self.unindex("episode",&s(&e,"id"))?;self.exec("DELETE FROM embeddings WHERE owner_type='episode' AND owner_id=?",&[e["id"].clone()])?;self.exec("DELETE FROM episodes WHERE id=?",&[e["id"].clone()])?;}
+        // Scoped to the interaction's conversation: unscoped, every descendant of an edited reply scanned the
+        // episodes of every chat (O(descendants × all episodes) in one transaction).
+        for e in self.rows("SELECT id FROM episodes WHERE conv_id=(SELECT conv_id FROM interactions WHERE id=?1) AND EXISTS(SELECT 1 FROM json_each(episodes.interaction_ids_json) j WHERE j.value=?1)",&[json!(i)])?{self.unindex("episode",&s(&e,"id"))?;self.exec("DELETE FROM embeddings WHERE owner_type='episode' AND owner_id=?",&[e["id"].clone()])?;self.exec("DELETE FROM episodes WHERE id=?",&[e["id"].clone()])?;}
         Ok(())
     }
     fn refresh_descendants(&self, c: &str, i: &str) -> Result<()> {
@@ -470,20 +477,19 @@ impl Database {
         );
         self.exec(&format!("{PATH_CTE} UPDATE threads SET status={to} WHERE conv_id=?1 AND status IS NOT ({to})"),&[json!(c)])?;
         self.exec(&format!("{PATH_CTE} UPDATE jobs SET status='skipped',updated_at=?2 WHERE conv_id=?1 AND interaction_id IS NOT NULL AND interaction_id NOT IN {valid} AND status IN ('pending','running','blocked','failed')"),&[json!(c),json!(now())])?;
-        for i in self.path(c)? {
-            if !self
-                .one(
-                    "SELECT 1 FROM interaction_notes WHERE interaction_id=?",
-                    &[i["id"].clone()],
-                )?
-                .is_null()
-            {
-                continue;
-            }
-            if !self.one("SELECT 1 FROM jobs WHERE interaction_id=? AND kind='turn' AND status IN ('pending','running','blocked','failed')",&[i["id"].clone()])?.is_null(){continue;}
-            let v=self.one("SELECT v.id FROM parts p JOIN versions v ON v.id=p.selected_version_id WHERE p.interaction_id=? AND p.deleted_at IS NULL AND v.status!='generating' AND length(v.content)>0 ORDER BY p.idx DESC LIMIT 1",&[i["id"].clone()])?;
-            if !v.is_null() {
-                self.enqueue_turn(c, &s(&i, "id"), &s(&v, "id"))?;
+        // One query for the whole path: turns without notes and without an open extraction job, with their
+        // latest finished reply. Per-turn queries made every finished reply cost ~2 queries per turn of history.
+        for r in self.rows(&format!("{PATH_CTE} SELECT i.id, (SELECT v.id FROM parts pt JOIN versions v ON v.id=pt.selected_version_id
+                WHERE pt.interaction_id=i.id AND pt.deleted_at IS NULL AND v.status!='generating' AND length(v.content)>0
+                ORDER BY pt.idx DESC LIMIT 1) AS version_id
+            FROM p JOIN interactions i ON i.id=p.id
+            WHERE i.conv_id=?1 AND i.deleted_at IS NULL
+              AND NOT EXISTS(SELECT 1 FROM interaction_notes n WHERE n.interaction_id=i.id)
+              AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.interaction_id=i.id AND j.kind='turn' AND j.status IN ('pending','running','blocked','failed'))
+            ORDER BY i.seq"), &[json!(c)])?
+        {
+            if !r["version_id"].is_null() {
+                self.enqueue_turn(c, &s(&r, "id"), &s(&r, "version_id"))?;
             }
         }
         Ok(())

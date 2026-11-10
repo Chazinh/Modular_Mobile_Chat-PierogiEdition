@@ -232,6 +232,9 @@ fn episode_coverage_reduces_history_without_dropping_pending_or_summaries() {
     let compact = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
     assert_eq!(compact.report["pairsIncluded"], 10);
     assert_eq!(context::retrieval_window_start(&d), 91);
+    // Regression: the phone's compact mode keeps only 6 pairs, so retrieval must reach everything before them
+    // (turns 7..30 used to be in neither the history nor the retrieval window).
+    assert_eq!(context::retrieval_window_start_for(&d, true), 95);
     assert_eq!(
         compact.messages[0], full.messages[0],
         "stable rules do not change"

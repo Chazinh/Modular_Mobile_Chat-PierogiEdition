@@ -305,9 +305,23 @@ impl ModelFile {
                 self.progress("error", 0, Some("Arquivo local corrompido.".into()));
             }
         } else {
+            // No model yet. Downloads are never resumed (only an explicit user download writes the .part, while
+            // holding this same gate), so a leftover .part is dead weight: an interrupted or pre-3.6 automatic
+            // download of the chat model kept ~2 GB in the app's storage forever.
+            self.remove_stale_part().await;
             self.progress("pending", 0, None);
         }
         Ok(())
+    }
+    /// Unlinks this model's `.part` only beneath a real models directory; never follows a link.
+    async fn remove_stale_part(&self) {
+        if tokio::fs::symlink_metadata(&self.root)
+            .await
+            .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+            && tokio::fs::symlink_metadata(self.part()).await.is_ok_and(|m| m.is_file())
+        {
+            let _ = tokio::fs::remove_file(self.part()).await;
+        }
     }
     pub async fn provision(&self, cancel: &Cancel) -> Result<()> {
         let _gate = tokio::select! {
@@ -322,13 +336,7 @@ impl ModelFile {
             _ = cancel.cancelled() => Err(unavailable("Download cancelado.")),
         };
         if let Err(error) = &outcome {
-            // Only unlink a task-owned .part beneath a real models directory; never follow a link.
-            if tokio::fs::symlink_metadata(&self.root)
-                .await
-                .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
-            {
-                let _ = tokio::fs::remove_file(self.part()).await;
-            }
+            self.remove_stale_part().await;
             self.progress(
                 if cancel.is_cancelled() {
                     "cancelled"

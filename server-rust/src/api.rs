@@ -377,6 +377,17 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
+/// True when `event` revokes the device `me` (the authenticated caller of an open event stream).
+fn revokes(event: Option<&Value>, me: &Value) -> bool {
+    !me.is_null() && event.is_some_and(|e| e["type"] == "devices" && e["revoked"] == *me)
+}
+/// Routes served without a credential. `pair/start` hands out the pairing code to this machine only;
+/// on Android every installed app is loopback, so there it would let any app pair and read the chats.
+fn public_path(path: &str, loopback: bool, android: bool) -> bool {
+    matches!(path, "/api/health" | "/api/pair" | "/api/pair/info")
+        || (path == "/api/pair/start" && loopback && !android)
+        || !path.starts_with("/api/")
+}
 async fn guard(
     State(state): State<AppState>,
     mut request: axum::extract::Request,
@@ -391,6 +402,13 @@ async fn guard(
     };
     if !auth::private(peer.ip()) {
         return Error::new(403, "Acesso permitido apenas pela rede local.").into_response();
+    }
+    // DNS rebinding: a page on an attacker's name re-resolved to this machine would pass the
+    // Origin==Host check below, so the Host name itself must be one this server answers to.
+    let host_ok = request.headers().get("host")
+        .map_or(true, |h| h.to_str().is_ok_and(auth::host_allowed));
+    if !host_ok {
+        return Error::new(403, "Host não permitido.").into_response();
     }
     let origin = request
         .headers()
@@ -424,9 +442,7 @@ async fn guard(
         }
     }
     let path = request.uri().path();
-    let public = matches!(path, "/api/health" | "/api/pair" | "/api/pair/info")
-        || (path == "/api/pair/start" && auth::loopback(peer.ip()))
-        || !path.starts_with("/api/");
+    let public = public_path(path, auth::loopback(peer.ip()), state.config.is_android());
     let local_control = path.starts_with("/api/local/");
     let sync_control = path.starts_with("/api/sync/");
     if !public
@@ -623,6 +639,7 @@ async fn dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     method: Method,
     OriginalUri(uri): OriginalUri,
+    device: Option<axum::Extension<Value>>,
     body: Bytes,
 ) -> Result<Response> {
     let path = uri.path().trim_start_matches("/api/");
@@ -750,7 +767,8 @@ async fn dispatch(
                 .call(Request::RevokeDevice((*id).into()))
                 .await?;
             let devices = state.store.call(Request::Devices).await?;
-            let _ = state.events.send(json!({"type":"devices"}));
+            // `revoked` ends that device's open event stream (auth only runs when a request starts).
+            let _ = state.events.send(json!({"type":"devices","revoked":id}));
             json!({"ok":true,"devices":devices})
         }
         ["presets"] if get => {
@@ -764,7 +782,9 @@ async fn dispatch(
         }
         ["validation"] if get => state.validation.clone(),
         ["events"] if get => {
+            let me = device.map(|d| d.0["id"].clone()).unwrap_or(Value::Null);
             let stream = tokio_stream::wrappers::BroadcastStream::new(state.events.subscribe())
+                .take_while(move |event| std::future::ready(!revokes(event.as_ref().ok(), &me)))
                 .map(|event| {
                     Ok::<_, std::convert::Infallible>(
                         Event::default().data(
@@ -1306,6 +1326,26 @@ mod tests {
     use std::{io::Write, path::Path};
     use tower::ServiceExt;
 
+    // Regression: on Android any installed app is loopback and could fetch the pairing code.
+    #[test]
+    fn pair_start_is_public_only_for_desktop_loopback() {
+        assert!(public_path("/api/pair/start", true, false));
+        assert!(!public_path("/api/pair/start", true, true));
+        assert!(!public_path("/api/pair/start", false, false));
+        assert!(public_path("/api/pair", true, true));
+        assert!(!public_path("/api/chats", true, false));
+    }
+
+    // Regression: a revoked device kept receiving events on a stream opened before the revocation.
+    #[test]
+    fn revocation_event_ends_only_the_revoked_devices_stream() {
+        let event = json!({"type":"devices","revoked":"dev-1"});
+        assert!(revokes(Some(&event), &json!("dev-1")));
+        assert!(!revokes(Some(&event), &json!("dev-2")));
+        assert!(!revokes(Some(&json!({"type":"devices"})), &json!("dev-1")));
+        assert!(!revokes(Some(&event), &Value::Null));
+    }
+
     fn isolated_config(dir: &Path) -> Config {
         Config {
             data_dir: dir.into(),
@@ -1427,7 +1467,8 @@ mod tests {
         assert!(!device["revoked_at"].is_null());
         assert!(state.auth.verify(&s(&auth,"token")).await.unwrap().is_null());
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
-        assert_eq!(event, json!({"type":"devices"}));
+        // The revoked device id (not a credential) lets that device's open event stream end.
+        assert_eq!(event, json!({"type":"devices","revoked":auth["deviceId"]}));
         state.shutdown().await;
     }
 

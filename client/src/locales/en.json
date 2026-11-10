@@ -787,5 +787,6 @@
   "ativo(s)": "active",
   "Conversa": "Chat",
   "Código gerado (vale 15 min).": "Code generated (valid for 15 min).",
-  ". Ele vale por 15 minutos e só pode ser usado uma vez.": ". It is valid for 15 minutes and can only be used once."
+  ". Ele vale por 15 minutos e só pode ser usado uma vez.": ". It is valid for 15 minutes and can only be used once.",
+  "Não foi possível limpar o recibo do envio no cache; ele será conferido no próximo envio.": "Could not clear the send receipt from the cache; it will be checked on the next send."
 }

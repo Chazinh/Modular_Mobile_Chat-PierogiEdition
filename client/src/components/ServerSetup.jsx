@@ -94,8 +94,10 @@ export default function ServerSetup({ needsServer, onDone, onCancel }) {
   }
 
   return (
-    <div className="flex h-full items-center justify-center overflow-y-auto px-5" style={{ paddingTop: 'var(--sat)' }}>
-      <form onSubmit={connect} className="w-full max-w-sm space-y-4 rounded-3xl bg-cardDark p-6">
+    // Centered with auto margins, not justify/items-center: when the keyboard shrinks the screen, a
+    // justify-center scroller overflows upward too and the top of the form (the IP field) cannot be reached.
+    <div className="flex h-full overflow-y-auto px-5 py-4" style={{ paddingTop: 'max(1rem, var(--sat))', paddingBottom: 'max(1rem, var(--sab))' }}>
+      <form onSubmit={connect} className="m-auto w-full max-w-sm space-y-4 rounded-3xl bg-cardDark p-6">
         <div className="flex items-center gap-3">
           <div className="rounded-2xl bg-accentPurple/25 p-3 text-accentPurpleLight">
             <Link2 size={24} />
