@@ -2,7 +2,8 @@ import { useConfirm } from './ConfirmProvider.jsx';
 import { tr, useLanguage, currentLanguage } from '../i18n.js';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronRight, ChevronLeft, Trash2, MessageSquarePlus, Upload, Check, Users, Camera, Copy, Cpu, UserRound, Pencil, FileText, Layers, SlidersHorizontal, History } from 'lucide-react';
-import { api } from '../api.js';
+import { api, publicPresets, mergeWithDefaults } from '../api.js';
+import { DEFAULT_PRESETS } from '../default-presets.js';
 import { useLayer } from '../nav.js';
 import { Avatar, fileToAvatar } from '../ui.jsx';
 import { VerdictDot } from './ChatView.jsx';
@@ -85,14 +86,19 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
       motionRef.current = null;
     };
   }, []);
+  useLayoutEffect(() => {
+    motionRef.current?.stagger?.release();
+  }, [page]);
+
   const close = () => (motionRef.current ? motionRef.current.close() : onClose());
   usePanelDrag(rootRef, motionRef, { axis: 'x', enabled: !personaOpen });
 
   useLayer(page !== null, () => setPage(null));
 
-  const preset = presets?.presets?.find((p) => p.id === chat.presetId)
-    || presets?.presets?.find((p) => p.groupRoute && p.groupRoute === chat.routeId)
-    || presets?.presets?.find((p) => p.routes?.some((r) => r.id === chat.routeId));
+  const effectivePresets = presets?.presets?.length ? presets : mergeWithDefaults(publicPresets(presets)) || publicPresets(DEFAULT_PRESETS);
+  const preset = effectivePresets?.presets?.find((p) => p.id === chat.presetId)
+    || effectivePresets?.presets?.find((p) => p.groupRoute && p.groupRoute === chat.routeId)
+    || effectivePresets?.presets?.find((p) => p.routes?.some((r) => r.id === chat.routeId));
   const thinkingOn = chat.thinkingEnabled ?? chat.settings?.thinkingEnabled !== false;
 
   async function save(patch) {
@@ -301,7 +307,8 @@ const thinkingText = (p) => isReasoningModel(p) && p.thinkingCanDisable ? 'pensa
 
 function ModelPage({ chat, presets, error, onBack, onPick }) {
   useLanguage();
-  const rawList = (presets?.presets || [])
+  const effectivePresets = presets?.presets?.length ? presets : mergeWithDefaults(publicPresets(presets)) || publicPresets(DEFAULT_PRESETS);
+  const rawList = (effectivePresets?.presets || [])
     .filter(p => p.selectable !== false)
     .filter(p => p.id !== 'mobile-local' && p.id !== 'mobile-api');
   const list = [...rawList].sort((a, b) => {
@@ -515,20 +522,18 @@ function GlassAvatar({ name, avatar }) {
 export function SubPage({ title, onBack, children, action, footer }) {
   useLanguage();
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="relative z-10 shrink-0 px-[10px] pb-[10px] pt-1">
-        <div className="mc-bubble flex h-11 items-center gap-2 rounded-full px-3">
-          <button onClick={onBack} className="p-1" aria-label={tr("Voltar")}><ChevronLeft size={22} /></button>
-          <h2 className="flex-1 truncate text-[15px] font-semibold">{title}</h2>
-          {action}
+    <div className="mc-drawer-main-scroller min-h-0 flex-1 overflow-y-auto">
+      <StairList className="min-h-full">
+        <div className="sticky top-0 z-20 px-[10px] pb-[10px] pt-1">
+          <div className="mc-bubble flex h-11 items-center gap-2 rounded-full px-3">
+            <button onClick={onBack} className="p-1" aria-label={tr("Voltar")}><ChevronLeft size={22} /></button>
+            <h2 className="flex-1 truncate text-[15px] font-semibold">{title}</h2>
+            {action}
+          </div>
         </div>
-      </div>
-      <div className="mc-subpage-scroller min-h-0 flex-1 overflow-y-auto">
-        <StairList className="min-h-full pt-1">
-          {children}
-        </StairList>
-      </div>
-      {footer && <div className="mc-subfooter">{footer}</div>}
+        {children}
+        {footer && <div className="mc-subfooter">{footer}</div>}
+      </StairList>
     </div>
   );
 }

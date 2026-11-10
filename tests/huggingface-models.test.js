@@ -14,8 +14,8 @@ test('huggingface: CURATED_MODELS possui modelos oficiais de chat e embed para c
 
   assert.ok(officialChat, 'Modelo oficial de chat deve existir');
   assert.equal(officialChat.type, 'chat');
-  assert.ok(officialChat.repo.includes('Qwen2.5-1.5B'));
-  assert.equal(officialChat.precision, 4);
+  assert.ok(officialChat.repo.includes('Nemotron-3.5-Bolt'));
+  assert.equal(officialChat.precision, 5);
   assert.equal(officialChat.speed, 4);
 
   assert.ok(officialEmbed, 'Modelo oficial de embeddings deve existir');

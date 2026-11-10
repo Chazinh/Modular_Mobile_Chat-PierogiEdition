@@ -545,9 +545,6 @@ fn parse_model_content(bytes: &[u8]) -> Result<Value> {
     let content = response["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_default();
-    if let Ok(val) = parse_json_content(content) {
-        return Ok(val);
-    }
     if matches!(
         response["choices"][0]["finish_reason"].as_str(),
         Some("length" | "max_tokens")

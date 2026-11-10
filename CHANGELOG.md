@@ -7,6 +7,21 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.1.8: Fallback Imediato de Presets e Escada Fluida nos Submenus do Drawer — 2026-11-10
+
+- **Resolução do Carregamento Infinito em "Modelo e esforço" (`client/src/provider-catalog.js`, `client/src/components/SettingsDrawer.jsx`, `client/src/components/ChatView.jsx`)**:
+  - Corrigido o bug onde a aba "Modelo e esforço" ficava presa indefinidamente exibindo "Carregando presets do servidor ativo…".
+  - `ModelPage` e `SettingsDrawer` agora utilizam `effectivePresets` com fallback imediato aos presets padrão (`DEFAULT_PRESETS`), garantindo exibição instantânea da lista enquanto o catálogo remoto carrega.
+  - O estado de presets em `ChatView` agora é pré-populado com os defaults do cliente em vez de `null`.
+  - `watchProviderCatalog` não descarta mais presets em cache quando o snapshot de conexão transiciona durante o bootstrap do aparelho, e realiza fallback imediato para o cache caso a chamada de rede falhe ou sofra timeout.
+- **Animação em Escada (Staircase) e Correção Estrutural de Subpáginas (`client/src/components/SettingsDrawer.jsx`)**:
+  - Corrigido o defeito visual onde o menu lateral quebrava o layout ao ser retraído com a aba "Modelo e esforço" (ou outras subpáginas) aberta.
+  - `SubPage` agora renderiza diretamente em `.mc-drawer-main-scroller` dentro de um `StairList` unificado, eliminando o wrapper flex intermediário que causava estouro de largura horizontal (`blowout`) quando o scroller recebia `.mc-stair-free`.
+  - O cabeçalho da subpágina e seu rodapé foram integrados como itens legítimos da `StairList` (com classes `mc-stair` e cabeçalho `sticky top-0 z-20`), permitindo que toda a tela se comporte como uma escada contínua idêntica à do menu principal durante aberturas e retrações.
+  - Adicionada liberação automática do encadeamento de motion (`stagger.release()`) ao trocar de página no menu, assegurando que o seletor colete dinamicamente os novos nós visíveis do DOM.
+- **Prevenção de Regressão e Validação (`tests/regression-model-presets-fallback-and-drawer-staircase.test.js`)**:
+  - Criado teste automatizado cobrindo fallback de presets vazios/nulos, resiliência do `watchProviderCatalog` à transição de snapshot, estrutura de renderização direta em `.mc-drawer-main-scroller` e inclusão do cabeçalho na `StairList`.
+
 ### ModularChat 4.1.7: Perfil Argon, Modo Pensamento Profundo e Simplificação de Modelos — 2026-11-10
 
 - **Perfil Argon (`server-rust/src/presets.json`, `client/src/default-presets.js`, `client/src/api.js`)**:

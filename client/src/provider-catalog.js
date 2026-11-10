@@ -11,11 +11,19 @@ export function watchProviderCatalog({ window: win, snapshot, getCached, getPres
   let stopped = false, received = false;
   const initial = snapshot();
   Promise.resolve().then(getCached).then(value => {
-    if (!stopped && !received && snapshot() === initial) onPresets(value);
+    if (!stopped && !received && value) onPresets(value);
   }).catch(() => {});
   const refresh = () => reads.run('presets', async (signal, isCurrent) => {
-    const value = await getPresets({ signal, isCurrent });
-    if (!stopped && isCurrent()) { received = true; onPresets(value); }
+    try {
+      const value = await getPresets({ signal, isCurrent });
+      if (!stopped && isCurrent()) { received = true; onPresets(value); }
+    } catch (err) {
+      if (!stopped && !received && isCurrent()) {
+        const cached = await Promise.resolve().then(getCached).catch(() => null);
+        if (!stopped && !received && cached && isCurrent()) onPresets(cached);
+      }
+      throw err;
+    }
   }).catch(() => {});
   const changed = () => { reads.cancel(); void refresh(); };
   win.addEventListener(PROVIDER_CATALOG_CHANGED, changed);

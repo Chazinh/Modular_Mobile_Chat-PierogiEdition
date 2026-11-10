@@ -5,7 +5,8 @@ import {
   ChevronLeft, ChevronRight, MoreHorizontal, FastForward, RotateCcw, SendHorizontal, Square, Copy, Pencil, Trash2,
   ArrowDown, Keyboard, Layers, Info, WifiOff, Check, AlertTriangle,
 } from 'lucide-react';
-import { api, config, uuid, isNative, staleReceiptError } from '../api.js';
+import { api, config, uuid, isNative, staleReceiptError, publicPresets } from '../api.js';
+import { DEFAULT_PRESETS } from '../default-presets.js';
 import { connectionSnapshot } from '../server-connection.js';
 import { watchProviderCatalog } from '../provider-catalog.js';
 import { useLayer } from '../nav.js';
@@ -83,7 +84,7 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   const [toast, setToast] = useState('');
   const [stuck, setStuck] = useState(true);
   const [newContent, setNewContent] = useState(false);
-  const [presets, setPresets] = useState(null);
+  const [presets, setPresets] = useState(() => publicPresets(DEFAULT_PRESETS));
   const [cast, setCast] = useState([]);
   const [modelOnline, setModelOnline] = useState(null);
   const [viewerAvatar, setViewerAvatar] = useState(null);
