@@ -1073,6 +1073,22 @@ impl Database {
                     "SELECT id FROM generations WHERE conv_id=? AND op_id=?",
                     &[json!(conv_id), json!(op_id)],
                 )?;
+                if r.is_null() {
+                    let op = self.one(
+                        "SELECT kind, result_json FROM operations WHERE conv_id=? AND op_id=?",
+                        &[json!(conv_id), json!(op_id)],
+                    )?;
+                    if !op.is_null() {
+                        return Ok(json!({
+                            "opId": op_id,
+                            "convId": conv_id,
+                            "kind": op["kind"],
+                            "status": "completed",
+                            "result": crate::parsed(&op, "result_json", Value::Null),
+                        }));
+                    }
+                    return Ok(Value::Null);
+                }
                 self.generation(&crate::s(&r, "id"))
             }
             Request::ImportOne(p) => self.import_one(&p),

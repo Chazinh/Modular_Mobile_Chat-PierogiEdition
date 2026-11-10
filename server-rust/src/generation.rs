@@ -153,7 +153,7 @@ pub struct Generation {
 }
 impl Generation {
     pub fn info(&self) -> Value {
-        json!({"id":self.id,"generationId":self.id,"versionId":self.version,"partId":self.part,"interactionId":self.interaction,"mode":self.mode,"status":"running"})
+        json!({"id":self.id,"generationId":self.id,"versionId":self.version,"partId":self.part,"interactionId":self.interaction,"mode":self.mode,"status":"running","opId":self.ack["opId"]})
     }
     fn cancelled(&self) -> impl std::future::Future<Output = ()> + Send {
         let mut rx = self.cancel.subscribe();

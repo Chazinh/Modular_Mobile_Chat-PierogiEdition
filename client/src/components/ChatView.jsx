@@ -148,9 +148,10 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   useEffect(() => {
     let alive = true;
     api.cachedChat(chatId).then((c) => alive && c && !chatRef.current && setChat({ ...c, history: c.history.filter(m => m.status !== 'generating') }));
-    load().then((c) => {
+    const pending = api.getPending(chatId);
+    load(pending).then((c) => {
       if (!alive || !c || busyRef.current) return;
-      if (api.getPending(chatId)) recoverPending(api.getPending(chatId), c);
+      if (pending) recoverPending(pending, c);
       else if (c.generation) attach(c.generation);
     });
     return () => {
@@ -210,8 +211,9 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
           abortRef.current?.abort();
           busyRef.current = false;
         }
-        const c = await load();
-        if (c && api.getPending(chatId)) await recoverPending(api.getPending(chatId), c);
+        const pending = api.getPending(chatId);
+        const c = await load(pending);
+        if (c && pending) await recoverPending(pending, c);
         else if (c?.generation) await attach(c.generation);
       }
     } finally { recoveringRef.current = false; }
@@ -484,6 +486,11 @@ export default function ChatView({ hostStatus, chatId, initialChat = null, openS
   async function recoverPending(pending, loadedChat = chatRef.current) {
     try {
       const generation = await api.queryOperation(chatId, pending);
+      if (generation.completed || (!generation.id && generation.status === 'completed')) {
+        await load(pending);
+        await api.setPending(chatId, null);
+        return true;
+      }
       return attach(generation);
     } catch (e) {
       if (staleReceipt({ recoveryStatus: e.status, recoveryCode: e.code })) {

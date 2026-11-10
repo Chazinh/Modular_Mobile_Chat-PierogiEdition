@@ -77,7 +77,7 @@ const originTarget = pending => pending?.originKind ? { server: pending.originSe
 // reached or the server no longer knows the generation it points to. It must never be
 // reported as a network outage, nor keep the composer blocked forever.
 export const staleReceiptError = error => error?.status === 404
-  || ['ORIGIN_CHANGED', 'UNKNOWN_ORIGIN', 'OPERATION_MISMATCH'].includes(error?.code);
+  || ['ORIGIN_CHANGED', 'UNKNOWN_ORIGIN', 'OPERATION_MISMATCH', 'OPERATION_NOT_FOUND'].includes(error?.code);
 
 export function createApiTransport({ acquire = acquireTarget, fetch: send = (...args) => fetch(...args), failed = connectionFailed, auth = handleAuth } = {}) {
   const networkError = target => new ApiError(target?.kind === 'local' ? 'Sem conexão com o host Android.' : 'Sem conexão com o PC.', 0, { offline: true });
@@ -436,10 +436,26 @@ export const api = {
   },
   async queryOperation(chatId, pending = api.getPending(chatId)) {
     if (!originTarget(pending)) throw new ApiError('O envio pendente não registra a origem; preserve-o para revisão.', 409, { code: 'UNKNOWN_ORIGIN' });
-    const chat = await request('GET', `/api/chats/${chatId}`, undefined, { origin: originTarget(pending) });
+    const target = originTarget(pending);
+    const chat = await request('GET', `/api/chats/${chatId}`, undefined, { origin: target });
     if (pending.generationId) return { id: pending.generationId, mode: pending.mode, partId: pending.partId };
-    // The current HTTP contract has no GenerationByOp endpoint. A running stream exposes its opId in ack.
-    if (chat.generation) return chat.generation;
+    if (pending.opId) {
+      try {
+        const op = await request('GET', `/api/chats/${chatId}/operations/${pending.opId}`, undefined, { origin: target });
+        if (op?.generationId) return { id: op.generationId, mode: op.mode || pending.mode, partId: op.partId, status: op.status };
+        if (op?.status === 'completed') return { id: null, status: 'completed', completed: true };
+      } catch (err) {
+        if (err.code === 'ORIGIN_CHANGED') throw err;
+        if (err.status === 404 && (err.data?.code === 'OPERATION_NOT_FOUND' || err.code === 'OPERATION_NOT_FOUND')) {
+          throw Object.assign(err, { code: 'OPERATION_NOT_FOUND' });
+        }
+      }
+    }
+    if (chat.generation) {
+      if (!pending.opId || !chat.generation.opId || chat.generation.opId === pending.opId) {
+        return chat.generation;
+      }
+    }
     throw new ApiError('O recebimento do envio ficou incerto. Os dados foram preservados; consulte o servidor de origem antes de enviar novamente.', 409, { code: 'AMBIGUOUS_WRITE' });
   },
 

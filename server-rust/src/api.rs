@@ -991,6 +991,28 @@ async fn dispatch(
             {
                 return Ok(response(state.generation.stop(&c, gid).await?, 200));
             }
+            if let ["operations", op_id] = rest
+                && get
+            {
+                let old = state
+                    .store
+                    .call(Request::GenerationByOp {
+                        conv_id: c.clone(),
+                        op_id: op_id.to_string(),
+                    })
+                    .await?;
+                if !old.is_null() {
+                    let gid = s(&old, "generationId");
+                    if !gid.is_empty() {
+                        if let Some(g) = state.generation.get(&c, Some(&gid)).await {
+                            return Ok(response(g.info(), 200));
+                        }
+                    }
+                    return Ok(response(old, 200));
+                }
+                return Err(Error::new(404, "Operação não encontrada.")
+                    .extra("code", "OPERATION_NOT_FOUND"));
+            }
             let lock = state.locks.get(&c).await;
             let _guard = lock.lock().await;
             let out = match rest {

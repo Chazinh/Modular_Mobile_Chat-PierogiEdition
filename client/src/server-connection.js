@@ -45,6 +45,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     return result;
   };
   const read = key => { try { return storage.getItem(key) || ''; } catch { return ''; } };
+  const write = (key, value) => { try { if (value == null) storage.removeItem(key); else storage.setItem(key, value); } catch {} };
   function configured() {
     try {
       const saved = JSON.parse(read('mc.connection'));
@@ -126,7 +127,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
     const startedAt = epoch;
     const controller = new AbortController();
     const pcToken = token() || '';
-    const wasPc = active?.kind === 'pc';
+    const wasPc = active ? active.kind === 'pc' : read('mc.active_kind') === 'pc';
     const check = () => {
       if (startedAt !== epoch || controller.signal.aborted) throw error('STALE_CONNECTION', 'A conexão mudou. Tente novamente.');
     };
@@ -187,7 +188,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
         } catch (failure) {
           check();
           syncResult = undefined;
-          onStatus({ code: failure.code || 'SYNC_FAILED', message: failure.message, kind: 'local', data: failure.data });
+          onStatus({ code: failure.code || 'SYNC_FAILED', message: failure.message, kind: wasPc ? 'pc' : 'local', data: failure.data });
           syncRetryAt = now() + 10000;
           if (requiredKind === 'pc') {
             if (active?.kind !== 'pc') await activate();
@@ -217,6 +218,7 @@ export function createServerConnection({ storage, native, token, fetch: probe, n
       if (startedAt !== epoch || controller.signal.aborted) throw error('STALE_CONNECTION', 'A conexão mudou. Tente novamente.');
       const changed = active?.server !== selected.server || active?.kind !== selected.kind;
       active = selected;
+      write('mc.active_kind', selected.kind);
       validUntil = now() + (host ? 10000 : 30000);
       if (requiredKind) preferredKind = requiredKind === 'local' ? 'local' : 'auto';
       if (changed || requiredKind) onChange(selected.server, { kind: selected.kind, sync: syncResult });

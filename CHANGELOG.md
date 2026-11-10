@@ -7,31 +7,50 @@ implemented features.
 
 ## Released
 
-### ModularChat 4.1.8: Fallback Imediato de Presets, Escada Fluida nos Submenus do Drawer e Resolução do Perfil Argon — 2026-11-10
+### ModularChat 4.1.9: Disconnect-During-Send Synchronization & Stream Resumption Fix — 2026-11-10
 
-- **Resolução de Seleção e Roteamento do Perfil Argon (`server-rust/src/presets.rs`, `server-rust/src/presets.json`)**:
-  - Eliminado o erro 400 "Rota indisponível ou desativada" ao selecionar o modelo Argon (`gemini-4-argon-medium`).
-  - Adicionado `ag/gemini-4-argon-medium` em `unlistedRoutes` garantindo disponibilidade contínua das rotas ativas do modelo mesmo sem anúncio explícito no catálogo.
-  - Generalizada a inserção de `groupRoute` no topo da lista para todos os presets com rotas ativas.
-  - Expandidos os padrões regex de `match` para abranger variações de prefixo e slug (`(^|/)argon($|-)`).
-  - Recompilado e implantado o binário release do servidor Windows e biblioteca nativa ARM64 no Android com atualização direta via ADB.
-  - Criado teste de regressão automatizado Rust (`server-rust/tests/regression_argon_routes.rs`) e ampliado teste Node (`tests/regression-argon-and-simplified-model-ui.test.js`).
-- **Encerramento Automático de Instâncias Anteriores no Início (`start-server.bat`, `start-server.ps1`)**:
-  - `start-server.bat` agora executa `taskkill /f /im modularchat-server.exe` logo no início para encerrar imediatamente qualquer instância zumbi ou anterior em segundo plano antes de abrir o menu ou o servidor.
-  - `start-server.ps1` encerra proativamente qualquer processo `modularchat-server.exe` ativo (escutando na porta, listado no lock do cofre ou ativo no sistema) e remove travas residuais de `modularchat.db.vault.lock`.
-  - Adicionadas validações automatizadas de anti-regressão em `tests/start-server-9router.ps1`.
-- **Resolução do Carregamento Infinito em "Modelo e esforço" (`client/src/provider-catalog.js`, `client/src/components/SettingsDrawer.jsx`, `client/src/components/ChatView.jsx`)**:
-  - Corrigido o bug onde a aba "Modelo e esforço" ficava presa indefinidamente exibindo "Carregando presets do servidor ativo…".
-  - `ModelPage` e `SettingsDrawer` agora utilizam `effectivePresets` com fallback imediato aos presets padrão (`DEFAULT_PRESETS`), garantindo exibição instantânea da lista enquanto o catálogo remoto carrega.
-  - O estado de presets em `ChatView` agora é pré-populado com os defaults do cliente em vez de `null`.
-  - `watchProviderCatalog` não descarta mais presets em cache quando o snapshot de conexão transiciona durante o bootstrap do aparelho, e realiza fallback imediato para o cache caso a chamada de rede falhe ou sofra timeout.
-- **Animação em Escada (Staircase) e Correção Estrutural de Subpáginas (`client/src/components/SettingsDrawer.jsx`)**:
-  - Corrigido o defeito visual onde o menu lateral quebrava o layout ao ser retraído com a aba "Modelo e esforço" (ou outras subpáginas) aberta.
-  - `SubPage` agora renderiza diretamente em `.mc-drawer-main-scroller` dentro de um `StairList` unificado, eliminando o wrapper flex intermediário que causava estouro de largura horizontal (`blowout`) quando o scroller recebia `.mc-stair-free`.
-  - O cabeçalho da subpágina e seu rodapé foram integrados como itens legítimos da `StairList` (com classes `mc-stair` e cabeçalho `sticky top-0 z-20`), permitindo que toda a tela se comporte como uma escada contínua idêntica à do menu principal durante aberturas e retrações.
-  - Adicionada liberação automática do encadeamento de motion (`stagger.release()`) ao trocar de página no menu, assegurando que o seletor colete dinamicamente os novos nós visíveis do DOM.
-- **Prevenção de Regressão e Validação (`tests/regression-model-presets-fallback-and-drawer-staircase.test.js`)**:
-  - Criado teste automatizado cobrindo fallback de presets vazios/nulos, resiliência do `watchProviderCatalog` à transição de snapshot, estrutura de renderização direta em `.mc-drawer-main-scroller` e inclusão do cabeçalho na `StairList`.
+- **Resilient PC Connection on In-Flight Generations (`client/src/server-connection.js`)**:
+  - Fixed a critical regression where closing or disconnecting the mobile app while a message was generating on the PC trapped the app on the Android local host upon reopening.
+  - `server-connection.js` now persists the active target kind (`mc.active_kind`) so that when the app reopens after being closed, `wasPc` is properly identified.
+  - When the PC server is reachable but temporarily busy generating (`failure.code === 'BUSY'`), `resolveTarget()` keeps the PC connection active and schedules a 10-second sync retry instead of discarding the PC and falling back to the Android embedded host.
+  - Fixed `onStatus` reporting to correctly attribute the `BUSY` status to the PC server (`kind: 'pc'`), preventing false local errors and allowing `ChatView` to remain connected to the PC stream.
+- **Authoritative Operation Recovery & Ambiguous Write Prevention (`server-rust/src/api.rs`, `server-rust/src/store/mod.rs`, `server-rust/src/generation.rs`, `client/src/api.js`, `client/src/components/ChatView.jsx`)**:
+  - Implemented the `GET /api/chats/:id/operations/:op_id` endpoint on the server, allowing the client to deterministically check whether an in-flight operation with a given `opId` was received, is currently running, or already completed.
+  - Updated `Generation::info()` to include `opId` in generation snapshots, enabling strict client-side validation against pending operation receipts.
+  - Extended `store.call(Request::GenerationByOp)` to check both the `generations` table and the `operations` table, properly returning completed non-streaming edits and finished turns.
+  - Updated `client/src/api.js:queryOperation` to query `/api/chats/:id/operations/:op_id`, eliminating false `AMBIGUOUS_WRITE` (409) errors when the server has already finalized the turn.
+  - Registered `OPERATION_NOT_FOUND` in `staleReceiptError` so that if a message never reached the server before the disconnect, the orphan receipt is discarded cleanly and the composer unlocked without requiring manual cache resets.
+  - In `ChatView.jsx`, `load(pending)` on mount and `resume` now passes the pending operation receipt, ensuring chat state is reconciled against the origin server where the message was dispatched.
+  - If an operation finished while the client was offline, `recoverPending` reloads the completed conversation from origin and clears the pending receipt cleanly.
+- **Automated Anti-Regression Tests (`tests/regression-disconnect-sync-resumption.test.js`, `server-rust/tests/regression_operations_resumption.rs`)**:
+  - Added comprehensive automated Node tests covering PC connection preservation on `BUSY` restart, operation query by `opId`, and stale receipt cleanup for missing operations.
+  - Added Rust integration tests validating `GenerationByOp` behavior for active, completed, and non-existent operation records.
+
+### ModularChat 4.1.8: Instant Preset Fallback, Fluid Drawer Staircase Submenus and Argon Profile Fix — 2026-11-10
+
+- **Argon Profile Routing and Selection Fix (`server-rust/src/presets.rs`, `server-rust/src/presets.json`)**:
+  - Eliminated the HTTP 400 "Route unavailable or disabled" error when selecting the Argon model (`gemini-4-argon-medium`).
+  - Added `ag/gemini-4-argon-medium` to `unlistedRoutes` guaranteeing continuous availability of active model routes even without explicit advertisement in the catalog.
+  - Generalized insertion of `groupRoute` at the top of the list for all presets with active routes.
+  - Expanded regex match patterns to cover prefix and slug variations (`(^|/)argon($|-)`).
+  - Recompiled and deployed Windows server release binary and Android ARM64 native library with direct update via ADB.
+  - Created automated Rust regression test (`server-rust/tests/regression_argon_routes.rs`) and extended Node test (`tests/regression-argon-and-simplified-model-ui.test.js`).
+- **Automatic Background Server Cleanup on Launch (`start-server.bat`, `start-server.ps1`)**:
+  - `start-server.bat` now executes `taskkill /f /im modularchat-server.exe` at the very beginning to immediately terminate any zombie or prior background instances before opening the menu or starting the server.
+  - `start-server.ps1` proactively terminates any running `modularchat-server.exe` process (listening on the port, referenced in vault locks, or active in the OS) and cleans up stale `modularchat.db.vault.lock` files.
+  - Added automated anti-regression validations in `tests/start-server-9router.ps1`.
+- **Infinite Loading Fix in "Model and effort" (`client/src/provider-catalog.js`, `client/src/components/SettingsDrawer.jsx`, `client/src/components/ChatView.jsx`)**:
+  - Fixed an issue where the "Model and effort" drawer tab was stuck indefinitely displaying "Loading presets from active server...".
+  - `ModelPage` and `SettingsDrawer` now use `effectivePresets` with immediate fallback to default presets (`DEFAULT_PRESETS`), ensuring instant list display while remote catalog loads.
+  - Preset state in `ChatView` is now pre-populated with client defaults instead of `null`.
+  - `watchProviderCatalog` no longer clears cached presets when connection snapshots transition during device bootstrap, and immediately falls back to cache on network failures or timeouts.
+- **Staircase Animation and Subpage Structural Layout Fix (`client/src/components/SettingsDrawer.jsx`)**:
+  - Fixed visual layout distortion where the drawer menu broke layout when retracted while subpages (like "Model and effort") were open.
+  - `SubPage` now renders directly inside `.mc-drawer-main-scroller` within a unified `StairList`, eliminating the intermediate flex wrapper that caused horizontal blowout when the scroller received `.mc-stair-free`.
+  - Subpage header and footer integrated as legitimate `StairList` items (with `mc-stair` classes and `sticky top-0 z-20` header), enabling continuous staircase transitions identical to the main drawer menu.
+  - Added automatic stagger motion chain release (`stagger.release()`) on page navigation to dynamically gather newly visible DOM nodes.
+- **Automated Anti-Regression Validation (`tests/regression-model-presets-fallback-and-drawer-staircase.test.js`)**:
+  - Created automated tests covering empty/null preset fallback, `watchProviderCatalog` resilience across connection snapshot transitions, direct `.mc-drawer-main-scroller` rendering, and header inclusion in `StairList`.
 
 ### ModularChat 4.1.7: Perfil Argon, Modo Pensamento Profundo e Simplificação de Modelos — 2026-11-10
 
