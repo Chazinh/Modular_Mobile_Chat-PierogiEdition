@@ -3,6 +3,8 @@ use crate::{Error, Result, n, parsed, rules, s};
 use serde_json::{Value, json};
 /// Retention of the automatic pruning of operational records.
 const LOG_RETENTION_DAYS: i64 = 14;
+/// Free space below which `reclaim_free_space` does not bother rebuilding the database.
+const RECLAIM_MIN_BYTES: i64 = 32 * 1024 * 1024;
 /// What the UI reads from a response's `usage` (token counters and their method, finish reason, size/style verdict,
 /// provider check). The full diagnostic (style before/candidate, the repair call's usage and error, the provider
 /// request shape) lives only in `generations.usage_json`. Idempotent: a summary summarizes to itself.
@@ -182,9 +184,28 @@ impl Database {
             "DELETE FROM review_flags WHERE status!='open' AND resolved_at<?",
             &[json!(cutoff)],
         )?;
+        // Sync replay answers and merge bases are whole snapshots; unbounded they once filled the in-memory database.
+        let sync_batches = self.trim_sync_batches(None)?;
+        let sync_checkpoints = self.trim_sync_checkpoints(None, None)?;
         Ok(
-            json!({"jobs":jobs,"operations":operations,"generationsTrimmed":generations,"usageTrimmed":usage,"flags":flags}),
+            json!({"jobs":jobs,"operations":operations,"generationsTrimmed":generations,"usageTrimmed":usage,"flags":flags,
+                "syncBatches":sync_batches,"syncCheckpoints":sync_checkpoints}),
         )
+    }
+    /// Rebuilds the database when pruning left a large free area. The vault is the whole database held in memory
+    /// (SQLite's in-memory limit is 1 GiB) and is rewritten in full, so free pages cost memory, disk and time.
+    /// Must run outside a transaction; a failure only keeps the larger file.
+    pub(super) fn reclaim_free_space(&self) -> bool {
+        let count = |pragma: &str| -> i64 {
+            self.db
+                .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
+                .unwrap_or(0)
+        };
+        let (free, pages, size) = (count("freelist_count"), count("page_count"), count("page_size"));
+        if free * size < RECLAIM_MIN_BYTES || free * 4 < pages {
+            return false;
+        }
+        self.db.execute_batch("VACUUM").is_ok()
     }
     /// Replaces the full diagnostic `usage_json` of `table` rows (those still holding `style.before`, which a summary
     /// never has) with `usage_summary`. `filter` may use `?2..` for `args`. Idempotent; processed in batches by rowid.

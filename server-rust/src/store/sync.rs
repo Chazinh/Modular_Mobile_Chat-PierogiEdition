@@ -11,6 +11,10 @@ pub const MAX_CONVERSATIONS: usize = 4;
 const REMOVED_TABLES: &[&str] = &["interactions", "parts", "versions", "memories"];
 const MANIFEST_PAGE: usize = 128;
 const MAX_KNOWN: usize = 256;
+/// Retained replay answers per peer: a retry only ever repeats one of the latest batches.
+const KEEP_BATCHES_PER_PEER: i64 = 16;
+/// Retained merge bases per (peer, conversation); at most this many hashes are offered back to the client.
+const KEEP_CHECKPOINTS_PER_CONV: i64 = 32;
 const MAX_TEXT: usize = 4 * 1024 * 1024;
 const TABLES: &[(&str, &[&str])] = &[
     ("character_revisions", &["conv_id", "rev"]),
@@ -796,7 +800,29 @@ impl Database {
                 json!(checkpoint(snapshot).to_string()),
             ],
         )?;
+        self.trim_sync_checkpoints(Some(peer), Some(c))?;
         Ok(())
+    }
+    /// Keeps only the newest `KEEP_BATCHES_PER_PEER` replay answers per peer (`peer` limits the work to one peer).
+    /// Each row is a whole sync response (up to `MAX_BYTES`) and the database lives entirely in memory, so
+    /// unbounded retention eventually exhausts SQLite's in-memory size limit ("database or disk is full").
+    pub(super) fn trim_sync_batches(&self, peer: Option<&str>) -> Result<usize> {
+        self.exec(
+            "DELETE FROM sync_batches WHERE rowid IN (SELECT r FROM (SELECT rowid AS r, \
+             row_number() OVER (PARTITION BY peer_id ORDER BY rowid DESC) AS n FROM sync_batches \
+             WHERE ?1 IS NULL OR peer_id=?1) WHERE n>?2)",
+            &[json!(peer), json!(KEEP_BATCHES_PER_PEER)],
+        )
+    }
+    /// Keeps only the newest `KEEP_CHECKPOINTS_PER_CONV` merge bases per (peer, conversation); `peer`/`conv` narrow
+    /// the work to one pair. Older bases are no longer offered to clients, so they could never be pushed against.
+    pub(super) fn trim_sync_checkpoints(&self, peer: Option<&str>, conv: Option<&str>) -> Result<usize> {
+        self.exec(
+            "DELETE FROM sync_checkpoints WHERE rowid IN (SELECT r FROM (SELECT rowid AS r, \
+             row_number() OVER (PARTITION BY peer_id,conv_id ORDER BY rowid DESC) AS n FROM sync_checkpoints \
+             WHERE (?1 IS NULL OR peer_id=?1) AND (?3 IS NULL OR conv_id=?3)) WHERE n>?2)",
+            &[json!(peer), json!(KEEP_CHECKPOINTS_PER_CONV), json!(conv)],
+        )
     }
     pub(super) fn sync_character_source(&self, c: &str) -> Result<Value> {
         let row = self.one("SELECT text FROM character_revisions WHERE conv_id=? AND EXISTS(SELECT 1 FROM sync_character_authority WHERE conv_id=?) ORDER BY rev DESC LIMIT 1",
@@ -841,6 +867,7 @@ impl Database {
                 json!(out.to_string()),
             ],
         )?;
+        self.trim_sync_batches(Some(peer))?;
         Ok(out)
     }
     pub(super) fn sync_validate(&self, data: &Value) -> Result<()> {
@@ -1433,6 +1460,7 @@ impl Database {
                     json!(out.to_string()),
                 ],
             )?;
+            self.trim_sync_batches(Some(peer))?;
         }
         Ok(out)
     }
@@ -2972,5 +3000,58 @@ mod tests {
         assert_eq!(m1["interactions"][0], int_deleted);
         assert_eq!(m2["interactions"][0], int_deleted);
     }
-}
 
+    fn scratch_db() -> (tempfile::TempDir, Database) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(dir.path().to_path_buf(), false).unwrap();
+        (dir, db)
+    }
+    fn count(db: &Database, sql: &str) -> i64 {
+        db.db.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// Regression: sync replay answers and merge bases were never deleted, so the in-memory database reached
+    /// SQLite's 1 GiB limit and every connection from the phone failed with "database or disk is full".
+    #[test]
+    fn sync_replay_answers_and_checkpoints_stay_bounded_per_peer() {
+        let (_dir, db) = scratch_db();
+        for i in 0..40 {
+            for peer in ["phone", "tablet"] {
+                db.db.execute("INSERT INTO sync_batches VALUES(?,?,?,?)", rusqlite::params![peer, format!("b{i}"), "h", "{}"]).unwrap();
+                db.db.execute("INSERT INTO sync_checkpoints VALUES(?,?,?,?)", rusqlite::params![peer, "c1", format!("h{i}"), "{}"]).unwrap();
+                db.db.execute("INSERT INTO sync_checkpoints VALUES(?,?,?,?)", rusqlite::params![peer, "c2", format!("h{i}"), "{}"]).unwrap();
+            }
+        }
+        // Targeted trim touches only the given peer / conversation.
+        db.trim_sync_batches(Some("phone")).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches WHERE peer_id='phone'"), KEEP_BATCHES_PER_PEER);
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches WHERE peer_id='tablet'"), 40);
+        // The newest ones survive.
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches WHERE peer_id='phone' AND batch_id='b39'"), 1);
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches WHERE peer_id='phone' AND batch_id='b0'"), 0);
+        db.trim_sync_checkpoints(Some("phone"), Some("c1")).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints WHERE peer_id='phone' AND conv_id='c1'"), KEEP_CHECKPOINTS_PER_CONV);
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints WHERE peer_id='phone' AND conv_id='c2'"), 40);
+        // Global trim (legacy bloat) bounds everything.
+        db.trim_sync_batches(None).unwrap();
+        db.trim_sync_checkpoints(None, None).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches"), 2 * KEEP_BATCHES_PER_PEER);
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints"), 4 * KEEP_CHECKPOINTS_PER_CONV);
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints WHERE hash='h39'"), 4);
+    }
+
+    /// Regression: pruning must also give the space back, otherwise the bloated vault stays near the limit.
+    #[test]
+    fn pruning_sync_garbage_shrinks_the_database() {
+        let (_dir, db) = scratch_db();
+        for i in 0..60 {
+            db.db.execute("INSERT INTO sync_batches VALUES('phone',?,'h',hex(zeroblob(500000)))", [format!("b{i}")]).unwrap();
+        }
+        let before = count(&db, "PRAGMA page_count");
+        db.prune_logs(&json!({"days": 14})).unwrap();
+        assert!(db.reclaim_free_space());
+        let after = count(&db, "PRAGMA page_count");
+        assert!(after * 2 < before, "before={before} after={after}");
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches"), KEEP_BATCHES_PER_PEER);
+    }
+}

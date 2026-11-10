@@ -683,6 +683,8 @@ impl Database {
             )?;
             Ok(json!(true))
         })?;
+        // Outside the transaction: VACUUM cannot run inside one.
+        this.reclaim_free_space();
         if let Some(vault) = &this.vault {
             vault.save(&this.db)?;
         }
@@ -701,6 +703,7 @@ impl Database {
             self.pruned_at = Instant::now();
             // A pruning failure never blocks the request; vault flushing follows the derived-state rhythm.
             if self.tx(|| self.auto_prune()).is_ok() && self.vault.is_some() {
+                self.reclaim_free_space();
                 self.mark_dirty(CHECKPOINT_DELAY);
             }
         }

@@ -7,6 +7,21 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.1.10: In-Memory SQLite Vault Exhaustion & Sync Snapshot Bloat Fix — 2026-11-10
+
+- **Bounded Sync Batches and Merge Checkpoints (`server-rust/src/store/sync.rs`)**:
+  - Resolved `SQLite: database or disk is full` errors during phone-to-server connection and synchronization.
+  - Identified root cause in SQLite's default 1 GiB in-memory database ceiling (`SQLITE_MEMDB_DEFAULT_MAXSIZE`): unbounded accumulation of full sync snapshots in `sync_batches` (replay responses) and `sync_checkpoints` (merge bases) bloated the in-memory encrypted vault to over 900 MiB.
+  - Implemented `trim_sync_batches`: bounds replay answers to the newest 16 batches per peer (`KEEP_BATCHES_PER_PEER`). Older batches are safely pruned after each insert or batch recording.
+  - Implemented `trim_sync_checkpoints`: bounds sync merge bases to the newest 32 checkpoints per conversation for each peer (`KEEP_CHECKPOINTS_PER_CONV`). Older checkpoints are pruned after checkpoint insertion.
+- **Automated Space Reclaim and Vacuuming (`server-rust/src/store/maintenance.rs`, `server-rust/src/store/mod.rs`)**:
+  - Integrated `trim_sync_batches(None)` and `trim_sync_checkpoints(None, None)` into `auto_prune` (runs on startup and during the 24-hour maintenance cycle) to clean legacy accumulated sync bloat.
+  - Added `reclaim_free_space()`: automatically issues a `VACUUM` when database freelist pages exceed 32 MiB and constitute more than 25% of total page count, defragmenting and shrinking the in-memory database before writing to the vault file.
+  - Reduced sample real-world vault size from ~931 MB to ~169 MB on open, restoring database head room and preventing SQLite memory exhaustion.
+- **Automated Anti-Regression Tests (`server-rust/src/store/sync.rs`)**:
+  - Added unit test `sync_replay_answers_and_checkpoints_stay_bounded_per_peer` verifying peer-isolated and global retention boundaries for batches and checkpoints.
+  - Added unit test `pruning_sync_garbage_shrinks_the_database` validating that pruning large sync batches triggers space reclaim and dramatically reduces SQLite page count.
+
 ### ModularChat 4.1.9: Disconnect-During-Send Synchronization & Stream Resumption Fix — 2026-11-10
 
 - **Resilient PC Connection on In-Flight Generations (`client/src/server-connection.js`)**:
