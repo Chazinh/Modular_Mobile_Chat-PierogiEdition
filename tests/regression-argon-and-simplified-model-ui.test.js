@@ -31,6 +31,8 @@ test('Argon Profile: Preset definition, low effort only, and thinking controls',
   assert.equal(argonRust.label, 'Argon');
   assert.equal(argonRust.contextWindow, 1000000, 'Context window deve ser 1.0M (1000000)');
   assert.equal(argonRust.maxOutput, 262144, 'Max output tokens deve ser 262k (262144)');
+  assert.ok(argonRust.unlistedRoutes?.includes('ag/gemini-4-argon-medium'), 'unlistedRoutes deve incluir ag/gemini-4-argon-medium');
+  assert.ok(argonRust.match?.some(m => m.includes('argon')), 'match deve incluir padrões para rota argon');
   assert.deepEqual(argonRust.efforts, ['low'], 'Server preset deve ter esforço low somente');
   assert.equal(argonRust.defaultEffort, 'low');
   assert.equal(argonRust.thinkingCanDisable, true);

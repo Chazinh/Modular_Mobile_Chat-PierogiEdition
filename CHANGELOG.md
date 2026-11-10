@@ -7,8 +7,15 @@ implemented features.
 
 ## Released
 
-### ModularChat 4.1.8: Fallback Imediato de Presets e Escada Fluida nos Submenus do Drawer — 2026-11-10
+### ModularChat 4.1.8: Fallback Imediato de Presets, Escada Fluida nos Submenus do Drawer e Resolução do Perfil Argon — 2026-11-10
 
+- **Resolução de Seleção e Roteamento do Perfil Argon (`server-rust/src/presets.rs`, `server-rust/src/presets.json`)**:
+  - Eliminado o erro 400 "Rota indisponível ou desativada" ao selecionar o modelo Argon (`gemini-4-argon-medium`).
+  - Adicionado `ag/gemini-4-argon-medium` em `unlistedRoutes` garantindo disponibilidade contínua das rotas ativas do modelo mesmo sem anúncio explícito no catálogo.
+  - Generalizada a inserção de `groupRoute` no topo da lista para todos os presets com rotas ativas.
+  - Expandidos os padrões regex de `match` para abranger variações de prefixo e slug (`(^|/)argon($|-)`).
+  - Recompilado e implantado o binário release do servidor Windows e biblioteca nativa ARM64 no Android com atualização direta via ADB.
+  - Criado teste de regressão automatizado Rust (`server-rust/tests/regression_argon_routes.rs`) e ampliado teste Node (`tests/regression-argon-and-simplified-model-ui.test.js`).
 - **Resolução do Carregamento Infinito em "Modelo e esforço" (`client/src/provider-catalog.js`, `client/src/components/SettingsDrawer.jsx`, `client/src/components/ChatView.jsx`)**:
   - Corrigido o bug onde a aba "Modelo e esforço" ficava presa indefinidamente exibindo "Carregando presets do servidor ativo…".
   - `ModelPage` e `SettingsDrawer` agora utilizam `effectivePresets` com fallback imediato aos presets padrão (`DEFAULT_PRESETS`), garantindo exibição instantânea da lista enquanto o catálogo remoto carrega.

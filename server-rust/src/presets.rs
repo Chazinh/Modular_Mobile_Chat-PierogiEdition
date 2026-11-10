@@ -141,7 +141,7 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                 if let Some(pos) = route_ids.iter().position(|r| r == grp) {
                     let item = route_ids.remove(pos);
                     route_ids.insert(0, item);
-                } else if p["id"] == "glm-52" && !route_ids.is_empty() {
+                } else if !route_ids.is_empty() {
                     route_ids.insert(0, grp.to_string());
                 }
             }

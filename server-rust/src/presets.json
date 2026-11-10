@@ -134,10 +134,14 @@
     "family": "gemini",
     "match": [
       "gemini-4-argon(?:[^0-9]|$)",
+      "(^|/)argon($|-)",
       "^argon$"
     ],
     "preferredRoutes": [
       "Argon",
+      "ag/gemini-4-argon-medium"
+    ],
+    "unlistedRoutes": [
       "ag/gemini-4-argon-medium"
     ],
     "efforts": [
