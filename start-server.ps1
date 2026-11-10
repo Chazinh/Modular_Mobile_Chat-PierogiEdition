@@ -195,8 +195,10 @@ if ($Sandbox -and ($data -eq $mainData -or $data.StartsWith($mainData + [IO.Path
 if (-not $Port) { $Port = if ($Sandbox) { 3011 } else { 3000 } }
 if ($Sandbox -and $Port -in 3000, 20481, 20482) { throw 'Protected port; use 3011 (or another free port) for the sandbox.' }
 
-# Replace a previous ModularChat instance on the same port or holding the vault lock; never stop other programs.
+# Encerra qualquer instancia anterior do ModularChat em segundo plano (na mesma porta, pelo lock do cofre ou pelo executavel)
 $processesToStop = [System.Collections.Generic.List[PSObject]]::new()
+
+# 1. Processo escutando na porta
 $listener = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($listener) {
   $process = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $listener.OwningProcess) -ErrorAction SilentlyContinue
@@ -209,6 +211,7 @@ if ($listener) {
   }
 }
 
+# 2. Processo registrado no lock do cofre
 $lockFile = Join-Path $data 'modularchat.db.vault.lock'
 if (Test-Path -LiteralPath $lockFile) {
   $lockContent = (Get-Content -LiteralPath $lockFile -ErrorAction SilentlyContinue | Out-String).Trim()
@@ -223,8 +226,16 @@ if (Test-Path -LiteralPath $lockFile) {
   }
 }
 
+# 3. Qualquer outro processo modularchat-server.exe aberto em segundo plano
+$runningServers = Get-CimInstance Win32_Process -Filter "Name='modularchat-server.exe'" -ErrorAction SilentlyContinue
+foreach ($srv in $runningServers) {
+  if (-not ($processesToStop | Where-Object { $_.ProcessId -eq $srv.ProcessId })) {
+    $processesToStop.Add($srv)
+  }
+}
+
 foreach ($proc in $processesToStop) {
-  Write-Host "Stopping the previous ModularChat server (PID $($proc.ProcessId))..."
+  Write-Host "Encerrando servidor ModularChat anterior (PID $($proc.ProcessId))..."
   Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
 }
 
@@ -239,6 +250,9 @@ if ($processesToStop.Count -gt 0) {
     if (-not $stillRunning -and -not (Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue)) { $free = $true; break }
   }
   if (-not $free) { throw "Previous ModularChat instance could not be stopped." }
+  if (Test-Path -LiteralPath $lockFile) {
+    Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+  }
 }
 
 New-Item -ItemType Directory -Path $data -Force | Out-Null

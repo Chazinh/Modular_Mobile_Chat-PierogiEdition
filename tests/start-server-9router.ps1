@@ -213,5 +213,12 @@ if ($callNode.ArgumentList[0] -ne $canonicalCli) {
 $batContent = Get-Content -LiteralPath $batPath -Raw
 if ($batContent -notmatch '-With9Router') { throw 'start-server.bat deve conter referencia para -With9Router.' }
 if ($batContent -notmatch 'choice' -and $batContent -notmatch '9router') { throw 'start-server.bat deve fornecer opcao/atalho para o 9Router.' }
+if ($batContent -notmatch 'taskkill\s+/f\s+/im\s+modularchat-server\.exe') { throw 'start-server.bat deve conter comando taskkill para encerrar servidor anterior em segundo plano.' }
+
+# 6. Validacao do encerramento de instancias anteriores em start-server.ps1
+$ps1Content = Get-Content -LiteralPath $scriptPath -Raw
+if ($ps1Content -notmatch "modularchat-server\.exe" -or $ps1Content -notmatch "Stop-Process") {
+    throw 'start-server.ps1 deve conter rotina para encerrar modularchat-server anterior com Stop-Process.'
+}
 
 Write-Output '9Router start server tests passed: AST syntax, Find-NineRouterExecutable, Start-NineRouter idempotency and argument validation confirmed.'

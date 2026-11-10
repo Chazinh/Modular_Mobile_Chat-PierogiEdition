@@ -5,6 +5,9 @@ cd /d "%~dp0"
 echo ModularChat server
 echo.
 
+rem Encerra instancias anteriores do servidor em segundo plano antes de iniciar
+taskkill /f /im modularchat-server.exe >nul 2>&1
+
 set "ARGS=%*"
 
 rem Atalhos rapidos passados pela linha de comando
