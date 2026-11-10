@@ -16,6 +16,9 @@ implemented features.
   - Expandidos os padrões regex de `match` para abranger variações de prefixo e slug (`(^|/)argon($|-)`).
   - Recompilado e implantado o binário release do servidor Windows e biblioteca nativa ARM64 no Android com atualização direta via ADB.
   - Criado teste de regressão automatizado Rust (`server-rust/tests/regression_argon_routes.rs`) e ampliado teste Node (`tests/regression-argon-and-simplified-model-ui.test.js`).
+- **Resiliência do Lock do Cofre e Encerramento de Instâncias Anteriores (`start-server.ps1`)**:
+  - `start-server.ps1` agora inspeciona tanto a porta de escuta quanto o arquivo de lock `modularchat.db.vault.lock` para detectar e encerrar processos anteriores do `modularchat-server.exe`.
+  - Evita o erro 409 "O cofre já está aberto por outro servidor" quando uma instância anterior em background ou em estado desvinculado de porta mantinha o cofre aberto.
 - **Resolução do Carregamento Infinito em "Modelo e esforço" (`client/src/provider-catalog.js`, `client/src/components/SettingsDrawer.jsx`, `client/src/components/ChatView.jsx`)**:
   - Corrigido o bug onde a aba "Modelo e esforço" ficava presa indefinidamente exibindo "Carregando presets do servidor ativo…".
   - `ModelPage` e `SettingsDrawer` agora utilizam `effectivePresets` com fallback imediato aos presets padrão (`DEFAULT_PRESETS`), garantindo exibição instantânea da lista enquanto o catálogo remoto carrega.

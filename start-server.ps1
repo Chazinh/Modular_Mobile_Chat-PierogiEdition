@@ -195,19 +195,50 @@ if ($Sandbox -and ($data -eq $mainData -or $data.StartsWith($mainData + [IO.Path
 if (-not $Port) { $Port = if ($Sandbox) { 3011 } else { 3000 } }
 if ($Sandbox -and $Port -in 3000, 20481, 20482) { throw 'Protected port; use 3011 (or another free port) for the sandbox.' }
 
-# Replace a previous ModularChat instance on the same port; never stop other programs.
-$listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+# Replace a previous ModularChat instance on the same port or holding the vault lock; never stop other programs.
+$processesToStop = [System.Collections.Generic.List[PSObject]]::new()
+$listener = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($listener) {
-  $process = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $listener.OwningProcess)
-  if ($process.Name -ne 'modularchat-server.exe') { throw "Port $Port is used by $($process.Name) (PID $($process.ProcessId)). Nothing was stopped." }
-  Write-Host "Stopping the previous ModularChat server on port $Port (PID $($process.ProcessId))..."
-  Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+  $process = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $listener.OwningProcess) -ErrorAction SilentlyContinue
+  if ($process) {
+    if ($process.Name -eq 'modularchat-server.exe') {
+      $processesToStop.Add($process)
+    } else {
+      throw "Port $Port is used by $($process.Name) (PID $($process.ProcessId)). Nothing was stopped."
+    }
+  }
+}
+
+$lockFile = Join-Path $data 'modularchat.db.vault.lock'
+if (Test-Path -LiteralPath $lockFile) {
+  $lockContent = (Get-Content -LiteralPath $lockFile -ErrorAction SilentlyContinue | Out-String).Trim()
+  if ($lockContent -match '^\d+$') {
+    $lockPid = [int]$lockContent
+    $lockProcess = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $lockPid) -ErrorAction SilentlyContinue
+    if ($lockProcess -and $lockProcess.Name -eq 'modularchat-server.exe') {
+      if (-not ($processesToStop | Where-Object { $_.ProcessId -eq $lockProcess.ProcessId })) {
+        $processesToStop.Add($lockProcess)
+      }
+    }
+  }
+}
+
+foreach ($proc in $processesToStop) {
+  Write-Host "Stopping the previous ModularChat server (PID $($proc.ProcessId))..."
+  Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+if ($processesToStop.Count -gt 0) {
   $free = $false
   for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 250
-    if (-not (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) { $free = $true; break }
+    $stillRunning = $false
+    foreach ($proc in $processesToStop) {
+      if (Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue) { $stillRunning = $true; break }
+    }
+    if (-not $stillRunning -and -not (Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue)) { $free = $true; break }
   }
-  if (-not $free) { throw "Port $Port is still busy after stopping PID $($process.ProcessId)." }
+  if (-not $free) { throw "Previous ModularChat instance could not be stopped." }
 }
 
 New-Item -ItemType Directory -Path $data -Force | Out-Null
