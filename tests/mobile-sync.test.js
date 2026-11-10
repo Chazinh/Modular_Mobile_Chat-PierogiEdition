@@ -114,6 +114,20 @@ test('sync: LAN HTTP sincroniza cofres; HTTP publico e URLs com caminho são rec
   }
 });
 
+test('sync: conexão inicial solicita pausa explícita em vez de ficar presa em BUSY de memória', async () => {
+  const f = fixture({ onCall: ({ state, url }) => {
+    if (url.pathname.endsWith('/status') && url.searchParams.get('pauseMemory') === '1') {
+      for (const row of state.rows.values()) row.busy = false;
+    }
+  } });
+  f.put('pc', 'memory-in-progress', 'Fonte preservada').busy = true;
+  assert.equal((await f.sync.synchronize(f.options)).converged, true);
+  assert.equal(f.states.mobile.rows.get('memory-in-progress').snapshot.conversation.name, 'Fonte preservada');
+  const statuses = f.calls.filter(call => new URL(call.url).pathname.endsWith('/status'));
+  assert.ok(statuses.length > 0);
+  assert.ok(statuses.every(call => new URL(call.url).searchParams.get('pauseMemory') === '1'));
+});
+
 test('sync: observação periódica de PC ocupado não solicita pausa nem envia snapshots', async () => {
   const f = fixture();
   f.put('pc', 'memory-in-progress', 'Fonte preservada');

@@ -78,6 +78,9 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   const gemini = DEFAULT_PRESETS.presets.find(p => p.id === 'gemini-38-flash');
   assert.ok(gemini.preferredRoutes.includes('gemini/gemini-3.8-flash'), 'Gemini deve incluir gemini/gemini-3.8-flash');
 
+  // Gemini 3.8 Flash deve permitir ligar/desligar pensamento profundo
+  assert.equal(gemini.thinkingCanDisable, true, 'Gemini 3.8 Flash deve permitir ligar/desligar modo pensamento profundo');
+
   // Suporte aos grupos/combos com fallback automático no 9Router
   assert.equal(deepseek.groupRoute, 'Deepseek');
   assert.ok(deepseek.routes.some(r => r.id === 'Deepseek'), 'DeepSeek deve expor a rota do grupo Deepseek');
@@ -86,10 +89,14 @@ test('DEFAULT_PRESETS: valida estrutura, consistência de rotas e famílias', ()
   assert.equal(glm.groupRoute, 'GLM');
   assert.ok(glm.routes.some(r => r.id === 'GLM'), 'GLM deve expor a rota do grupo GLM');
 
-  // Regressão: Argon EXPLICITAMENTE excluído ("menos o argon")
-  for (const preset of DEFAULT_PRESETS.presets) {
-    assert.ok(!preset.id.toLowerCase().includes('argon'), `Preset ${preset.id} não deve ser argon`);
-    assert.ok(!preset.preferredRoutes.some(r => r.toLowerCase().includes('argon')), `Preset ${preset.id} não deve conter rota argon`);
-    assert.ok(!preset.routes.some(r => r.id.toLowerCase().includes('argon')), `Preset ${preset.id} não deve conter rota argon`);
-  }
+  // Perfil Argon: ag/gemini-4-argon-medium, esforço low somente, thinking level com toggle
+  const argon = DEFAULT_PRESETS.presets.find(p => p.id === 'gemini-4-argon-medium');
+  assert.ok(argon, 'Preset Argon deve existir nos DEFAULT_PRESETS');
+  assert.equal(argon.label, 'Argon', 'Preset deve ter label Argon');
+  assert.equal(argon.groupRoute, 'Argon', 'Argon deve ter groupRoute Argon');
+  assert.ok(argon.preferredRoutes.includes('ag/gemini-4-argon-medium'), 'Argon deve preferir ag/gemini-4-argon-medium');
+  assert.ok(argon.routes.some(r => r.id === 'ag/gemini-4-argon-medium'), 'Argon deve expor a rota ag/gemini-4-argon-medium');
+  assert.deepEqual(argon.efforts, ['low'], 'Argon deve aceitar esforço low somente');
+  assert.equal(argon.defaultEffort, 'low', 'Esforço padrão do Argon deve ser low');
+  assert.equal(argon.thinkingCanDisable, true, 'Argon deve permitir alternar modo pensamento profundo');
 });

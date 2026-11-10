@@ -1389,10 +1389,102 @@ async fn http_sync_pauses_only_background_memory_after_authentication() {
     let generation = state.store.call(Request::BeginTurn(serde_json::from_value::<TurnRequest>(json!({"convId":conv["id"],"mode":"send","content":"fixture","opId":"sync-priority"})).unwrap())).await.unwrap();
     let status = http(router.clone(), "GET", "/api/sync/status", "".into(), Some(&token)).await;
     assert_eq!(status.0, 200);
-    assert_eq!(state.runner.state().await["pausedForSync"], true, "adjacent snapshot requests share a short grace period");
+    assert_eq!(state.runner.state().await["pausedForSync"], false, "status reads must not cancel background memory jobs");
     assert!(status.1["manifests"].as_array().unwrap().iter().any(|entry| entry["convId"] == conv["id"] && entry["busy"] == true), "user generation must still block unsafe synchronization");
+    let connecting = http(router.clone(), "GET", "/api/sync/status?pauseMemory=1", "".into(), Some(&token)).await;
+    assert_eq!(connecting.0, 200);
+    assert!(connecting.1["manifests"].as_array().unwrap().iter().any(|entry| entry["convId"] == conv["id"] && entry["busy"] == true), "explicit connection must not interrupt user generation");
+    let transfer = http(router.clone(), "POST", "/api/sync/delta", envelope(&json!(id())).to_string(), Some(&token)).await;
+    assert_eq!(transfer.0, 409, "a live user generation must still block transfers");
+    assert_eq!(transfer.1["code"], "BUSY");
+    assert_eq!(state.runner.state().await["pausedForSync"], true, "actual transfers still pause memory to protect snapshots");
     state.store.call(Request::FinishGeneration(serde_json::from_value::<FinishRequest>(json!({"generationId":generation["generationId"],"status":"interrupted","text":""})).unwrap())).await.unwrap();
     state.shutdown().await;
+}
+
+#[tokio::test]
+async fn repeated_status_polling_does_not_restart_an_inflight_memory_job() {
+    memory_job_status_handshake(false).await;
+}
+
+#[tokio::test]
+async fn explicit_connection_handshake_pauses_memory_without_spending_attempts() {
+    memory_job_status_handshake(true).await;
+}
+
+async fn memory_job_status_handshake(connect: bool) {
+    use modularchat_server::{memory_backend::MemoryPolicy, providers::Providers};
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::Notify;
+
+    let (_dir, state, token) = http_state().await;
+    *state.policy.write().unwrap() = MemoryPolicy::parse(&json!({"mode":"deferred"})).unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let request_started = started.clone();
+    let request_release = release.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let started = request_started.clone();
+        let release = request_release.clone();
+        async move {
+            if request.uri().path().ends_with("/models") {
+                return axum::Json(json!({"data":[{"id":"memory-fixture"}]}));
+            }
+            started.notify_one();
+            release.notified().await;
+            axum::Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"{\"cast\":[]}"}}]}))
+        }
+    });
+    let server = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap(); });
+    state.providers.set(Some(Arc::new(Providers::from_json(&json!({
+        "providers":[{"id":"memory-fixture","baseUrl":url,"models":["memory-fixture"]}],
+        "default":"memory-fixture"
+    })).unwrap())));
+    let conv = state.store.call(Request::CreateConversation(json!({
+        "routeId":"cbai/glm-5.2","presetId":"glm-52","prompt":"Uma viajante curiosa."
+    }))).await.unwrap();
+    let job = state.store.call(Request::EnqueueJob(json!({"convId":conv["id"],"kind":"cast"}))).await.unwrap();
+    *state.policy.write().unwrap() = MemoryPolicy::parse(&json!({
+        "mode":"api","api":{"provider":"memory-fixture","model":"memory-fixture","historyConsent":true}
+    })).unwrap();
+    state.runner.kick();
+    tokio::time::timeout(Duration::from_secs(5), started.notified()).await.unwrap();
+    let router = api::router(state.clone());
+    let before = state.store.call(Request::JobInput(job["id"].as_str().unwrap().into())).await.unwrap();
+    assert_eq!(before["job"]["status"], "running");
+    for _ in 0..4 {
+        let (status, response) = http(router.clone(), "GET", "/api/sync/status", "".into(), Some(&token)).await;
+        assert_eq!(status, 200);
+        assert!(response["manifests"].as_array().unwrap().iter().any(|m| m["convId"] == conv["id"] && m["busy"] == true));
+        let current = state.store.call(Request::JobInput(job["id"].as_str().unwrap().into())).await.unwrap();
+        assert_eq!(current["job"]["status"], "running", "polling must not cancel the active inference");
+        assert_eq!(current["job"]["attempts"], before["job"]["attempts"]);
+        assert_eq!(state.runner.state().await["pausedForSync"], false);
+    }
+    if connect {
+        assert_eq!(http(router.clone(), "GET", "/api/sync/status?pauseMemory=1", "".into(), None).await.0, 401);
+        assert_eq!(state.runner.state().await["pausedForSync"], false, "unauthenticated callers cannot pause memory");
+        let (status, response) = http(router, "GET", "/api/sync/status?pauseMemory=1", "".into(), Some(&token)).await;
+        assert_eq!(status, 200);
+        assert!(response["manifests"].as_array().unwrap().iter().any(|m| m["convId"] == conv["id"] && m["busy"] == false));
+        let current = state.store.call(Request::JobInput(job["id"].as_str().unwrap().into())).await.unwrap();
+        assert_eq!(current["job"]["status"], "pending");
+        assert_eq!(current["job"]["attempts"].as_u64().unwrap() + 1, before["job"]["attempts"].as_u64().unwrap(), "connection refunds the interrupted attempt");
+        assert_eq!(state.runner.state().await["pausedForSync"], true);
+    } else {
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current = state.store.call(Request::JobInput(job["id"].as_str().unwrap().into())).await.unwrap();
+                if current["job"]["status"] == "done" { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("memory must complete despite repeated status polling");
+    }
+    state.shutdown().await;
+    server.abort();
 }
 
 #[tokio::test]

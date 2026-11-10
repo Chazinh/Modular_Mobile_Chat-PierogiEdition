@@ -118,10 +118,37 @@
       "ag/gemini-3.8-flash-high": "high"
     },
     "thinking": "level",
+    "thinkingCanDisable": true,
     "sampling": "default",
     "providerReserve": 16384,
     "contextWindow": 1000000,
     "maxOutput": 64000,
+    "capacitySource": "documented"
+  },
+  {
+    "id": "gemini-4-argon-medium",
+    "groupRoute": "Argon",
+    "thinkingCanDisable": true,
+    "selectable": true,
+    "label": "Argon",
+    "family": "gemini",
+    "match": [
+      "gemini-4-argon(?:[^0-9]|$)",
+      "^argon$"
+    ],
+    "preferredRoutes": [
+      "Argon",
+      "ag/gemini-4-argon-medium"
+    ],
+    "efforts": [
+      "low"
+    ],
+    "defaultEffort": "low",
+    "thinking": "level",
+    "sampling": "default",
+    "providerReserve": 16384,
+    "contextWindow": 1000000,
+    "maxOutput": 262144,
     "capacitySource": "documented"
   },
   {

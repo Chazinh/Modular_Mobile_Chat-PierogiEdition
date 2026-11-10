@@ -654,8 +654,10 @@ async fn dispatch(
     let mut status = 200;
     let out = match seg.as_slice() {
         ["sync", "status"] if get => {
-            let observe = query.remove("observe").is_some_and(|value| value == "1");
-            let _memory_pause = if observe { None } else { Some(state.runner.pause_for_sync().await) };
+            // Only an explicit connection handshake preempts memory; periodic polling remains passive.
+            let pause_memory = query.remove("pauseMemory").is_some_and(|value| value == "1");
+            query.remove("observe"); // Compatibility with clients that already request passive observation.
+            let _memory_pause = if pause_memory { Some(state.runner.pause_for_sync().await) } else { None };
             let mut out=state.store.call(Request::SyncStatus(crate::store::sync::query(&query, false)?)).await?;
             out["embeddingFingerprint"]=json!(state.local.fingerprint().await);
             out

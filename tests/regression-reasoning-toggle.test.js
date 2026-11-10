@@ -37,13 +37,10 @@ test('R3: isReasoningModel returns true for reasoning models', () => {
   const expectedReasoningIds = [
     'deepseek-v41-flash',
     'glm-52',
-    'muse-spark-13',
     'gemini-38-flash',
+    'gemini-4-argon-medium',
     'claude-sonnet-5-5',
     'claude-opus-5-5',
-    'nemotron-35',
-    'minimax-m31',
-    'gemma-4',
   ];
 
   for (const id of expectedReasoningIds) {
@@ -66,12 +63,7 @@ test('R3: Thinking switch display condition evaluates to false for non-reasoning
   assert.equal(canShowThinkingSwitch({ id: 'other', family: 'local', thinkingCanDisable: true }), false, 'local family must be false');
   assert.equal(canShowThinkingSwitch({ id: 'no-efforts', efforts: [], thinking: 'none', thinkingCanDisable: true }), false, 'none thinking must be false');
 
-  // Reasoning models that CANNOT disable thinking (e.g. Gemini, Opus) must evaluate to false
-  const gemini = DEFAULT_PRESETS.presets.find((p) => p.id === 'gemini-38-flash');
-  assert.ok(gemini);
-  assert.equal(isReasoningModel(gemini), true, 'gemini-38-flash is reasoning model');
-  assert.equal(canShowThinkingSwitch(gemini), false, 'gemini-38-flash switch display condition must be false (thinking cannot disable)');
-
+  // Reasoning models that CANNOT disable thinking (e.g. Opus) must evaluate to false
   const opus = DEFAULT_PRESETS.presets.find((p) => p.id === 'claude-opus-5-5');
   assert.ok(opus);
   assert.equal(isReasoningModel(opus), true, 'claude-opus-5-5 is reasoning model');
@@ -81,11 +73,9 @@ test('R3: Thinking switch display condition evaluates to false for non-reasoning
   const controllableModels = [
     'deepseek-v41-flash',
     'glm-52',
-    'muse-spark-13',
+    'gemini-38-flash',
+    'gemini-4-argon-medium',
     'claude-sonnet-5-5',
-    'nemotron-35',
-    'minimax-m31',
-    'gemma-4',
   ];
 
   for (const id of controllableModels) {

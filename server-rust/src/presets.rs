@@ -13,10 +13,9 @@ pub fn narrative_route_visible(route: &str) -> bool {
 }
 /// Retired presets: old conversations that use them still open and generate with the current default preset.
 const RETIRED_PRESETS: &[&str] = &["space-bunny"];
-/// Routes that must not be exposed or selected (e.g. argon is excluded by request; space-bunny is retired).
+/// Routes that must not be exposed or selected (e.g. space-bunny is retired).
 const RETIRED_ROUTE_MARKS: &[&str] = &[
     "space-bunny",
-    "argon",
     "nvidia/z-ai/glm-5.2",
 ];
 pub fn selectable_route(route: &str) -> bool {

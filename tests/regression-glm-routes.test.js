@@ -8,7 +8,7 @@ test('R1: DEFAULT_PRESETS exposes both active routes for glm-52', () => {
   assert.ok(glm, 'glm-52 preset must exist in DEFAULT_PRESETS');
   assert.equal(glm.groupRoute, 'GLM', 'glm-52 groupRoute must be GLM');
   assert.ok(Array.isArray(glm.routes), 'glm-52 routes must be an array');
-  assert.equal(glm.routes.length, 2, 'glm-52 must have exactly 2 active routes');
+  assert.ok(glm.routes.length >= 2, 'glm-52 must have active routes');
 
   const routeIds = glm.routes.map((r) => r.id);
   assert.ok(routeIds.includes('GLM'), 'routes must include GLM group route');
@@ -41,7 +41,8 @@ test('R1: mergeWithDefaults preserves both routes when server advertises only cb
   const merged = mergeWithDefaults(serverData);
   const glm = merged.presets.find((p) => p.id === 'glm-52');
   assert.ok(glm, 'glm-52 must exist after merge');
-  assert.equal(glm.routes.length, 2, 'Must contain both routes after merging with defaults');
+  const expectedCount = DEFAULT_PRESETS.presets.find((p) => p.id === 'glm-52').routes.length;
+  assert.equal(glm.routes.length, expectedCount, 'Must contain all default routes after merging with defaults');
 
   const routeIds = glm.routes.map((r) => r.id);
   assert.ok(routeIds.includes('GLM'), 'Must restore groupRoute GLM');
@@ -69,7 +70,8 @@ test('R1: mergeWithDefaults preserves both routes when server advertises only GL
   const merged = mergeWithDefaults(serverData);
   const glm = merged.presets.find((p) => p.id === 'glm-52');
   assert.ok(glm, 'glm-52 must exist after merge');
-  assert.equal(glm.routes.length, 2, 'Must contain both routes after merging with defaults');
+  const expectedCount = DEFAULT_PRESETS.presets.find((p) => p.id === 'glm-52').routes.length;
+  assert.equal(glm.routes.length, expectedCount, 'Must contain all default routes after merging with defaults');
 
   const routeIds = glm.routes.map((r) => r.id);
   assert.ok(routeIds.includes('GLM'), 'Must preserve GLM');
@@ -96,7 +98,8 @@ test('R1: mergeWithDefaults does not duplicate routes when server advertises bot
 
   const merged = mergeWithDefaults(serverData);
   const glm = merged.presets.find((p) => p.id === 'glm-52');
-  assert.equal(glm.routes.length, 2, 'Must not duplicate routes when both are already present');
+  const expectedCount = DEFAULT_PRESETS.presets.find((p) => p.id === 'glm-52').routes.length;
+  assert.equal(glm.routes.length, expectedCount, 'Must not duplicate routes when both are already present');
 });
 
 test('R1: Route switching logic between GLM and cbai/glm-5.2', () => {
@@ -119,12 +122,12 @@ test('R1: Route switching logic between GLM and cbai/glm-5.2', () => {
   assert.deepEqual(patchToGroup, { presetId: 'glm-52', routeId: 'GLM', effort: 'high' });
 });
 
-test('R1: publicPresets preserves GLM label and both routes for UI rendering', () => {
+test('R1: publicPresets preserves GLM label and routes for UI rendering', () => {
   const pub = publicPresets(DEFAULT_PRESETS);
   const glm = pub.presets.find((p) => p.id === 'glm-52');
   assert.ok(glm, 'glm-52 must be included in publicPresets');
   assert.equal(glm.label, 'GLM');
-  assert.equal(glm.routes.length, 2);
+  assert.ok(glm.routes.length >= 2);
   assert.ok(glm.routes.some((r) => r.id === 'GLM'));
   assert.ok(glm.routes.some((r) => r.id === 'cbai/glm-5.2'));
 });

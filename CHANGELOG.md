@@ -3,7 +3,28 @@
 Project releases and changes are recorded here. Assessments do not represent
 implemented features.
 
+## Unreleased
+
 ## Released
+
+### ModularChat 4.1.7: Perfil Argon, Modo Pensamento Profundo e Simplificação de Modelos — 2026-11-10
+
+- **Perfil Argon (`server-rust/src/presets.json`, `client/src/default-presets.js`, `client/src/api.js`)**:
+  - Adicionado o perfil oficial "Argon" (`ag/gemini-4-argon-medium` e grupo fallback `Argon`).
+  - Configurado com context window de 1.0M (1.000.000 tokens), teto de saída de 262k (262.144 tokens), suporte multimodal e raciocínio.
+  - Fixado exclusivamente com nível de esforço `low` (`efforts: ["low"]`, `defaultEffort: "low"`), respeitando a diretriz de baixo esforço.
+  - Removido o filtro restritivo de exclusão do Argon em `RETIRED_ROUTE_MARKS` no Rust, permitindo a seleção normal do perfil e de suas rotas.
+- **Simplificação da Interface de Modelos (`client/src/components/SettingsDrawer.jsx`, `client/src/locales/en.json`)**:
+  - Removida a seleção visual de rotas/endpoints do Gemini 3.8 Flash e dos demais modelos, deixando o painel limpo e intuitivo para o usuário.
+  - Mantidos apenas o toggle de **Modo pensamento profundo** e a seleção de **Nível de esforço** (`low`, `medium`, `high`).
+  - Habilitado o controle de ligar/desligar Modo Pensamento Profundo no Gemini 3.8 Flash (`thinkingCanDisable: true`), permitindo ao usuário alternar o raciocínio facilmente.
+  - O chaveamento de sub-rotas por nível de esforço continua sendo resolvido automaticamente nos bastidores sem expor detalhes técnicos de backend.
+- **Testes de Regressão Automatizados (`tests/regression-argon-and-simplified-model-ui.test.js`, `tests/default-presets.test.js`, `server-rust/tests/regression_send_and_memory.rs`)**:
+  - Criado teste automatizado cobrindo o perfil Argon, esforço low exclusivo, suporte ao toggle de pensamento profundo e ausência de seletores visuais de rotas.
+  - Atualizados testes de regressão Rust e JS para validar a inclusão e resolução do perfil Argon.
+- Corrigido bloqueio da fila de memória durante consultas periódicas de sincronização: `GET /api/sync/status` apenas observa o estado e não cancela inferências em andamento. Transferências em `/api/sync/delta` mantêm a pausa de segurança e o bloqueio de conversas ocupadas.
+- A conexão inicial/reconexão do Android solicita `pauseMemory=1` para sincronizar sem ficar presa em `BUSY` de memória; a pausa só ocorre após autenticação, devolve a tentativa interrompida e nunca interrompe uma geração do usuário. Consultas periódicas continuam passivas.
+- Adicionados testes de regressão para consulta passiva, conexão durante extração de memória e proteção de gerações do usuário.
 
 ### ModularChat 4.1.6: catálogo narrativo e memória exclusivamente local — 2026-11-08
 

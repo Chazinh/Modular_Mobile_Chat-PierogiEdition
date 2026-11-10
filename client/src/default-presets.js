@@ -88,6 +88,27 @@ export const DEFAULT_PRESETS = {
         "ag/gemini-3.8-flash-high": "high"
       },
       thinking: "level",
+      thinkingCanDisable: true,
+      available: true
+    },
+    {
+      id: "gemini-4-argon-medium",
+      groupRoute: "Argon",
+      thinkingCanDisable: true,
+      selectable: true,
+      label: "Argon",
+      family: "gemini",
+      preferredRoutes: [
+        "Argon",
+        "ag/gemini-4-argon-medium"
+      ],
+      routes: [
+        { id: "Argon" },
+        { id: "ag/gemini-4-argon-medium" }
+      ],
+      efforts: ["low"],
+      defaultEffort: "low",
+      thinking: "level",
       available: true
     },
     {

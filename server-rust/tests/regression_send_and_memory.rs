@@ -199,11 +199,10 @@ async fn regression_memory_runner_does_not_claim_jobs_when_backend_unavailable()
 }
 
 #[test]
-fn regression_screenshot_model_routes_and_argon_exclusion() {
-    // 1. Argon deve ser estritamente rejeitado como rota selecionável
-    assert!(!presets::selectable_route("ag/gemini-4-argon-high"), "ag/gemini-4-argon-high deve ser rejeitado");
-    assert!(!presets::selectable_route("gemini/gemini-4-argon"), "gemini/gemini-4-argon deve ser rejeitado");
-    assert!(!presets::selectable_route("Argon"), "Argon combo deve ser rejeitado");
+fn regression_screenshot_model_routes_and_argon_inclusion() {
+    // 1. Argon deve ser rota selecionável e compatível com 9Router / proxy
+    assert!(presets::selectable_route("ag/gemini-4-argon-medium"), "ag/gemini-4-argon-medium deve ser selecionável");
+    assert!(presets::selectable_route("Argon"), "Argon combo deve ser selecionável");
 
     // 2. Rotas ativas e grupos de combo devem ser selecionáveis
     assert!(presets::selectable_route("oc/deepseek-v4.1-flash-free"), "oc/deepseek-v4.1-flash-free deve ser selecionável");
@@ -224,6 +223,8 @@ fn regression_screenshot_model_routes_and_argon_exclusion() {
     assert_eq!(presets::for_route("oc/deepseek-v4.1-flash-free")["id"], "deepseek-v41-flash");
     assert_eq!(presets::for_route("Deepseek")["id"], "deepseek-v41-flash");
     assert_eq!(presets::for_route("Gemini")["id"], "gemini-38-flash");
+    assert_eq!(presets::for_route("ag/gemini-4-argon-medium")["id"], "gemini-4-argon-medium");
+    assert_eq!(presets::for_route("Argon")["id"], "gemini-4-argon-medium");
     assert_eq!(presets::for_route("GLM")["id"], "glm-52");
     assert_eq!(presets::for_route("Sonnet")["id"], "claude-sonnet-5-5");
     assert_eq!(presets::for_route("Opus")["id"], "claude-opus-5-5");
@@ -236,7 +237,7 @@ fn regression_screenshot_model_routes_and_argon_exclusion() {
         "oc/deepseek-v4.1-flash-free".to_string(),
         "cbai/glm-5.2".to_string(),
         "nvidia/z-ai/glm-5.2".to_string(),
-        "ag/gemini-4-argon-high".to_string(),
+        "ag/gemini-4-argon-medium".to_string(),
     ];
     let public_presets = presets::public(&advertised, &json!({"routes": {}}));
 
@@ -253,11 +254,13 @@ fn regression_screenshot_model_routes_and_argon_exclusion() {
     assert!(glm_routes.contains(&"cbai/glm-5.2"), "GLM deve conter cbai/glm-5.2");
     assert!(!glm_routes.contains(&"nvidia/z-ai/glm-5.2"), "GLM NÃO deve conter rota desligada nvidia/z-ai/glm-5.2");
 
-    // Argon NUNCA deve aparecer em nenhum preset
-    for p in &public_presets {
-        let routes: Vec<&str> = p["routes"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str()).collect();
-        assert!(!routes.iter().any(|r| r.to_lowercase().contains("argon")), "Preset {} não pode conter rota argon", p["id"]);
-    }
+    // Argon preset deve estar presente e com rota ag/gemini-4-argon-medium
+    let argon = public_presets.iter().find(|p| p["id"] == "gemini-4-argon-medium").expect("Argon preset");
+    assert_eq!(argon["label"], "Argon");
+    assert_eq!(argon["efforts"], json!(["low"]));
+    assert_eq!(argon["defaultEffort"], "low");
+    let argon_routes: Vec<&str> = argon["routes"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str()).collect();
+    assert!(argon_routes.contains(&"ag/gemini-4-argon-medium"), "Argon deve conter ag/gemini-4-argon-medium");
 }
 
 #[test]

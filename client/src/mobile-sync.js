@@ -35,7 +35,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       check();
       if (body && bytes(body) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'O lote de sincronização excede 8 MiB.');
       const timeout = AbortSignal.timeout(15000);
-      const observe = !pauseMemory && path.startsWith('status?') ? '&observe=1' : '';
+      const observe = path.startsWith('status?') ? (pauseMemory ? '&pauseMemory=1' : '&observe=1') : '';
       const response = await send(`${target.server}/api/sync/${path}${observe}`, {
         method: body ? 'POST' : 'GET', redirect: 'error', cache: 'no-store', credentials: 'omit',
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,

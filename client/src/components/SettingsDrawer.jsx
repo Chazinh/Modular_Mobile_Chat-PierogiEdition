@@ -179,8 +179,8 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
                 <Row lead={<Cpu size={20} />} label={tr("Modelo e esforço")} value={`${preset?.label || chat.routeId}${chat.effort ? ` · ${chat.effort}` : ''}`} onClick={() => setPage('model')} />
                 {isReasoningModel(preset) && preset?.thinkingCanDisable === true && (
                   <div className="mc-bubble mx-[10px] mb-[10px] rounded-[26px] px-[18px] py-3.5">
-                    <button role="switch" aria-label={tr("Pensamento do modelo")} aria-checked={thinkingOn} disabled={busy || thinkingSaving} onClick={async () => { setThinkingSaving(true); try { await save({ settings: { thinkingEnabled: !thinkingOn } }); } finally { setThinkingSaving(false); } }} className="flex w-full items-center justify-between gap-3 text-left disabled:opacity-50">
-                      <span><span className="block font-medium">{tr("Pensamento do modelo")}</span><span className="block text-xs text-textMuted">{thinkingSaving ? tr("Salvando…") : thinkingOn ? tr("Ligado") : tr("Desligado")}{tr(" · nesta conversa")}</span></span>
+                    <button role="switch" aria-label={tr("Modo pensamento profundo")} aria-checked={thinkingOn} disabled={busy || thinkingSaving} onClick={async () => { setThinkingSaving(true); try { await save({ settings: { thinkingEnabled: !thinkingOn } }); } finally { setThinkingSaving(false); } }} className="flex w-full items-center justify-between gap-3 text-left disabled:opacity-50">
+                      <span><span className="block font-medium">{tr("Modo pensamento profundo")}</span><span className="block text-xs text-textMuted">{thinkingSaving ? tr("Salvando…") : thinkingOn ? tr("Ligado") : tr("Desligado")}{tr(" · nesta conversa")}</span></span>
                       <Switch on={thinkingOn} />
                     </button>
                     <p className="mt-2 text-xs text-textMuted">{tr("Vale na próxima resposta. O esforço escolhido fica guardado para quando você ligar novamente.")}</p>
@@ -357,27 +357,15 @@ function ModelPage({ chat, presets, error, onBack, onPick }) {
             {sel.presetId === p.id && (
               <div className="border-t border-borderDark px-4 pb-3 pt-2">
                 {isReasoningModel(p) && p.thinkingCanDisable === true ? (
-                  <button role="switch" aria-label={tr("Pensamento do modelo selecionado")} aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
-                    <span>{tr("Pensamento do modelo")}</span><Switch on={sel.thinkingEnabled} />
+                  <button role="switch" aria-label={tr("Modo pensamento profundo")} aria-checked={sel.thinkingEnabled} onClick={() => setSel(s => ({ ...s, thinkingEnabled: !s.thinkingEnabled }))} className="mb-3 flex w-full items-center justify-between gap-3 rounded-full bg-composer px-3.5 py-2 text-left">
+                    <span>{tr("Modo pensamento profundo")}</span><Switch on={sel.thinkingEnabled} />
                   </button>
                 ) : isReasoningModel(p) ? (
-                  <p className="mb-3 text-xs text-textMuted">{p.thinking === 'none' ? tr("Esta rota usa o menor pensamento disponível e não permite desligá-lo.") : tr("Controle de desligamento indisponível nesta rota.")}</p>
+                  <p className="mb-3 text-xs text-textMuted">{p.thinking === 'none' ? tr("Esta rota usa o menor pensamento disponível e não permite desligá-lo.") : tr("Pensamento sempre ativo neste modelo.")}</p>
                 ) : null}
-                <p className="mb-1 text-xs text-textMuted">{tr("Rota ou grupo de modelos")}</p>
-                {p.routes.map((r) => {
-                  const isGroup = r.id === p.groupRoute;
-                  return (
-                    <button key={r.id} onClick={() => setSel((s) => ({ ...s, routeId: r.id, effort: p.effortByRoute?.[r.id] ?? s.effort }))} className="flex w-full items-center gap-2 py-1.5 text-left text-sm">
-                      <span className={`h-3.5 w-3.5 rounded-full border ${sel.routeId === r.id ? 'border-accentPurpleLight bg-accentPurple' : 'border-gray-500'}`} />
-                      <span className="break-all">
-                        {r.id} {isGroup ? <span className="ml-1 text-xs text-accentPurpleLight font-medium">({tr("fallback automático 9Router")})</span> : null}
-                      </span>
-                    </button>
-                  );
-                })}
                 {p.efforts.length > 0 && (
                   <>
-                    <p className="mb-1 mt-3 text-xs text-textMuted">{curCanDisable && !sel.thinkingEnabled ? tr("Esforço guardado para quando o pensamento estiver ligado") : (p.effortByRoute && sel.routeId !== p.groupRoute) ? tr("Esforço (cada nível é uma rota própria)") : p.efforts.length > 1 ? tr("Esforço desta conversa") : tr("Esforço (fixo neste preset)")}</p>
+                    <p className="mb-1 mt-1 text-xs text-textMuted">{curCanDisable && !sel.thinkingEnabled ? tr("Esforço guardado para quando o pensamento estiver ligado") : tr("Nível de esforço")}</p>
                     <div className="flex flex-wrap gap-2">
                       {p.efforts.map((e) => {
                         const isGroup = p.groupRoute && sel.routeId === p.groupRoute;
