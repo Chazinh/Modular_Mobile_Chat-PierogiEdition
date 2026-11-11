@@ -7,6 +7,14 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.3.1: Long Chats Sync Again (32 MiB Sync Limit) — 2026-11-11
+
+- **Phone could not connect: "Delta excede 8 MiB" (`server-rust/src/store/sync.rs`, `client/src/mobile-sync.js`)**:
+  - A conversation is synced whole, never split or truncated. A long chat (1311 embeddings = 5.4 MiB of base64 plus history, memories and episodes) passed the 8 MiB request/snapshot limit, so every phone connection failed with `SYNC_TOO_LARGE`.
+  - `MAX_BYTES` is now 32 MiB on both sides (the `maxBytes` contract must match: update the PC server and the app together).
+  - Replay answers kept per peer in the in-memory database are now also bounded by size (64 MiB per peer, newest always kept), so the larger limit cannot bring back the 1 GiB in-memory exhaustion fixed in 4.1.10.
+- **Tests**: a conversation larger than the old 8 MiB limit syncs whole; replay answers bounded by bytes; page/batch splitting tests now scale with the limit.
+
 ### ModularChat 4.3.0: Duplicate Chat Opens the Copy, Pairing & Data-Loss Hardening, Keyboard Scrolling — 2026-11-10
 
 - **New/duplicated chat kept writing into the old chat (`client/src/components/SettingsDrawer.jsx`, `client/src/App.jsx`, `client/src/api.js`)**:

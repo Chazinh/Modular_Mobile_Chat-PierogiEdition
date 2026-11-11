@@ -6,13 +6,19 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub const MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Largest sync request/response, and so the largest single conversation snapshot (conversations are never
+/// split or truncated). 8 MiB was outgrown by a long chat whose embeddings alone took 5.4 MiB in base64, which
+/// blocked every phone connection with SYNC_TOO_LARGE. Client and server must agree (`maxBytes` contract).
+pub const MAX_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CONVERSATIONS: usize = 4;
 const REMOVED_TABLES: &[&str] = &["interactions", "parts", "versions", "memories"];
 const MANIFEST_PAGE: usize = 128;
 const MAX_KNOWN: usize = 256;
 /// Retained replay answers per peer: a retry only ever repeats one of the latest batches.
 const KEEP_BATCHES_PER_PEER: i64 = 16;
+/// Replay answers kept per peer are also bounded by size: 16 answers of up to MAX_BYTES each would hold
+/// 512 MiB of the in-memory database. The newest answer is always kept.
+const KEEP_BATCH_BYTES_PER_PEER: i64 = 64 * 1024 * 1024;
 /// Retained merge bases per (peer, conversation); at most this many hashes are offered back to the client.
 const KEEP_CHECKPOINTS_PER_CONV: i64 = 32;
 const MAX_TEXT: usize = 4 * 1024 * 1024;
@@ -115,7 +121,7 @@ fn invalid(message: &str) -> Error {
 fn sized(conv: Option<&str>, bytes: usize) -> Error {
     Error::new(
         413,
-        "Delta excede 8 MiB; reduza o lote. Uma conversa nunca é truncada.",
+        "Delta excede 32 MiB; reduza o lote. Uma conversa nunca é truncada.",
     )
     .extra("code", "SYNC_TOO_LARGE")
     .extra("maxBytes", MAX_BYTES)
@@ -820,9 +826,10 @@ impl Database {
     pub(super) fn trim_sync_batches(&self, peer: Option<&str>) -> Result<usize> {
         self.exec(
             "DELETE FROM sync_batches WHERE rowid IN (SELECT r FROM (SELECT rowid AS r, \
-             row_number() OVER (PARTITION BY peer_id ORDER BY rowid DESC) AS n FROM sync_batches \
-             WHERE ?1 IS NULL OR peer_id=?1) WHERE n>?2)",
-            &[json!(peer), json!(KEEP_BATCHES_PER_PEER)],
+             row_number() OVER w AS n, sum(length(response_json)) OVER w AS total FROM sync_batches \
+             WHERE ?1 IS NULL OR peer_id=?1 WINDOW w AS (PARTITION BY peer_id ORDER BY rowid DESC)) \
+             WHERE n>?2 OR (n>1 AND total>?3))",
+            &[json!(peer), json!(KEEP_BATCHES_PER_PEER), json!(KEEP_BATCH_BYTES_PER_PEER)],
         )
     }
     /// Keeps only the newest `KEEP_CHECKPOINTS_PER_CONV` merge bases per (peer, conversation); `peer`/`conv` narrow
@@ -3049,6 +3056,27 @@ mod tests {
         assert_eq!(count(&db, "SELECT count(*) FROM sync_batches"), 2 * KEEP_BATCHES_PER_PEER);
         assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints"), 4 * KEEP_CHECKPOINTS_PER_CONV);
         assert_eq!(count(&db, "SELECT count(*) FROM sync_checkpoints WHERE hash='h39'"), 4);
+    }
+
+    /// With 32 MiB answers, keeping 16 per peer could hold 512 MiB of the in-memory database: replay answers are
+    /// also bounded by total size per peer, always keeping the newest one.
+    #[test]
+    fn sync_replay_answers_are_bounded_by_bytes_per_peer() {
+        let (_dir, db) = scratch_db();
+        // hex(zeroblob(n)) is 2n characters: four 30 MiB answers for one peer, one small answer for another.
+        for i in 0..4 {
+            db.db.execute("INSERT INTO sync_batches VALUES('phone',?,'h',hex(zeroblob(15728640)))", [format!("b{i}")]).unwrap();
+        }
+        db.db.execute("INSERT INTO sync_batches VALUES('tablet','t0','h','{}')", []).unwrap();
+        db.trim_sync_batches(None).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches WHERE peer_id='phone'"), 2);
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches WHERE peer_id='phone' AND batch_id IN ('b3','b2')"), 2);
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches WHERE peer_id='tablet'"), 1);
+        // A single answer larger than the budget is still kept (it is the replay of the last batch).
+        db.db.execute("DELETE FROM sync_batches", []).unwrap();
+        db.db.execute("INSERT INTO sync_batches VALUES('phone','big','h',hex(zeroblob(40000000)))", []).unwrap();
+        db.trim_sync_batches(Some("phone")).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM sync_batches"), 1);
     }
 
     /// Regression: the trash promised 30 days, but the server never called purge_expired, so deleted

@@ -1,7 +1,8 @@
 import { privateGet, privateSet, privacyEnabled } from './private-storage.js';
 import { normalizeServer } from './server-address.js';
 
-const MAX_BYTES = 8 * 1024 * 1024;
+// Must equal the server's sync::MAX_BYTES (checked as the `maxBytes` contract). 8 MiB was outgrown by long chats.
+const MAX_BYTES = 32 * 1024 * 1024;
 const hashValid = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const idValid = value => typeof value === 'string' && /^[0-9a-z_-]{1,128}$/i.test(value);
 const uuidValid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value) && !/^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(value);
@@ -33,7 +34,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
     }
     async function call(target, path, body) {
       check();
-      if (body && bytes(body) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'O lote de sincronização excede 8 MiB.');
+      if (body && bytes(body) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'O lote de sincronização excede 32 MiB.');
       const timeout = AbortSignal.timeout(15000);
       const observe = path.startsWith('status?') ? (pauseMemory ? '&pauseMemory=1' : '&observe=1') : '';
       const response = await send(`${target.server}/api/sync/${path}${observe}`, {
@@ -44,7 +45,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
       });
       const text = await response.text();
       check();
-      if (bytes(text) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'A resposta de sincronização excede 8 MiB.');
+      if (bytes(text) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'A resposta de sincronização excede 32 MiB.');
       let data;
       try { data = JSON.parse(text); } catch { fail('INVALID_SYNC', 'O servidor retornou uma resposta de sincronização inválida.'); }
       if (!response.ok) throw new SyncError(data.code || (response.status === 401 ? 'UNPAIRED' : 'SYNC_HTTP'), data.error ||
@@ -97,7 +98,7 @@ export function createMobileSync({ fetch: send, store, uuid = () => crypto.rando
           for (const entry of data.snapshots) {
             if (!convIds.includes(entry.convId) || result.has(entry.convId) || !hashValid(entry.hash) || !hashValid(entry.contentHash)
                 || entry.snapshot?.convId !== entry.convId || entry.snapshot.full !== true) fail('INVALID_SYNC', 'Snapshot de conversa inválido.');
-            if (bytes(entry.snapshot) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'Uma conversa excede 8 MiB; ela foi preservada sem truncagem.');
+            if (bytes(entry.snapshot) > MAX_BYTES) fail('SYNC_TOO_LARGE', 'Uma conversa excede 32 MiB; ela foi preservada sem truncagem.');
             if (entry.checkpointHashes !== undefined && (!Array.isArray(entry.checkpointHashes) || entry.checkpointHashes.length > 128
                 || entry.checkpointHashes.some(hash => !hashValid(hash)) || new Set(entry.checkpointHashes).size !== entry.checkpointHashes.length)) {
               fail('INVALID_SYNC', 'Os checkpoints oferecidos pelo servidor são inválidos.');

@@ -1083,19 +1083,24 @@ async fn incompatible_embeddings_skip_recompute_and_bad_vectors_are_rejected() {
 
 #[tokio::test]
 async fn bounded_snapshot_pages_never_truncate_history_and_oversized_push_rolls_back() {
+    // Sized from the limit: each conversation holds ~35% of it in 2.9 MB card revisions (a field is capped
+    // at 4 MiB), so two conversations fit in one page and three never do.
+    let per_conv = sync::MAX_BYTES * 35 / 100 / 2_900_000 + 1;
     let pc = Fixture::new().await;
     let phone = Fixture::new().await;
     let mut ids = Vec::new();
     for _ in 0..3 {
         let c = pc.create().await;
-        pc.store
-            .call(Request::SetCharacter {
-                conv_id: c.clone(),
-                text: format!("{}TAIL", "x".repeat(2_900_000)),
-                source: "app".into(),
-            })
-            .await
-            .unwrap();
+        for i in 0..per_conv {
+            pc.store
+                .call(Request::SetCharacter {
+                    conv_id: c.clone(),
+                    text: format!("{i}{}TAIL", "x".repeat(2_899_999)),
+                    source: "app".into(),
+                })
+                .await
+                .unwrap();
+        }
         ids.push(c);
     }
     let p = envelope(&phone.server);
@@ -1144,7 +1149,7 @@ async fn bounded_snapshot_pages_never_truncate_history_and_oversized_push_rolls_
     );
     assert_eq!(phone.delta(combined).await.unwrap_err().status, 413);
     assert_eq!(phone.status().await, before);
-    for _ in 0..2 {
+    for _ in 0..(sync::MAX_BYTES / 2_900_000) {
         pc.store
             .call(Request::SetCharacter {
                 conv_id: ids[0].clone(),
@@ -2244,6 +2249,25 @@ async fn duplicated_character_key_with_another_kind_reports_a_named_conflict() {
     );
     // Nothing was written on the destination.
     assert_eq!(offer(&pc, &phone.server, &c).await["hash"], before);
+    pc.close().await;
+    phone.close().await;
+}
+
+/// Regression: a long chat (1311 embeddings = 5.4 MiB of base64 plus history) passed the old 8 MiB snapshot
+/// limit and every phone connection failed with "Delta excede 8 MiB". A ~10 MiB conversation must sync whole.
+#[tokio::test]
+async fn conversation_larger_than_the_old_8_mib_limit_syncs_whole() {
+    let pc = Fixture::new().await;
+    let phone = Fixture::new().await;
+    let c = pc.create().await;
+    for i in 0..4 {
+        pc.store
+            .call(Request::SetCharacter { conv_id: c.clone(), text: format!("{i}{}", "y".repeat(2_600_000)), source: "app".into() })
+            .await
+            .unwrap();
+    }
+    let first = mirror(&pc, &phone, &c).await;
+    assert!(first["snapshot"].to_string().len() > 8 * 1024 * 1024);
     pc.close().await;
     phone.close().await;
 }

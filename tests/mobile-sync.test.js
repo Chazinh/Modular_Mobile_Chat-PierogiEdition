@@ -9,7 +9,7 @@ import { createServerConnection } from '../client/src/server-connection.js';
 import { clearPrivateConflicts } from '../client/src/private-storage.js';
 import { RustStore } from './rust-store.js';
 
-const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_BYTES = 32 * 1024 * 1024;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const pc = { server: 'https://pc.example.com:8443', token: 'pc-private', kind: 'pc' };
 const mobile = { server: 'http://127.0.0.1:3011', token: 'android-keystore', kind: 'local' };
@@ -444,9 +444,10 @@ test('sync: conversa acima de 8MiB é recusada sem truncagem ou apply', async ()
   assert.equal(f.states.mobile.rows.size, 0);
 });
 
-test('sync: lote agregado acima de 8MiB é dividido, sem truncar nenhuma conversa', async () => {
+test('sync: lote agregado acima do limite é dividido, sem truncar nenhuma conversa', async () => {
   const f = fixture({ offerPage: 1 });
-  for (let i = 0; i < 4; i++) f.put('pc', `big-${i}`, 'x'.repeat(3 * 1024 * 1024));
+  // 3/8 of the limit each: two fit in one push, four never do.
+  for (let i = 0; i < 4; i++) f.put('pc', `big-${i}`, 'x'.repeat(MAX_BYTES * 3 / 8));
   await f.sync.synchronize(f.options);
   const pushes = f.calls.filter(c => c.body?.pushes);
   assert.equal(pushes.length, 2);
