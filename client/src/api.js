@@ -217,11 +217,17 @@ export function normalizeChatPreset(chat) {
     if ((r.includes('gemma-4') || r === 'gemma4') && !r.includes('embedding')) {
       return { ...chat, presetId: 'gemma-4' };
     }
+    if (/gemini-4-hydrogen(?:[^0-9]|$)|(?:^|\/)hydrogen(?:-|$)/.test(r)) {
+      return { ...chat, presetId: 'gemini-4-hydrogen' };
+    }
+    if (/gemini-4-argon(?:[^0-9]|$)|(?:^|\/)argon(?:-|$)/.test(r)) {
+      return { ...chat, presetId: 'gemini-4-argon-medium' };
+    }
   }
   return chat;
 }
 
-export function mergeWithDefaults(data) {
+export function mergeWithDefaults(data, { injectMissing = true } = {}) {
   if (data?.presets) data = { ...data, presets: data.presets.filter(narrativePresetVisible).map(p => ({
     ...p,
     ...(Array.isArray(p.routes) ? { routes: p.routes.filter(r => narrativeRouteVisible(r.id || r.route)) } : {}),
@@ -236,7 +242,7 @@ export function mergeWithDefaults(data) {
   for (const dp of (defaults?.presets || [])) {
     const existing = map.get(dp.id);
     if (!existing) {
-      data.presets.push({ ...dp });
+      if (injectMissing) data.presets.push({ ...dp });
     } else {
       if (dp.groupRoute && !existing.groupRoute) existing.groupRoute = dp.groupRoute;
       if (dp.thinkingCanDisable && !existing.thinkingCanDisable) existing.thinkingCanDisable = true;
@@ -359,33 +365,15 @@ export const api = {
     return chat;
   },
   async createChat(data = {}) {
-    let chat;
-    try {
-      chat = await request('POST', '/api/chats', data);
-    } catch (err) {
-      if (err.status === 400 && String(err.message).includes('Preset desconhecido') && data?.presetId && data.presetId !== 'generic') {
-        chat = await request('POST', '/api/chats', { ...data, presetId: 'generic' });
-      } else {
-        throw err;
-      }
-    }
-    const result = normalizeChatPreset({ ...chat, ...(data?.presetId ? { presetId: data.presetId } : {}) });
+    const chat = await request('POST', '/api/chats', data);
+    const result = normalizeChatPreset(chat);
     queueCache(CACHE_CHAT(result.id), result);
     return result;
   },
   async updateChat(id, patch) {
-    let updated;
-    try {
-      updated = await request('PUT', `/api/chats/${id}`, patch);
-    } catch (err) {
-      if (err.status === 400 && String(err.message).includes('Preset desconhecido') && patch?.presetId && patch.presetId !== 'generic') {
-        updated = await request('PUT', `/api/chats/${id}`, { ...patch, presetId: 'generic' });
-      } else {
-        throw err;
-      }
-    }
+    const updated = await request('PUT', `/api/chats/${id}`, patch);
     const prev = (await cacheGet(CACHE_CHAT(id), {})) || {};
-    const result = normalizeChatPreset({ ...prev, ...updated, ...(patch?.presetId ? { presetId: patch.presetId } : {}) });
+    const result = normalizeChatPreset({ ...prev, ...updated });
     queueCache(CACHE_CHAT(id), result);
     return result;
   },
@@ -494,7 +482,7 @@ export const api = {
   // ----- modelos / presets -----
   async presets(options = {}) {
     const raw = await request('GET', '/api/presets', undefined, options);
-    const data = mergeWithDefaults(publicPresets(raw));
+    const data = mergeWithDefaults(publicPresets(raw), { injectMissing: false });
     options.signal?.throwIfAborted();
     if (options.isCurrent && !options.isCurrent()) throw Object.assign(Error('Catálogo de uma conexão anterior.'), { code: 'STALE_CONNECTION' });
     await kv.set('presets', data).catch(() => {});

@@ -7,6 +7,19 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.3.3: Hydrogen Empty-Response Recovery, Preset Sync & Auto-Rebuild Launcher — 2026-11-12
+
+- **Hydrogen empty-response fix & generic preset recovery (`server-rust/src/presets.rs`, `client/src/api.js`)**:
+  - Conversations stored or requested as `presetId: "generic"` (or an unknown preset) with a Hydrogen or Argon route now resolve through `effective_preset` / `for_route` in `migrate`, `resolve_available`, and `request`, preserving `reasoning_effort` and the thinking token reserve (`>= 2048` on `low`) instead of omitting `reasoning_effort` and starving output tokens inside thinking.
+  - `normalizeChatPreset` in `client/src/api.js` now promotes `generic` / missing presets matching Hydrogen or Argon routes to `gemini-4-hydrogen` / `gemini-4-argon-medium`.
+  - `mergeWithDefaults` now accepts `{ injectMissing = true }` and `api.presets()` passes `{ injectMissing: false }`, preventing the UI from advertising presets absent from the connected server while preserving defaults for offline fallback.
+  - Removed the silent `"Preset desconhecido"` fallback to `'generic'` (and local cache `presetId` spoofing) in `createChat` and `updateChat`.
+- **Automatic release server rebuild on stale binary (`start-server.ps1`)**:
+  - Added `Test-ServerBuildStale` so `start-server.ps1` runs `cargo build --release` whenever `server-rust/src/**`, `Cargo.toml`, `Cargo.lock`, or `.cargo/config.toml` are newer than `modularchat-server.exe`.
+- **Automated regression tests (`server-rust/tests/regression_hydrogen_generic_recovery.rs`, `tests/regression-hydrogen-preset-and-no-silent-generic.test.js`)**:
+  - Added Rust tests verifying `Hydrogen` recovery from `"generic"` and `low` effort token/reasoning controls.
+  - Added JS tests verifying Hydrogen/Argon preset normalization, strict `api.presets()` filtering, no silent `generic` fallback in `createChat`/`updateChat`, and `Test-ServerBuildStale` detection.
+
 ### ModularChat 4.3.2: Hydrogen Profile, Gemini 3.8 Removed — 2026-11-12
 
 - **Model profiles (`server-rust/src/presets.json`, `client/src/default-presets.js`, `client/src/api.js`)**: added the Hydrogen profile (fallback group `Hydrogen`: `ag/gemini-4-hydrogen-high`, `ag/gemini-4-hydrogen-low`; 1.0M context, 66k max output) and removed the Gemini 3.8 Flash profile.

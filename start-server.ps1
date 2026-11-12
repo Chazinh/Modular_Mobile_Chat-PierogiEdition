@@ -26,6 +26,27 @@ if ($Sandbox -and $Production) { throw 'Choose either -Production or -Sandbox.' 
 if ($Lan -and $Loopback) { throw 'Choose either -Lan or -Loopback.' }
 if ($ResetSandbox -and -not $Sandbox) { throw '-ResetSandbox requires -Sandbox; the main vault is never discarded.' }
 
+function Test-ServerBuildStale([string]$BuildPath, [string]$ProjectRoot) {
+  if (-not (Test-Path -LiteralPath $BuildPath)) { return $true }
+  $buildTime = (Get-Item -LiteralPath $BuildPath).LastWriteTimeUtc
+  $manifestFiles = @(
+    (Join-Path $ProjectRoot 'server-rust\Cargo.toml'),
+    (Join-Path $ProjectRoot 'server-rust\Cargo.lock'),
+    (Join-Path $ProjectRoot '.cargo\config.toml')
+  )
+  foreach ($file in $manifestFiles) {
+    if ((Test-Path -LiteralPath $file) -and (Get-Item -LiteralPath $file).LastWriteTimeUtc -gt $buildTime) {
+      return $true
+    }
+  }
+  $srcDir = Join-Path $ProjectRoot 'server-rust\src'
+  if (Test-Path -LiteralPath $srcDir) {
+    $newer = Get-ChildItem -LiteralPath $srcDir -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $buildTime } | Select-Object -First 1
+    if ($newer) { return $true }
+  }
+  return $false
+}
+
 function Get-FileSha256([string]$Path) {
   $sha = [Security.Cryptography.SHA256]::Create()
   $stream = [IO.File]::OpenRead($Path)
@@ -170,8 +191,8 @@ if (-not $targetDir) {
 if (-not $targetDir) { $targetDir = Join-Path $PSScriptRoot 'server-rust\target' }
 $build = Join-Path $targetDir 'release\modularchat-server.exe'
 if ($Exe) { $server = (Resolve-Path -LiteralPath $Exe).Path } else {
-  if (-not (Test-Path -LiteralPath $build)) {
-    Write-Host "Binary not found at $build. Building server in release mode..."
+  if (Test-ServerBuildStale -BuildPath $build -ProjectRoot $PSScriptRoot) {
+    Write-Host "Server binary missing or older than Rust sources. Building server in release mode..."
     Push-Location $PSScriptRoot
     try {
       & cargo build --release --manifest-path (Join-Path $PSScriptRoot 'server-rust\Cargo.toml')

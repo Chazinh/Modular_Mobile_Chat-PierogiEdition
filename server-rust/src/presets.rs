@@ -68,6 +68,17 @@ pub fn alias_route(preset: &Value, route: &str) -> String {
         .unwrap_or(route)
         .to_string()
 }
+/// Resolves `"generic"` or an unknown preset ID to a specific preset when `route_id` matches one.
+fn effective_preset(preset_id: &str, route_id: &str) -> Value {
+    let known = PRESETS.iter().any(|p| p["id"] == preset_id);
+    if !known || preset_id == "generic" {
+        let inferred = for_route(route_id);
+        if inferred["id"] != "generic" {
+            return inferred;
+        }
+    }
+    by_id(preset_id)
+}
 /// Normalizes the (route, preset, effort) stored in a conversation to what the app accepts today.
 /// A retired preset or route falls back to the default preset (first in the list, with its default route and effort);
 /// replaced routes become the current route and presets without effort drop an old effort. Read-only:
@@ -83,17 +94,23 @@ pub fn migrate(preset_id: &str, route_id: &str, effort: &Value) -> (String, Stri
             d["defaultEffort"].clone(),
         );
     }
-    let preset = by_id(preset_id);
+    let known = PRESETS.iter().any(|p| p["id"] == preset_id);
+    let preset = effective_preset(preset_id, route_id);
+    let effective_id = if !known || preset["id"] != preset_id {
+        s(&preset, "id")
+    } else {
+        preset_id.to_string()
+    };
+    let route = alias_route(&preset, route_id);
     let no_effort = preset["efforts"].as_array().is_some_and(Vec::is_empty);
-    (
-        alias_route(&preset, route_id),
-        preset_id.to_string(),
-        if no_effort {
-            Value::Null
-        } else {
-            effort.clone()
-        },
-    )
+    let effective_effort = if no_effort {
+        Value::Null
+    } else if !known || preset["id"] != preset_id {
+        effort_for(&preset, &route, effort)
+    } else {
+        effort.clone()
+    };
+    (route, effective_id, effective_effort)
 }
 /// Effective effort: when the route already sets the level (one route per level, e.g. Gemini), the route wins; otherwise the
 /// valid request or the preset default.
@@ -184,11 +201,14 @@ pub fn resolve_available(body: &Value, current: Option<&Value>, available: &[Str
         if !PRESETS.iter().any(|p| p["id"] == id) {
             return Err(Error::new(400, "Preset desconhecido."));
         }
-        let p = by_id(id);
-        if id != "generic" && for_route(route)["id"] != id {
+        let inferred = for_route(route);
+        if id == "generic" && inferred["id"] != "generic" {
+            inferred
+        } else if id != "generic" && inferred["id"] != id {
             return Err(Error::new(400, "Rota não pertence ao preset."));
+        } else {
+            by_id(id)
         }
-        p
     } else {
         for_route(route)
     };
@@ -308,8 +328,9 @@ pub fn unrestricted_safety_enabled(conv: &Value) -> bool {
         .unwrap_or(true)
 }
 pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
-    let preset = by_id(&s(conv, "presetId"));
-    let route = alias_route(&preset, &s(conv, "routeId"));
+    let route_raw = s(conv, "routeId");
+    let preset = effective_preset(&s(conv, "presetId"), &route_raw);
+    let route = alias_route(&preset, &route_raw);
     let rv = &validation["routes"][&route];
     let effort = &effort_for(&preset, &route, &conv["effort"]);
     let thinking_enabled = thinking_enabled(&preset, &conv["settings"]);
