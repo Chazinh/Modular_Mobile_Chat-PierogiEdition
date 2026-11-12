@@ -7,6 +7,11 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.3.2: Hydrogen Profile, Gemini 3.8 Removed — 2026-11-12
+
+- **Model profiles (`server-rust/src/presets.json`, `client/src/default-presets.js`, `client/src/api.js`)**: added the Hydrogen profile (fallback group `Hydrogen`: `ag/gemini-4-hydrogen-high`, `ag/gemini-4-hydrogen-low`; 1.0M context, 66k max output) and removed the Gemini 3.8 Flash profile.
+- **Tests**: model-specific tests removed or repointed (models are modular and need no per-model tests); the remaining tests that cited Gemini 3.8 now use Hydrogen.
+
 ### ModularChat 4.3.1: Long Chats Sync Again (32 MiB Sync Limit) — 2026-11-11
 
 - **Phone could not connect: "Delta excede 8 MiB" (`server-rust/src/store/sync.rs`, `client/src/mobile-sync.js`)**:

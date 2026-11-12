@@ -87,45 +87,6 @@
     "capacitySource": "assumed"
   },
   {
-    "id": "gemini-38-flash",
-    "groupRoute": "Gemini",
-    "selectable": true,
-    "label": "Gemini 3.8 Flash",
-    "family": "gemini",
-    "match": [
-      "gemini-3\\.8-flash",
-      "^gemini$"
-    ],
-    "preferredRoutes": [
-      "Gemini",
-      "ag/gemini-3.8-flash-low",
-      "ag/gemini-3.8-flash-medium",
-      "ag/gemini-3.8-flash-high",
-      "gemini/gemini-3.8-flash"
-    ],
-    "routeAliases": {
-      "ag/gemini-3.8-flash": "ag/gemini-3.8-flash-low"
-    },
-    "efforts": [
-      "low",
-      "medium",
-      "high"
-    ],
-    "defaultEffort": "low",
-    "effortByRoute": {
-      "ag/gemini-3.8-flash-low": "low",
-      "ag/gemini-3.8-flash-medium": "medium",
-      "ag/gemini-3.8-flash-high": "high"
-    },
-    "thinking": "level",
-    "thinkingCanDisable": true,
-    "sampling": "default",
-    "providerReserve": 16384,
-    "contextWindow": 1000000,
-    "maxOutput": 64000,
-    "capacitySource": "documented"
-  },
-  {
     "id": "gemini-4-argon-medium",
     "groupRoute": "Argon",
     "thinkingCanDisable": true,
@@ -154,6 +115,43 @@
     "contextWindow": 1000000,
     "maxOutput": 262144,
     "capacitySource": "documented"
+  },
+  {
+    "id": "gemini-4-hydrogen",
+    "groupRoute": "Hydrogen",
+    "thinkingCanDisable": true,
+    "selectable": true,
+    "label": "Hydrogen",
+    "family": "gemini",
+    "match": [
+      "gemini-4-hydrogen(?:[^0-9]|$)",
+      "(^|/)hydrogen($|-)",
+      "^hydrogen$"
+    ],
+    "preferredRoutes": [
+      "Hydrogen",
+      "ag/gemini-4-hydrogen-high",
+      "ag/gemini-4-hydrogen-low"
+    ],
+    "unlistedRoutes": [
+      "ag/gemini-4-hydrogen-high",
+      "ag/gemini-4-hydrogen-low"
+    ],
+    "efforts": [
+      "low",
+      "high"
+    ],
+    "defaultEffort": "high",
+    "effortByRoute": {
+      "ag/gemini-4-hydrogen-low": "low",
+      "ag/gemini-4-hydrogen-high": "high"
+    },
+    "thinking": "level",
+    "sampling": "default",
+    "providerReserve": 16384,
+    "contextWindow": 1000000,
+    "maxOutput": 66000,
+    "capacitySource": "assumed"
   },
   {
     "id": "kimi-k3",

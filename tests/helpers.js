@@ -51,7 +51,7 @@ export async function mockRouter(initial = {}) {
   const server = http.createServer((req, res) => {
     if (req.url.endsWith('/models')) {
       res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ data: [{ id: 'cbai/deepseek-v4.1-flash' }, { id: 'cc/claude-sonnet-5-5' }, { id: 'ag/gemini-3.8-flash-low' }, { id: 'nvidia/parakeet-ctc-1.1b-asr' }] }));
+      return res.end(JSON.stringify({ data: [{ id: 'cbai/deepseek-v4.1-flash' }, { id: 'cc/claude-sonnet-5-5' }, { id: 'ag/gemini-4-hydrogen-low' }, { id: 'nvidia/parakeet-ctc-1.1b-asr' }] }));
     }
     let body = '';
     req.on('data', (d) => (body += d));

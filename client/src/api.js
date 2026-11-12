@@ -192,7 +192,7 @@ const settingsReads = createLatestRequest(connectionSnapshot);
 function invalidateSettings() { globalSettingsCache = null; settingsReads.cancel(); }
 const CACHE_LIST = 'chats';
 const CACHE_CHAT = (id) => `chat.${id}`;
-const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-38-flash', 'gemini-4-argon-medium', 'kimi-k3', 'step-5-preview', 'glm-52', 'mobile-local', 'mobile-api']);
+const PUBLIC_PRESETS = new Set(['deepseek-v41-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gemini-4-argon-medium', 'gemini-4-hydrogen', 'kimi-k3', 'step-5-preview', 'glm-52', 'mobile-local', 'mobile-api']);
 export const publicPresets = data => data ? {
   ...data,
   presets: (data.presets || [])
@@ -229,7 +229,7 @@ export function mergeWithDefaults(data) {
   })) };
   const defaults = publicPresets(DEFAULT_PRESETS);
   if (!data?.presets?.length) return defaults;
-  const hasStandardPresets = data.presets.some(p => p.id === 'deepseek-v41-flash' || p.id === 'gemini-38-flash');
+  const hasStandardPresets = data.presets.some(p => p.id === 'deepseek-v41-flash');
   if (!hasStandardPresets) return data;
 
   const map = new Map(data.presets.map((p) => [p.id, p]));

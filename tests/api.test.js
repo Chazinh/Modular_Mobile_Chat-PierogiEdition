@@ -460,7 +460,7 @@ test('presets distintos enviados ao mesmo tempo mantêm seus parâmetros própri
   router.set({ hold: new Promise((r) => (release = r)) });
   const a = await mkChat({ routeId: 'cbai/deepseek-v4.1-flash', effort: 'high' });
   const b = await mkChat({ routeId: 'cc/claude-sonnet-5-5', effort: 'medium' });
-  const c = await mkChat({ routeId: 'ag/gemini-3.8-flash-high', effort: 'high' });
+  const c = await mkChat({ routeId: 'ag/gemini-4-hydrogen-high', effort: 'high' });
   const n = router.requests.length;
   const runs = [a, b, c].map((x, i) => sse(`/api/chats/${x.id}/message`, { mode: 'send', content: 'oi', opId: `par-${i}` }));
   await waitFor(() => router.requests.length >= n + 3);
@@ -469,7 +469,7 @@ test('presets distintos enviados ao mesmo tempo mantêm seus parâmetros própri
   const got = Object.fromEntries(router.requests.slice(n).map((r) => [r.body.model, r.body]));
   assert.equal(got['cbai/deepseek-v4.1-flash'].reasoning_effort, 'high');
   assert.equal(got['cc/claude-sonnet-5-5'].reasoning_effort, 'medium');
-  assert.equal(got['ag/gemini-3.8-flash-high'].reasoning_effort, 'high');
+  assert.equal(got['ag/gemini-4-hydrogen-high'].reasoning_effort, 'high');
   assert.equal(got['cc/claude-sonnet-5-5'].max_tokens, 7_297);
   assert.equal(got['cbai/deepseek-v4.1-flash'].max_tokens, 11_393);
   assert.equal(got['cc/claude-sonnet-5-5'].messages[0].role, 'system');
@@ -482,7 +482,7 @@ test('trocar de modelo é manual e vale para as próximas respostas (sem fallbac
   const r = await j('PUT', `/api/chats/${c.id}`, { routeId: 'cc/claude-sonnet-5-5' });
   assert.equal(r.body.presetId, 'claude-sonnet-5-5');
   assert.equal(r.body.effort, 'medium', 'esforço volta ao padrão do novo preset');
-  const bad = await j('PUT', `/api/chats/${c.id}`, { routeId: 'cbai/deepseek-v4.1-flash', presetId: 'gemini-38-flash' });
+  const bad = await j('PUT', `/api/chats/${c.id}`, { routeId: 'cbai/deepseek-v4.1-flash', presetId: 'gemini-4-hydrogen' });
   assert.equal(bad.status, 400);
   router.set({ status: 500 });
   const n = router.requests.length;
@@ -621,7 +621,7 @@ test('orçamento acompanha os caracteres antes da API em enviar, continuar e ref
   router.set({ ...DEFAULTS(), chunks: ['Lia: Achei a carta.'], correctionText: null, correctionStatus: null });
   try {
     await j('PUT', '/api/settings/global', { ...DEFAULT_STYLE, botChars: 600, dialoguePct: 100 });
-    const c = await mkChat({ routeId: 'ag/gemini-3.8-flash-low', presetId: 'gemini-38-flash' });
+    const c = await mkChat({ routeId: 'ag/gemini-4-hydrogen-low', presetId: 'gemini-4-hydrogen' });
     const corrections = router.correctionRequests.length;
     const send = await sse(`/api/chats/${c.id}/message`, { mode: 'send', content: 'O que encontrou?', opId: 'budget-send' });
     const ack = send.events[0].ack;

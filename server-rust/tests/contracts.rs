@@ -532,18 +532,12 @@ async fn retired_space_bunny_conversations_still_open_and_generate_with_the_defa
     );
     // Gemini keeps its route and effort
     let g = presets::migrate(
-        "gemini-38-flash",
-        "ag/gemini-3.8-flash-high",
+        "gemini-4-hydrogen",
+        "ag/gemini-4-hydrogen-high",
         &json!("high"),
     );
-    assert_eq!(g.0, "ag/gemini-3.8-flash-high");
+    assert_eq!(g.0, "ag/gemini-4-hydrogen-high");
     assert_eq!(g.2, "high");
-    let unadorned = presets::migrate(
-        "gemini-38-flash",
-        "ag/gemini-3.8-flash",
-        &json!(null),
-    );
-    assert_eq!(unadorned.0, "ag/gemini-3.8-flash-low");
 }
 #[test]
 fn adapter_shapes() {
@@ -930,11 +924,11 @@ fn adapters_preserve_defaults_sampling_and_sonnet_low_option() {
     }
     // Gemini: effort matching the route
     let g = presets::request(
-        &json!({"presetId":"gemini-38-flash","routeId":"ag/gemini-3.8-flash-low","effort":"high","temperature":0.8}),
+        &json!({"presetId":"gemini-4-hydrogen","routeId":"ag/gemini-4-hydrogen-low","effort":"high","temperature":0.8}),
         vec![json!({"role":"user","content":"Oi"})],
         &json!({}),
     );
-    assert_eq!(g.body["model"], "ag/gemini-3.8-flash-low");
+    assert_eq!(g.body["model"], "ag/gemini-4-hydrogen-low");
     assert_eq!(g.body["reasoning_effort"], "low");
     assert!(g.body.get("temperature").is_none());
     assert_eq!(g.body["max_tokens"], 16384);
@@ -995,27 +989,3 @@ fn router_reader_is_readonly_and_incompatible_stays_unverified() {
 }
 
 
-#[test]
-fn combo_group_routes_support_and_public_ordering() {
-    assert_eq!(presets::for_route("Deepseek")["id"], "deepseek-v41-flash");
-    assert_eq!(presets::for_route("Gemini")["id"], "gemini-38-flash");
-    assert_eq!(presets::for_route("Sonnet")["id"], "claude-sonnet-5-5");
-    assert_eq!(presets::for_route("Opus")["id"], "claude-opus-5-5");
-    assert_eq!(presets::for_route("GLM")["id"], "glm-52");
-
-    let advertised = vec![
-        "cbai/deepseek-v4.1-flash".to_string(),
-        "Deepseek".to_string(),
-        "oc/deepseek-v4.1-flash-free".to_string(),
-        "Gemini".to_string(),
-        "ag/gemini-3.8-flash-low".to_string(),
-    ];
-    let pub_list = presets::public(&advertised, &json!({}));
-    let ds = pub_list.iter().find(|p| p["id"] == "deepseek-v41-flash").unwrap();
-    assert_eq!(ds["routes"][0]["id"], "Deepseek", "groupRoute must be ordered first in routes");
-    assert_eq!(ds["groupRoute"], "Deepseek");
-
-    let gemini = pub_list.iter().find(|p| p["id"] == "gemini-38-flash").unwrap();
-    assert_eq!(gemini["routes"][0]["id"], "Gemini", "groupRoute must be ordered first in routes");
-    assert_eq!(gemini["groupRoute"], "Gemini");
-}

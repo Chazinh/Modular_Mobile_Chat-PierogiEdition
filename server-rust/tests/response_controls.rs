@@ -47,8 +47,8 @@ fn api_budget_follows_characters_and_preserves_effort() {
     // without an explicit request the route's level applies (effortByRoute), and the reserve is that level's.
     for (id, route, effort, effective, reserve) in [
         (
-            "gemini-38-flash",
-            "ag/gemini-3.8-flash-low",
+            "gemini-4-hydrogen",
+            "ag/gemini-4-hydrogen-low",
             None,
             "low",
             2048,

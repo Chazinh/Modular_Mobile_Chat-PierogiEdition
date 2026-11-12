@@ -37,7 +37,7 @@ test('R3: isReasoningModel returns true for reasoning models', () => {
   const expectedReasoningIds = [
     'deepseek-v41-flash',
     'glm-52',
-    'gemini-38-flash',
+    'gemini-4-hydrogen',
     'gemini-4-argon-medium',
     'claude-sonnet-5-5',
     'claude-opus-5-5',
@@ -73,7 +73,7 @@ test('R3: Thinking switch display condition evaluates to false for non-reasoning
   const controllableModels = [
     'deepseek-v41-flash',
     'glm-52',
-    'gemini-38-flash',
+    'gemini-4-hydrogen',
     'gemini-4-argon-medium',
     'claude-sonnet-5-5',
   ];

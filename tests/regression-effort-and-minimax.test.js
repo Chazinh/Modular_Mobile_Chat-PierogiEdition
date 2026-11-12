@@ -15,11 +15,11 @@ test('Regressão: mergeWithDefaults recupera modelos novos e atualiza cache desa
         preferredRoutes: ['Deepseek']
       },
       {
-        id: 'gemini-38-flash',
-        groupRoute: 'Gemini',
+        id: 'gemini-4-hydrogen',
+        groupRoute: 'Hydrogen',
         efforts: ['low', 'medium', 'high'],
-        routes: [{ id: 'Gemini' }],
-        preferredRoutes: ['Gemini']
+        routes: [{ id: 'Hydrogen' }],
+        preferredRoutes: ['Hydrogen']
       },
       {
         id: 'generic',

@@ -58,40 +58,6 @@ export const DEFAULT_PRESETS = {
       available: true
     },
     {
-      id: "gemini-38-flash",
-      groupRoute: "Gemini",
-      selectable: true,
-      label: "Gemini 3.8 Flash",
-      family: "gemini",
-      preferredRoutes: [
-        "Gemini",
-        "ag/gemini-3.8-flash-low",
-        "ag/gemini-3.8-flash-medium",
-        "ag/gemini-3.8-flash-high",
-        "gemini/gemini-3.8-flash"
-      ],
-      routes: [
-        { id: "Gemini" },
-        { id: "ag/gemini-3.8-flash-low" },
-        { id: "ag/gemini-3.8-flash-medium" },
-        { id: "ag/gemini-3.8-flash-high" },
-        { id: "gemini/gemini-3.8-flash" }
-      ],
-      routeAliases: {
-        "ag/gemini-3.8-flash": "ag/gemini-3.8-flash-low"
-      },
-      efforts: ["low", "medium", "high"],
-      defaultEffort: "low",
-      effortByRoute: {
-        "ag/gemini-3.8-flash-low": "low",
-        "ag/gemini-3.8-flash-medium": "medium",
-        "ag/gemini-3.8-flash-high": "high"
-      },
-      thinking: "level",
-      thinkingCanDisable: true,
-      available: true
-    },
-    {
       id: "gemini-4-argon-medium",
       groupRoute: "Argon",
       thinkingCanDisable: true,
@@ -108,6 +74,32 @@ export const DEFAULT_PRESETS = {
       ],
       efforts: ["low"],
       defaultEffort: "low",
+      thinking: "level",
+      available: true
+    },
+    {
+      id: "gemini-4-hydrogen",
+      groupRoute: "Hydrogen",
+      thinkingCanDisable: true,
+      selectable: true,
+      label: "Hydrogen",
+      family: "gemini",
+      preferredRoutes: [
+        "Hydrogen",
+        "ag/gemini-4-hydrogen-high",
+        "ag/gemini-4-hydrogen-low"
+      ],
+      routes: [
+        { id: "Hydrogen" },
+        { id: "ag/gemini-4-hydrogen-high" },
+        { id: "ag/gemini-4-hydrogen-low" }
+      ],
+      efforts: ["low", "high"],
+      defaultEffort: "high",
+      effortByRoute: {
+        "ag/gemini-4-hydrogen-low": "low",
+        "ag/gemini-4-hydrogen-high": "high"
+      },
       thinking: "level",
       available: true
     },

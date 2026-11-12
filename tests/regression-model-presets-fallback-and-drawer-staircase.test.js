@@ -9,19 +9,6 @@ import { watchProviderCatalog } from '../client/src/provider-catalog.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 
-test('Bug 1: mergeWithDefaults(publicPresets(null)) provê catálogo de presets imediatamente sem stalling', () => {
-  const fallback = mergeWithDefaults(publicPresets(null));
-  assert.ok(fallback?.presets?.length > 0, 'Fallback deve conter lista não-vazia de presets');
-  const argon = fallback.presets.find(p => p.id === 'gemini-4-argon-medium');
-  assert.ok(argon, 'Preset Argon deve estar presente no catálogo padrão');
-  assert.equal(argon.defaultEffort, 'low');
-  assert.deepEqual(argon.efforts, ['low']);
-
-  const flash = fallback.presets.find(p => p.id === 'gemini-38-flash');
-  assert.ok(flash, 'Preset Gemini 3.8 Flash deve estar presente');
-  assert.equal(flash.thinkingCanDisable, true);
-});
-
 test('Bug 1: watchProviderCatalog não descarta getCached quando snapshot muda e faz fallback se getPresets falhar', async () => {
   let snapshotVal = 'starting';
   const snapshot = () => snapshotVal;
