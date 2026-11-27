@@ -19,6 +19,7 @@ pub fn provider_effort(family: &str, request: &Value) -> Value {
             .unwrap_or(Value::Null),
         _ => request
             .get("reasoning_effort")
+            .or(request.pointer("/reasoning/effort"))
             .or(request.pointer("/output_config/effort"))
             .cloned()
             .unwrap_or(Value::Null),
@@ -164,4 +165,21 @@ pub fn find(file: &Path, since: &str, last_user: &str, family: &str) -> Value {
         return json!({"found":false,"reason":"registro indisponível","verification":"unverified"});
     }
     read().unwrap_or_else(|e|json!({"found":false,"reason":rules::clip(&format!("registro incompatível/ilegível: {e}"),240),"verification":"unverified"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_effort_reads_openai_codex_reasoning_effort() {
+        assert_eq!(
+            provider_effort("openai", &json!({"reasoning": {"effort": "high"}})),
+            json!("high")
+        );
+        assert_eq!(
+            provider_effort("openai", &json!({"reasoning_effort": "medium"})),
+            json!("medium")
+        );
+    }
 }

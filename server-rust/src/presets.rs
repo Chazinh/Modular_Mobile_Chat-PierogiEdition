@@ -499,6 +499,7 @@ mod tests {
                     &json!({}),
                 );
                 assert_eq!(plan.body["reasoning_effort"], effort);
+                assert_eq!(plan.system_mode, "user_prefix");
             }
         }
     }

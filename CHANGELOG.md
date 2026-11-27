@@ -7,6 +7,17 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.3.5: GPT 6.2 Sol Style/Size Compliance & Codex Effort Tracking — 2026-11-27
+
+- **GPT 6.2 Sol prompt delivery & per-turn style/size reinforcement (`server-rust/src/presets.json`, `server-rust/src/context.rs`)**:
+  - Switched `gpt-6-2-sol` to `systemMode: "user_prefix"` so Codex (`responsesLite`) routes do not demote style and size rules into a `developer` message under `codex_cli_rs` defaults.
+  - Added compact per-turn reinforcement in the `[Lembrete: ...]` tail (`tamanho máximo até ...` / `tamanho alvo ~...`, dialogue/narration percentage split, and `monologueChars` cap), ensuring routes that strip `max_tokens` (such as `cx/gpt-6.2-sol`) receive explicit size and style constraints right before generation.
+- **Codex effort tracking & route validation (`server-rust/src/router_log.rs`, `scripts/validate-routes.mjs`)**:
+  - Updated `router_log::provider_effort` fallback arm to read `/reasoning/effort` when 9Router rewrites `reasoning_effort` into `reasoning.effort`.
+  - Added `openai: ['reasoning_effort']` to `FAMILY_SHAPES` in `scripts/validate-routes.mjs`.
+- **Automated regression tests (`server-rust/src/presets.rs`, `server-rust/src/router_log.rs`, `server-rust/tests/context_contracts.rs`)**:
+  - Added regression assertions covering `gpt-6-2-sol` `user_prefix` mode, `[Lembrete:]` size/ratio/monologue formatting in `maximum` and `target` modes, and `provider_effort` parsing for `openai` Codex payloads.
+
 ### ModularChat 4.3.4: Bounded Context Window, Unprocessed Backlog Cap, Upstream Safeguards & Gpt-sol-6.2 — 2026-11-27
 
 - **Bounded context window, unprocessed backlog cap & memory-preserving compression (`server-rust/src/context.rs`, `server-rust/src/store/context.rs`, `client/src/components/SettingsDrawer.jsx`, `client/src/locales/en.json`, `.env.example`)**:

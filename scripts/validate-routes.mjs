@@ -57,6 +57,7 @@ const FAMILY_SHAPES = {
   nemotron: ['reasoning_effort'],
   minimax: ['reasoning_effort'],
   gemma: ['reasoning_effort'],
+  openai: ['reasoning_effort'],
   generic: [],
 };
 

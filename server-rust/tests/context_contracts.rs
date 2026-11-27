@@ -1049,4 +1049,43 @@ fn bounded_context_defaults_and_unprocessed_backlog_cap() {
     );
 }
 
+#[test]
+fn gpt_sol_62_uses_user_prefix_and_tail_reinforces_style_and_size() {
+    let p = presets::request(
+        &json!({"presetId":"gpt-6-2-sol","routeId":"Gpt-sol-6.2","effort":"high"}),
+        vec![],
+        &json!({}),
+    );
+    assert_eq!(p.system_mode, "user_prefix");
+
+    let mut d = data();
+    d["unprocessed"] = json!([]);
+    d["sync"] = json!({"lag": 0, "olderPending": 0, "synced": true});
+    d["globalSettings"] = json!({
+        "botChars": 1500,
+        "dialoguePct": 70,
+        "monologueChars": 250,
+        "lengthMode": "maximum"
+    });
+    let max_ctx = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
+    assert_eq!(max_ctx.messages.first().unwrap()["role"], "user");
+    assert!(max_ctx.messages.iter().all(|m| m["role"] != "system"));
+    let max_last = max_ctx.messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(max_last.contains("tamanho máximo até 1.500 car."));
+    assert!(max_last.contains("70% falas / 30% narração"));
+    assert!(max_last.contains("máx. 250 car./fala seguida"));
+
+    d["globalSettings"] = json!({
+        "botChars": 2000,
+        "dialoguePct": 0,
+        "monologueChars": 0,
+        "lengthMode": "target"
+    });
+    let target_ctx = context::assemble(&d, &json!({}), "send", &p, None).unwrap();
+    let target_last = target_ctx.messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(target_last.contains("tamanho alvo ~2.000 car."));
+    assert!(target_last.contains("0% falas / 100% narração"));
+    assert!(!target_last.contains("car./fala seguida"));
+}
+
 

@@ -596,8 +596,30 @@ pub fn assemble(
     } else {
         "; obedeça à ficha de personalização"
     };
+    let size_reminder = if rules::target_mode(gs) {
+        let (_, _, hard) = rules::reply_bounds(gs);
+        format!(
+            "tamanho alvo ~{} car. (teto {})",
+            thousands(bot_chars),
+            thousands(hard as i64)
+        )
+    } else {
+        format!("tamanho máximo até {} car.", thousands(bot_chars))
+    };
+    let monologue_limit = gs["monologueChars"].as_u64().unwrap_or(300);
+    let monologue_reminder = if monologue_limit == 0 {
+        String::new()
+    } else {
+        format!("; máx. {monologue_limit} car./fala seguida")
+    };
+    let ratio_reminder = match dialogue {
+        0 => "0% falas / 100% narração".to_string(),
+        100 => "100% falas / 0% narração".to_string(),
+        _ => format!("{dialogue}% falas / {}% narração", 100 - dialogue),
+    };
+    let style_reminder = format!("{size_reminder}; {ratio_reminder}{monologue_reminder}");
     let tail = format!(
-        "[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}{global_anchor}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem e NUNCA agem sobre o que foi dito ou ocorrido fora de sua presença (só passam a saber se forem expressamente informados em cena); desambiguação de posse e parentesco: siga a matriz de POV — pertences e familiares pertencem estritamente ao respectivo dono; use 'sua/seu' apenas ao falar com o dono, 'meu/minha' para si mesmo e nomes explícitos entre terceiros e na narração; sem recapitular nem parafrasear o que acabou de acontecer: avance a cena.]"
+        "[Lembrete: pt-BR; {format_short}; {style_reminder}; {where_to}; não escreva nada por {persona}{global_anchor}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem e NUNCA agem sobre o que foi dito ou ocorrido fora de sua presença (só passam a saber se forem expressamente informados em cena); desambiguação de posse e parentesco: siga a matriz de POV — pertences e familiares pertencem estritamente ao respectivo dono; use 'sua/seu' apenas ao falar com o dono, 'meu/minha' para si mesmo e nomes explícitos entre terceiros e na narração; sem recapitular nem parafrasear o que acabou de acontecer: avance a cena.]"
     );
     let mut pinned_ids = HashSet::new();
     let pinned = array(&data["pinned"])
