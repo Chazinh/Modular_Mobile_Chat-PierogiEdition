@@ -499,7 +499,8 @@ mod tests {
                     &json!({}),
                 );
                 assert_eq!(plan.body["reasoning_effort"], effort);
-                assert_eq!(plan.system_mode, "user_prefix");
+                // Codex responsesLite injects its built-in coding-agent developer prompt when role=system is absent.
+                assert_eq!(plan.system_mode, "system");
             }
         }
     }

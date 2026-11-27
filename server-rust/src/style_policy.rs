@@ -1,6 +1,7 @@
 use crate::rules;
 use regex::Regex;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 static SPEECH: LazyLock<Regex> = LazyLock::new(|| {
@@ -143,21 +144,90 @@ fn longest_monologue(text: &str) -> usize {
     longest
 }
 
+fn distinct_speakers(text: &str) -> usize {
+    let clean = text.replace("**", "");
+    let mut speakers = HashSet::new();
+    for line in clean.lines().map(str::trim) {
+        if let Some((name, _)) = label(line) {
+            let key = rules::key(&name);
+            if !key.is_empty() {
+                speakers.insert(key);
+            }
+        }
+    }
+    speakers.len()
+}
+
+pub fn effective_monologue_limit(settings: &Value, speaker_count: Option<usize>) -> usize {
+    let configured = settings["monologueChars"].as_u64().unwrap_or(300) as usize;
+    if configured == 0 {
+        return 0;
+    }
+    let dialogue_pct = settings["dialoguePct"].as_u64().unwrap_or(65).clamp(0, 100) as usize;
+    if dialogue_pct == 0 {
+        return configured;
+    }
+    let size = rules::reply_size(settings);
+    let target_speech = (size * dialogue_pct).div_ceil(100);
+    let speakers = speaker_count.unwrap_or(1).max(1);
+    let needed_per_speaker = target_speech.div_ceil(speakers);
+    if rules::target_mode(settings) || (speakers == 1 && dialogue_pct >= 50) {
+        configured.max(needed_per_speaker).min(size)
+    } else {
+        configured
+    }
+}
+
+fn effective_monologue_for_text(
+    configured: usize,
+    limit: usize,
+    pct: f64,
+    settings: &Value,
+    text_chars: usize,
+    speakers: usize,
+) -> usize {
+    if configured == 0 || pct <= 0.0 {
+        return configured;
+    }
+    let upper_pct = if pct >= 100.0 {
+        100.0
+    } else {
+        (pct + 10.0).min(100.0)
+    };
+    if rules::target_mode(settings) {
+        let stretch = (limit * rules::TARGET_STRETCH_PCT).div_ceil(100);
+        let basis = text_chars.max(limit).min(stretch);
+        let needed = ((basis as f64) * (upper_pct / 100.0)).ceil() as usize;
+        return configured.max(needed.div_ceil(speakers.max(1))).min(stretch);
+    }
+    if speakers <= 1 && pct >= 50.0 {
+        let needed = ((text_chars as f64) * (upper_pct / 100.0)).ceil() as usize;
+        return configured.max(needed).min(limit);
+    }
+    configured
+}
+
 pub fn assess_settings(text: &str, limit: usize, pct: f64, settings: &Value) -> Value {
     let mut a = assess(text, limit, pct);
+    let text_chars = rules::utf16_len(text);
     if settings["lengthMode"] != "target" {
         a["minCharacters"] = json!(0);
-        a["sizeOk"] = json!(!text.trim().is_empty() && rules::utf16_len(text) <= limit);
+        a["sizeOk"] = json!(!text.trim().is_empty() && text_chars <= limit);
     } else {
         // `limit` is the centre of the approximate target; the acceptable range reaches 125% of it.
         let stretch = (limit * rules::TARGET_STRETCH_PCT).div_ceil(100);
-        let chars = rules::utf16_len(text);
         a["maxCharacters"] = json!(stretch);
-        a["sizeOk"] =
-            json!(chars >= a["minCharacters"].as_u64().unwrap_or(0) as usize && chars <= stretch);
+        a["sizeOk"] = json!(
+            text_chars >= a["minCharacters"].as_u64().unwrap_or(0) as usize
+                && text_chars <= stretch
+        );
     }
-    let monologue_limit = settings["monologueChars"].as_u64().unwrap_or(300) as usize;
+    let speakers = distinct_speakers(text).max(1);
+    let configured = settings["monologueChars"].as_u64().unwrap_or(300) as usize;
+    let monologue_limit =
+        effective_monologue_for_text(configured, limit, pct, settings, text_chars, speakers);
     let longest = longest_monologue(text);
+    a["uniqueSpeakers"] = json!(speakers);
     a["maxMonologueCharacters"] = json!(monologue_limit);
     a["longestMonologueCharacters"] = json!(longest);
     a["monologueOk"] = json!(monologue_limit == 0 || longest <= monologue_limit);
@@ -171,12 +241,25 @@ pub fn assess_settings(text: &str, limit: usize, pct: f64, settings: &Value) -> 
 }
 
 pub fn turn_instruction(settings: &Value) -> String {
-    let limit = settings["monologueChars"].as_u64().unwrap_or(300);
-    let speech = if limit == 0 {
+    turn_instruction_for(settings, None)
+}
+
+pub fn turn_instruction_for(settings: &Value, speaker_count: Option<usize>) -> String {
+    let effective_limit = effective_monologue_limit(settings, speaker_count);
+    turn_instruction_with_limit(settings, effective_limit)
+}
+
+fn turn_instruction_with_limit(settings: &Value, effective_limit: usize) -> String {
+    let configured = settings["monologueChars"].as_u64().unwrap_or(300) as usize;
+    let speech = if effective_limit == 0 {
         "Falas sem limite individual, respeitando o teto total.".into()
+    } else if effective_limit > configured {
+        format!(
+            "No máximo {effective_limit} unidades UTF-16 de falas seguidas do mesmo personagem (limite ampliado de {configured} para compatibilizar a proporção de falas escolhida nesta cena com poucos personagens, sem precisar encher de narração)."
+        )
     } else {
         format!(
-            "No máximo {limit} unidades UTF-16 de falas seguidas do mesmo personagem, contando todos os trechos mesmo separados por ações ou quebras de parágrafo. Não divida um monólogo em várias linhas para contornar o limite; reduza a fala e devolva espaço ao usuário."
+            "No máximo {effective_limit} unidades UTF-16 de falas seguidas do mesmo personagem, contando todos os trechos mesmo separados por ações ou quebras de parágrafo. Não divida um monólogo em várias linhas para contornar o limite; reduza a fala e devolva espaço ao usuário."
         )
     };
     let pacing = match settings["turnPacing"].as_str() {
@@ -190,9 +273,13 @@ pub fn turn_instruction(settings: &Value) -> String {
             "Ritmo interativo: só reage quem tem motivo para reagir à entrada atual; apartes e interações cruzadas breves entre personagens são bem-vindos quando surgirem naturalmente, sem que todos comentem a mesma coisa nem encadeiem acontecimentos excessivos antes da resposta do usuário. Termine numa pausa natural, sem forçar uma pergunta nem resumir a cena, e devolva a vez."
         }
     };
-    format!(
-        "{speech} {pacing} Reduza o texto antes de aumentar falas só para cumprir a proporção; preserve a agência do usuário."
-    )
+    let dialogue_pct = settings["dialoguePct"].as_u64().unwrap_or(65);
+    let balance_rule = if rules::target_mode(settings) || dialogue_pct >= 50 {
+        "Cumpra a proporção configurada entre falas e narração sem preencher com narração redundante; preserve a agência do usuário."
+    } else {
+        "Reduza o texto antes de aumentar falas só para cumprir a proporção; preserve a agência do usuário."
+    };
+    format!("{speech} {pacing} {balance_rule}")
 }
 
 pub fn instruction(before: &Value, pct: f64) -> String {
@@ -223,12 +310,41 @@ pub fn instruction(before: &Value, pct: f64) -> String {
 }
 
 pub fn instruction_settings(before: &Value, pct: f64, settings: &Value) -> String {
-    format!(
-        "{} {} A maior sequência de fala anterior tinha {} unidades UTF-16; condense as falas que excederem o limite.",
+    let configured = settings["monologueChars"].as_u64().unwrap_or(300) as usize;
+    let speakers = before["uniqueSpeakers"].as_u64().map(|n| n as usize);
+    let effective_limit = if before["monologueOk"] == false {
+        before["maxMonologueCharacters"]
+            .as_u64()
+            .unwrap_or(configured as u64) as usize
+    } else {
+        effective_monologue_limit(settings, speakers)
+    };
+    let mut out = format!(
+        "{} {}",
         instruction(before, pct),
-        turn_instruction(settings),
-        before["longestMonologueCharacters"]
-    )
+        turn_instruction_with_limit(settings, effective_limit)
+    );
+    if before["monologueOk"] == false {
+        out.push_str(&format!(
+            " A maior sequência de fala anterior tinha {} unidades UTF-16; condense as falas que excederem o limite.",
+            before["longestMonologueCharacters"]
+        ));
+    }
+    if before["ratioOk"] == false {
+        let actual = before["dialoguePct"].as_f64().unwrap_or(0.0);
+        if actual < pct {
+            out.push_str(&format!(
+                " A resposta anterior teve poucas falas ({actual:.1}% vs meta de {pct:.0}%): substitua o excesso de narração entre *asteriscos* por falas diretas \"Nome: fala\" até atingir ~{pct:.0}% falas e ~{:.0}% narração.",
+                100.0 - pct
+            ));
+        } else if actual > pct {
+            out.push_str(&format!(
+                " A resposta anterior teve falas em excesso ({actual:.1}% vs meta de {pct:.0}%): reduza o volume de falas diretas e amplie a narração entre *asteriscos* até atingir ~{pct:.0}% falas e ~{:.0}% narração.",
+                100.0 - pct
+            ));
+        }
+    }
+    out
 }
 
 /// Editing uses the stable rules, current scene and immediate exchange. The
@@ -273,6 +389,31 @@ pub fn score(a: &Value, limit: usize, pct: f64) -> f64 {
         }
 }
 
+pub fn accept_repair(
+    before: &Value,
+    after: &Value,
+    candidate: &str,
+    finish_reason: Option<&str>,
+    size: usize,
+    pct: f64,
+    settings: &Value,
+    server_capped: bool,
+) -> bool {
+    let hard = rules::reply_bounds(settings).2 as u64;
+    let within_hard = after["characters"].as_u64().unwrap_or(u64::MAX) <= hard;
+    let no_size_regression = before["sizeOk"] != true || after["sizeOk"] == true;
+    let no_monologue_regression = before["monologueOk"] != true || after["monologueOk"] == true;
+    let improved = score(after, size, pct) < score(before, size, pct)
+        || (server_capped && after["ok"] == true);
+    !candidate.is_empty()
+        && after["languageOk"] == true
+        && within_hard
+        && no_size_regression
+        && no_monologue_regression
+        && finish_reason.is_none_or(|r| !matches!(r, "length" | "max_tokens"))
+        && improved
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +437,240 @@ mod tests {
             assess("Mira: **Olá** *Ela abre a carta.*", 500, 100.0)["ratioOk"],
             false
         );
+    }
+
+    #[test]
+    fn accept_repair_keeps_real_improvements_without_regressing_passing_checks() {
+        let settings = json!({
+            "botChars": 1500,
+            "dialoguePct": 70,
+            "monologueChars": 300,
+            "lengthMode": "maximum"
+        });
+        // Draft was narration-heavy (25% speech) with a 500-char monologue.
+        let before = json!({
+            "characters": 1400,
+            "minCharacters": 0,
+            "maxCharacters": 1500,
+            "dialoguePct": 25.0,
+            "sizeOk": true,
+            "ratioOk": false,
+            "languageOk": true,
+            "monologueOk": false,
+            "maxMonologueCharacters": 300,
+            "longestMonologueCharacters": 500,
+            "ok": false
+        });
+        // Rewrite hits 70% speech and trims monologue from 500 -> 315 (still slightly >300, under hard cap).
+        let improved_after = json!({
+            "characters": 1350,
+            "minCharacters": 0,
+            "maxCharacters": 1500,
+            "dialoguePct": 70.0,
+            "sizeOk": true,
+            "ratioOk": true,
+            "languageOk": true,
+            "monologueOk": false,
+            "maxMonologueCharacters": 300,
+            "longestMonologueCharacters": 315,
+            "ok": false
+        });
+        assert!(accept_repair(
+            &before,
+            &improved_after,
+            "Lia: Texto ajustado.",
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            false
+        ));
+
+        // Regressing an already-passing monologueOk or sizeOk, exceeding hard, or failing languageOk is rejected.
+        let mut regressed_size = improved_after.clone();
+        regressed_size["sizeOk"] = json!(false);
+        assert!(!accept_repair(
+            &before,
+            &regressed_size,
+            "Lia: Texto.",
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            false
+        ));
+
+        let mut over_hard = improved_after.clone();
+        over_hard["characters"] = json!(1501);
+        assert!(!accept_repair(
+            &before,
+            &over_hard,
+            "Lia: Texto.",
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            false
+        ));
+
+        let mut bad_lang = improved_after.clone();
+        bad_lang["languageOk"] = json!(false);
+        assert!(!accept_repair(
+            &before,
+            &bad_lang,
+            "Lia: English text.",
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            false
+        ));
+
+        let passing_before = json!({
+            "characters": 1400,
+            "minCharacters": 0,
+            "maxCharacters": 1500,
+            "dialoguePct": 25.0,
+            "sizeOk": true,
+            "ratioOk": false,
+            "languageOk": true,
+            "monologueOk": true,
+            "maxMonologueCharacters": 300,
+            "longestMonologueCharacters": 200,
+            "ok": false
+        });
+        assert!(!accept_repair(
+            &passing_before,
+            &improved_after,
+            "Lia: Texto.",
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            false
+        ));
+
+        // A server-capped draft rewritten to ok=true is accepted.
+        let mut ok_after = improved_after.clone();
+        ok_after["monologueOk"] = json!(true);
+        ok_after["longestMonologueCharacters"] = json!(220);
+        ok_after["ok"] = json!(true);
+        assert!(accept_repair(
+            &ok_after,
+            &ok_after,
+            "Lia: Texto curto.",
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            true
+        ));
+    }
+
+    #[test]
+    fn reconciles_monologue_cap_with_dialogue_ratio_in_single_speaker_scenes() {
+        let settings = json!({
+            "botChars": 1500,
+            "dialoguePct": 70,
+            "monologueChars": 300,
+            "lengthMode": "maximum"
+        });
+        assert_eq!(effective_monologue_limit(&settings, Some(1)), 1050);
+        assert_eq!(effective_monologue_limit(&settings, Some(4)), 300);
+
+        let single_turn = turn_instruction_for(&settings, Some(1));
+        assert!(single_turn.contains("1050"));
+        assert!(single_turn.contains("Cumpra a proporção configurada"));
+        assert!(!single_turn.contains("Reduza o texto antes de aumentar falas"));
+
+        // 1-speaker narration-heavy draft (~15% speech) should not be told to condense speech.
+        let narration_heavy = format!(
+            "*{}*\n\nLia: {}",
+            "Ela observa o corredor silencioso com calma. ".repeat(26),
+            "Você chegou mais cedo hoje, podemos conversar agora. ".repeat(4)
+        );
+        let before = assess_settings(&narration_heavy, 1500, 70.0, &settings);
+        assert_eq!(before["uniqueSpeakers"], 1);
+        assert_eq!(before["monologueOk"], true);
+        assert_eq!(before["ratioOk"], false);
+        let repair_prompt = instruction_settings(&before, 70.0, &settings);
+        assert!(!repair_prompt.contains("condense as falas que excederem o limite"));
+        assert!(repair_prompt.contains("substitua o excesso de narração"));
+        assert!(repair_prompt.contains("1050"));
+
+        // Rewriting to ~70% speech (~980 chars) passes both ratioOk and monologueOk and is accepted.
+        let balanced = format!(
+            "*{}*\n\nLia: {}",
+            "Ela apoia os braços na mesa e respira fundo. ".repeat(9),
+            "Eu estava esperando você voltar para resolver isso logo, sem rodeios. ".repeat(14)
+        );
+        let after = assess_settings(&balanced, 1500, 70.0, &settings);
+        assert_eq!(after["uniqueSpeakers"], 1);
+        assert_eq!(after["ratioOk"], true);
+        assert_eq!(after["monologueOk"], true);
+        assert_eq!(after["ok"], true);
+        assert!(accept_repair(
+            &before,
+            &after,
+            &balanced,
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            false
+        ));
+
+        // Slightly above target (~75% speech, still inside 70 ± 10%) is not falsely rejected on monologueOk.
+        let slightly_talkative = format!(
+            "*{}*\n\nLia: {}",
+            "Ela inclina a cabeça e sorri devagar. ".repeat(9),
+            "Eu estava esperando você voltar para resolver isso logo, sem rodeios. ".repeat(15)
+        );
+        let after_high = assess_settings(&slightly_talkative, 1500, 70.0, &settings);
+        assert_eq!(after_high["ratioOk"], true);
+        assert_eq!(after_high["monologueOk"], true);
+        assert_eq!(after_high["ok"], true);
+        assert!(accept_repair(
+            &before,
+            &after_high,
+            &slightly_talkative,
+            Some("stop"),
+            1500,
+            70.0,
+            &settings,
+            false
+        ));
+
+        // Wall-of-dialogue (>90% speech) still fails both ratioOk and monologueOk and asks to condense speech.
+        let wall = format!(
+            "*Ela respira.*\n\nLia: {}",
+            "Eu continuo falando sem parar sobre tudo o que aconteceu ontem à noite. ".repeat(19)
+        );
+        let wall_a = assess_settings(&wall, 1500, 70.0, &settings);
+        assert_eq!(wall_a["ratioOk"], false);
+        assert_eq!(wall_a["monologueOk"], false);
+        let wall_prompt = instruction_settings(&wall_a, 70.0, &settings);
+        assert!(wall_prompt.contains("condense as falas que excederem o limite"));
+        assert!(wall_prompt.contains("falas em excesso"));
+
+        // Multi-speaker scenes keep the configured 300-char monologue ceiling in maximum mode.
+        let multi = format!(
+            "Lia: {}\n\nMara: Tudo bem, vou checar lá fora.",
+            "Precisamos decidir agora mesmo o que fazer com a carta. ".repeat(9)
+        );
+        let multi_a = assess_settings(&multi, 1500, 70.0, &settings);
+        assert_eq!(multi_a["uniqueSpeakers"], 2);
+        assert_eq!(multi_a["maxMonologueCharacters"], 300);
+        assert_eq!(multi_a["monologueOk"], false);
+
+        // Target mode scales per-speaker cap across available speakers.
+        let target_settings = json!({
+            "botChars": 2000,
+            "dialoguePct": 70,
+            "monologueChars": 300,
+            "lengthMode": "target"
+        });
+        assert_eq!(effective_monologue_limit(&target_settings, Some(1)), 1400);
+        assert_eq!(effective_monologue_limit(&target_settings, Some(2)), 700);
     }
 }

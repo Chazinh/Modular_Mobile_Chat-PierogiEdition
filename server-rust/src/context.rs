@@ -458,6 +458,21 @@ pub fn assemble(
         .clamp(1, soft as u64) as usize;
     // The ladder below repeats up to ~10 times: everything it reads from `data`/`retrieval` is borrowed, not cloned.
     let pairs = array(&data["pairs"]);
+    let current = &data["current"];
+    let current_user = s(current, "userText");
+    let continuation = mode == "continue"
+        || mode == "regenerate"
+            && current["priorParts"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty());
+    let scene_resolution = resolve_scene_presence(&data["scene"], &current_user, pairs, persona);
+    let present = &scene_resolution.effective_present;
+    let persona_key = rules::key(persona);
+    let npc_count = present
+        .iter()
+        .filter(|name| rules::key(name) != persona_key)
+        .count()
+        .max(1);
     let available = &pairs[pairs.len().saturating_sub(maximum)..];
     let ladder = history_ladder(data, available, minimum, preferred, compact, settings);
     // global settings (character limit, dialogue × narration ratio, content text): same text as the former Node server
@@ -514,7 +529,7 @@ pub fn assemble(
             thousands(bot_chars)
         )
     };
-    let turn_control = style_policy::turn_instruction(gs);
+    let turn_control = style_policy::turn_instruction_for(gs, Some(npc_count));
     let token_hint = format!(
         "Planeje o texto antes de escrevê-lo: orçamento visível estimado de {} tokens (conversão aproximada de caracteres). Conclua as frases e a reação dentro do limite de caracteres; o orçamento da API pode incluir raciocínio e não é uma meta de tamanho.",
         (bot_chars + 2) / 3
@@ -572,15 +587,6 @@ pub fn assemble(
     let system = format!(
         "{core}\n\n[PERSONALIZAÇÃO DO PERSONAGEM E DO MUNDO — lei da história]\n{card}\n\n[PERSONA DO USUÁRIO]\nO usuário interpreta {persona}, controlado exclusivamente por ele.\n{notes}\n\n{pov_matrix}"
     );
-    let current = &data["current"];
-    let current_user = s(current, "userText");
-    let continuation = mode == "continue"
-        || mode == "regenerate"
-            && current["priorParts"]
-                .as_array()
-                .is_some_and(|a| !a.is_empty());
-    let scene_resolution = resolve_scene_presence(&data["scene"], &current_user, pairs, persona);
-    let present = &scene_resolution.effective_present;
     // Attribution appears once, before the current message. IDs and full evidence
     // remain available to the local attribution/review pipeline.
     let recent_sources = crate::provenance::sources(pairs);
@@ -606,18 +612,28 @@ pub fn assemble(
     } else {
         format!("tamanho máximo até {} car.", thousands(bot_chars))
     };
-    let monologue_limit = gs["monologueChars"].as_u64().unwrap_or(300);
+    let monologue_limit = style_policy::effective_monologue_limit(gs, Some(npc_count));
     let monologue_reminder = if monologue_limit == 0 {
         String::new()
     } else {
         format!("; máx. {monologue_limit} car./fala seguida")
     };
     let ratio_reminder = match dialogue {
-        0 => "0% falas / 100% narração".to_string(),
-        100 => "100% falas / 0% narração".to_string(),
-        _ => format!("{dialogue}% falas / {}% narração", 100 - dialogue),
+        0 => "0% falas / 100% narração (somente *asteriscos*)".to_string(),
+        100 => "100% falas (somente \"Nome: fala\") / 0% narração".to_string(),
+        _ => format!(
+            "~{dialogue}% falas (\"Nome: fala\") e ~{}% narração (*asteriscos*)",
+            100 - dialogue
+        ),
     };
-    let style_reminder = format!("{size_reminder}; {ratio_reminder}{monologue_reminder}");
+    let pacing_reminder = match gs["turnPacing"].as_str() {
+        Some("balanced") => "; reação + no máx. 1 acontecimento",
+        Some("free") => "",
+        _ => "; devolva a vez após reação curta",
+    };
+    let style_reminder = format!(
+        "ESTILO E LIMITES OBRIGATÓRIOS: {size_reminder}; {ratio_reminder}{monologue_reminder}{pacing_reminder}"
+    );
     let tail = format!(
         "[Lembrete: pt-BR; {format_short}; {style_reminder}; {where_to}; não escreva nada por {persona}{global_anchor}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem e NUNCA agem sobre o que foi dito ou ocorrido fora de sua presença (só passam a saber se forem expressamente informados em cena); desambiguação de posse e parentesco: siga a matriz de POV — pertences e familiares pertencem estritamente ao respectivo dono; use 'sua/seu' apenas ao falar com o dono, 'meu/minha' para si mesmo e nomes explícitos entre terceiros e na narração; sem recapitular nem parafrasear o que acabou de acontecer: avance a cena.]"
     );

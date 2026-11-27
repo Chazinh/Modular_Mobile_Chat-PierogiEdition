@@ -889,12 +889,14 @@ impl Manager {
             .unwrap_or(65.0);
         let before = style_policy::assess_settings(&visible, size, pct, &global_settings);
         let mut style_report = json!({"attempted":false,"before":before,"after":before});
+        let server_capped = capped && !matches!(finish.as_deref(), Some("length" | "max_tokens"));
         if !visible.trim().is_empty()
             && !stopped
             && error.is_none()
-            // a reply cut by the limit (status length) is never rewritten: continuing it completes it
-            && status == "complete"
-            && before["ok"] != true
+            // a reply cut by the upstream limit is never rewritten: continuing it completes it;
+            // a reply cut locally at bot_limit without upstream length exhaustion can be condensed cleanly
+            && (status == "complete" || server_capped)
+            && (before["ok"] != true || server_capped)
         {
             let repair_body = style_policy::repair_body(&plan.body, &visible,
                 &style_policy::instruction_settings(&before,pct,&global_settings));
@@ -957,19 +959,23 @@ impl Manager {
                     let candidate = (filter.push(raw) + &filter.flush()).trim().to_owned();
                     let after =
                         style_policy::assess_settings(&candidate, size, pct, &global_settings);
-                    let accept = !candidate.is_empty()
-                        && after["sizeOk"] == true
-                        && after["monologueOk"] == true
-                        && after["languageOk"] == true
-                        && result["choices"][0]["finish_reason"]
-                            .as_str()
-                            .is_none_or(|r| !matches!(r, "length" | "max_tokens"))
-                        && style_policy::score(&after, size, pct)
-                            < style_policy::score(&before, size, pct);
+                    let accept = style_policy::accept_repair(
+                        &before,
+                        &after,
+                        &candidate,
+                        result["choices"][0]["finish_reason"].as_str(),
+                        size,
+                        pct,
+                        &global_settings,
+                        server_capped,
+                    );
                     style_report["usage"] = result["usage"].clone();
                     if accept {
                         visible = candidate;
                         g.output.lock().await.replace(visible.clone());
+                        if server_capped {
+                            status = "complete";
+                        }
                         style_report["accepted"] = json!(true);
                         style_report["after"] = after;
                     } else {

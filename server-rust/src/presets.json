@@ -338,8 +338,7 @@
     "providerReserve": 32768,
     "contextWindow": 1050000,
     "maxOutput": 128000,
-    "capacitySource": "documented",
-    "systemMode": "user_prefix"
+    "capacitySource": "documented"
   },
   {
     "id": "minimax-m31",

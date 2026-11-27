@@ -7,6 +7,21 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.3.6: GPT 6.2 Sol System Mode, Style-Repair Acceptance & Dialogue/Monologue Reconciliation — 2026-11-27
+
+- **GPT 6.2 Sol `systemMode` restored to `"system"` (`server-rust/src/presets.json`)**:
+  - Removed `"systemMode": "user_prefix"` from `gpt-6-2-sol`: on 9Router `CodexExecutor` (`responsesLite`), omitting `role: "system"` caused `instructions` to fall back to the built-in Codex coding-agent developer prompt, overriding story and style rules. Restoring `"system"` places ModularChat's rules directly in the Codex `developer` prompt slot.
+- **Dialogue/monologue cap reconciliation for low-cast scenes (`server-rust/src/style_policy.rs`, `server-rust/src/context.rs`)**:
+  - Resolved the mathematical contradiction between `monologueChars` (e.g., `300`), `dialoguePct` (e.g., `70%`), and `botChars` (`1,500`) in single-speaker scenes, which previously capped all dialogue in a 1-character reply at ≤300 chars (`~15–20%` speech) while simultaneously demanding `70%` speech.
+  - Added `effective_monologue_limit` and `effective_monologue_for_text` to scale the effective per-character speech cap proportionally to the configured dialogue ratio when `speakers == 1` with `dialoguePct >= 50%` (or in `target` mode across present speakers), while keeping strict `monologueChars` enforcement in multi-speaker `maximum`-mode scenes and short replies.
+  - Updated `turn_instruction_for` and the per-turn `[Lembrete: ...]` tail (`ESTILO E LIMITES OBRIGATÓRIOS: ...`) to compute active NPC count from `scene_resolution.effective_present` (excluding persona) and advertise the reconciled speech limit without telling the model to shrink dialogue below the user's configured ratio.
+  - Updated `instruction_settings` so style-repair prompts only ask to condense speech when `monologueOk == false`, and explicitly direct replacing excess `*asteriscos*` narration with `"Nome: fala"` lines (or vice versa) whenever `ratioOk == false`.
+- **Style-repair acceptance & server-capped recovery (`server-rust/src/style_policy.rs`, `server-rust/src/generation.rs`)**:
+  - Added `style_policy::accept_repair` to accept genuine score improvements without regressing already-passing `sizeOk`/`monologueOk` checks, language compliance, or the hard character ceiling.
+  - Allowed locally capped drafts (`capped` without upstream `length`/`max_tokens` exhaustion) to enter style repair and upgrade `status` to `"complete"` when the condensed repair is accepted.
+- **Automated regression tests (`server-rust/src/style_policy.rs`, `server-rust/src/presets.rs`, `server-rust/tests/context_contracts.rs`)**:
+  - Added `reconciles_monologue_cap_with_dialogue_ratio_in_single_speaker_scenes` and `accept_repair_keeps_real_improvements_without_regressing_passing_checks` in `style_policy.rs`, updated `gpt_sol_62_resolves_with_low_medium_high_efforts` for `"system"` mode, and expanded `gpt_sol_62_uses_system_mode_and_tail_reinforces_style_and_size` to cover both single-speaker reconciliation and multi-speaker strict limits.
+
 ### ModularChat 4.3.5: GPT 6.2 Sol Style/Size Compliance & Codex Effort Tracking — 2026-11-27
 
 - **GPT 6.2 Sol prompt delivery & per-turn style/size reinforcement (`server-rust/src/presets.json`, `server-rust/src/context.rs`)**:
