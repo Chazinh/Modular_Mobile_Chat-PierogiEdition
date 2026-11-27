@@ -7,6 +7,23 @@ implemented features.
 
 ## Released
 
+### ModularChat 4.3.4: Bounded Context Window, Unprocessed Backlog Cap, Upstream Safeguards & Gpt-sol-6.2 — 2026-11-27
+
+- **Bounded context window, unprocessed backlog cap & memory-preserving compression (`server-rust/src/context.rs`, `server-rust/src/store/context.rs`, `client/src/components/SettingsDrawer.jsx`, `client/src/locales/en.json`, `.env.example`)**:
+  - Default `pair_limits` changed from `30` preferred / `20` min pairs to `15` preferred (~30 messages, aligned with `queue_episodes`) / `8` min pairs, and `pairs_to_load` no longer over-fetches 30 pairs.
+  - `default_context_hard_limit` lowered from `128_000` to `32_000` tokens (target ~24k, soft ~27k; overridable via `MC_DEFAULT_CONTEXT_HARD_LIMIT` or per-chat `settings.context.hardLimit`).
+  - Added `MAX_INLINE_UNPROCESSED = 2`: backlogs of >2 older unprocessed turns outside the recent window are no longer loaded from SQLite or re-injected verbatim into prompts (preserving exact `sync.lag` / `olderPending` reporting and `pendingTurnsOmitted` diagnostics) and ladder-dropped recent pairs are never re-injected via `unprocessed`.
+  - Capped `[LINHA DO TEMPO ANTERIOR]` at 12 entries (8 when reduced) when `!summarized_history`, added smoother intermediate rungs to shared `history_ladder`, and prioritized condensing timeline and stepping down raw history before trimming retrieved memories.
+  - Updated Context drawer UI default (`15` pairs / `~30 msgs`), lowered slider minimum from `20` to `8`, and updated guideline budget copy and English translations.
+- **Upstream concurrency & memory-job safeguards (`server-rust/src/providers.rs`, `server-rust/src/generation.rs`, `server-rust/src/jobs.rs`, `server-rust/src/memory_backend.rs`, `server-rust/src/store/jobs.rs`, `server-rust/src/store/schema.sql`, `providers.example.json`)**:
+  - Added per-upstream outbound concurrency limiting (`maxConcurrent` / `MC_UPSTREAM_MAX_CONCURRENT`), token-limit retry with prompt compaction in generation, and bounded memory job deferrals/cooldowns (`deferrals` column).
+- **`Gpt-sol-6.2` model profile (`server-rust/src/presets.json`, `server-rust/src/presets.rs`, `client/src/default-presets.js`, `client/src/api.js`)**:
+  - Added `gpt-6-2-sol` (`Gpt-sol-6.2`) preset with `low`/`medium`/`high` efforts and route normalization.
+- **Prompt naturalness & Android release tooling (`server-rust/src/core-prompt.example.txt`, `server-rust/src/style_policy.rs`, `scripts/build-release-android.ps1`)**:
+  - Refined anti-recap / naturalness directives in prompt templates and added `-SkipLlama` + dynamic build-tools fallback in `scripts/build-release-android.ps1`.
+- **Automated regression tests (`server-rust/tests/context_contracts.rs`, `server-rust/tests/m2_concurrency_and_safeguards.rs`, `server-rust/tests/prompt_naturalness.rs`, `tests/regression-gpt-sol-62.test.js`, `tests/regression-m2-safeguards.test.js`)**:
+  - Added `bounded_context_defaults_and_unprocessed_backlog_cap` plus concurrency, prompt naturalness, and `Gpt-sol-6.2` regression tests.
+
 ### ModularChat 4.3.3: Hydrogen Empty-Response Recovery, Preset Sync & Auto-Rebuild Launcher — 2026-11-12
 
 - **Hydrogen empty-response fix & generic preset recovery (`server-rust/src/presets.rs`, `client/src/api.js`)**:

@@ -946,4 +946,107 @@ async fn test_deterministic_witness_validation_and_persona_physical_presence() {
     assert!(!p0_present.iter().any(|p| p == "Alex"));
 }
 
+#[test]
+fn bounded_context_defaults_and_unprocessed_backlog_cap() {
+    assert_eq!(context::pair_limits(&json!({})), (8, 50, 15));
+    assert_eq!(context::pairs_to_load(&json!({})), 15);
+
+    let p = presets::request(
+        &json!({"presetId":"claude-sonnet-5-5","routeId":"cc/claude-sonnet-5-5"}),
+        vec![],
+        &json!({}),
+    );
+    let prose = "Detalhe narrativo extenso sobre a cena na biblioteca antiga. ".repeat(25);
+    let make_data = |total_pairs: usize| {
+        let start = total_pairs.saturating_sub(15) + 1;
+        let pairs: Vec<Value> = (start..=total_pairs)
+            .map(|seq| {
+                json!({
+                    "id": format!("i{seq}"),
+                    "seq": seq,
+                    "user": format!("Turno {seq}: {prose}"),
+                    "assistant": format!("Lia: Resposta {seq}: {prose}"),
+                    "complete": true
+                })
+            })
+            .collect();
+        let older_count = start.saturating_sub(1);
+        let unprocessed: Vec<Value> = (1..start)
+            .map(|seq| {
+                json!({
+                    "id": format!("i{seq}"),
+                    "seq": seq,
+                    "user": format!("Antigo {seq}: {prose}"),
+                    "assistant": format!("Lia: Antiga {seq}: {prose}"),
+                    "complete": true
+                })
+            })
+            .collect();
+        json!({
+            "conv": {"persona":"Alex","prompt":"Lia estuda magia.","settings":{}},
+            "pairs": pairs,
+            "totalPairs": total_pairs,
+            "beforeSeq": total_pairs + 1,
+            "pathLength": total_pairs,
+            "cast": [],
+            "scene": null,
+            "pinned": [],
+            "relationships": [],
+            "threads": [],
+            "notes": [],
+            "episodes": [],
+            "timeline": {"current": null},
+            "sync": {"lag": older_count, "olderPending": older_count, "synced": older_count == 0},
+            "unprocessed": unprocessed,
+            "current": {"interactionId": null, "seq": total_pairs + 1, "userText": "E agora?", "priorParts": []}
+        })
+    };
+
+    let d44 = make_data(44);
+    let c44 = context::assemble(&d44, &json!({}), "send", &p, None).unwrap();
+    assert_eq!(c44.report["pendingTurnsPreserved"], 0);
+    assert!(c44.report["pendingTurnsOmitted"].as_u64().unwrap() >= 29);
+    assert!(c44.report["pairsIncluded"].as_u64().unwrap() <= 15);
+
+    let d100 = make_data(100);
+    let c100 = context::assemble(&d100, &json!({}), "send", &p, None).unwrap();
+    assert_eq!(c100.report["pendingTurnsPreserved"], 0);
+    assert!(c100.report["pendingTurnsOmitted"].as_u64().unwrap() >= 85);
+    assert!(c100.report["pairsIncluded"].as_u64().unwrap() <= 15);
+    assert!(
+        (c100.raw_estimate as isize - c44.raw_estimate as isize).abs() < 200,
+        "token estimate must stay flat instead of growing from 44 pairs ({}) to 100 pairs ({})",
+        c44.raw_estimate,
+        c100.raw_estimate
+    );
+
+    let mut d_small_lag = make_data(44);
+    d_small_lag["unprocessed"] = json!([d_small_lag["unprocessed"][0].clone()]);
+    d_small_lag["sync"] = json!({"lag": 1, "olderPending": 1, "synced": false});
+    let c_small = context::assemble(&d_small_lag, &json!({}), "send", &p, None).unwrap();
+    assert_eq!(c_small.report["pendingTurnsPreserved"], 1);
+    assert_eq!(c_small.report["pendingTurnsOmitted"], 0);
+
+    let mut d_timeline = data();
+    d_timeline["unprocessed"] = json!([]);
+    d_timeline["sync"] = json!({"lag": 0, "olderPending": 0, "synced": true});
+    d_timeline["episodes"] = json!(
+        (1..=25)
+            .map(|i| json!({"id": format!("e{i}"), "fromSeq": i * 2 - 1, "toSeq": i * 2, "summary": format!("Episódio {i}."), "interactionIds": []}))
+            .collect::<Vec<_>>()
+    );
+    let c_tl = context::assemble(&d_timeline, &json!({}), "send", &p, None).unwrap();
+    let last_msg = c_tl.messages.last().unwrap()["content"].as_str().unwrap();
+    let tl_section = last_msg
+        .split("[LINHA DO TEMPO ANTERIOR]\n")
+        .nth(1)
+        .and_then(|s| s.split("\n\n[").next())
+        .unwrap_or_default();
+    assert!(
+        tl_section.lines().count() <= 12,
+        "timeline should be capped at <= 12 items, got {}",
+        tl_section.lines().count()
+    );
+}
+
 

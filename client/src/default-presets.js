@@ -129,6 +129,30 @@ export const DEFAULT_PRESETS = {
       thinkingDefault: false,
       thinking: "enabled",
       available: true
+    },
+    {
+      id: "gpt-6-2-sol",
+      groupRoute: "Gpt-sol-6.2",
+      thinkingCanDisable: true,
+      selectable: true,
+      label: "Gpt-sol-6.2",
+      family: "openai",
+      preferredRoutes: [
+        "Gpt-sol-6.2",
+        "cx/gpt-6.2-sol",
+        "cx/gpt-6.2-sol(high)",
+        "cx/gpt-6.2-sol[1m]"
+      ],
+      routes: [
+        { id: "Gpt-sol-6.2" },
+        { id: "cx/gpt-6.2-sol" },
+        { id: "cx/gpt-6.2-sol(high)" },
+        { id: "cx/gpt-6.2-sol[1m]" }
+      ],
+      efforts: ["low", "medium", "high"],
+      defaultEffort: "high",
+      thinking: "enabled",
+      available: true
     }
   ]
 };

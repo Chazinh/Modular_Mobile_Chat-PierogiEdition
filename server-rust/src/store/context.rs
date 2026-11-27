@@ -64,6 +64,7 @@ impl Database {
             .filter(|i| complete.contains(&s(i, "id")) && !noted.contains(&s(i, "id")))
             .map(|i| s(i, "id"))
             .collect::<HashSet<_>>();
+        let total_pending_lag = pending_ids.len();
         let pairs = before
             .iter()
             .filter(|i| n(i, "has_user") != 0 || complete.contains(&s(i, "id")))
@@ -75,10 +76,14 @@ impl Database {
             .skip(total.saturating_sub(limit))
             .map(|i| s(i, "id"))
             .collect::<HashSet<_>>();
-        let mut needed = pending_ids
-            .union(&recent_ids)
-            .cloned()
-            .collect::<HashSet<_>>();
+        let older_pending_count = pending_ids
+            .iter()
+            .filter(|id| !recent_ids.contains(*id))
+            .count();
+        let mut needed = recent_ids.clone();
+        if older_pending_count <= crate::context::MAX_INLINE_UNPROCESSED {
+            needed.extend(pending_ids.iter().cloned());
+        }
         if let Some(id) = &current_id {
             needed.insert(id.clone());
         }
@@ -162,7 +167,10 @@ impl Database {
             .collect::<Vec<_>>();
         let unprocessed = before
             .iter()
-            .filter(|i| pending_ids.contains(&s(i, "id")))
+            .filter(|i| {
+                let id = s(i, "id");
+                pending_ids.contains(&id) && needed.contains(&id)
+            })
             .filter_map(|i| by_id.get(&s(i, "id")))
             .map(|pair| slim_pair(pair, false))
             .collect::<Vec<_>>();
@@ -201,7 +209,7 @@ impl Database {
         let notes = notes_for_prompt(notes, &recent, &episodes, minimum, preferred);
         Ok(
             json!({"conv":conv,"cast":self.cast(&c)?,"pairs":recent,"totalPairs":total,"current":current,"scene":self.scene_at(&c,cutoff)?,"beforeSeq":cutoff,"unprocessed":unprocessed,
-            "sync":{"lag":unprocessed.len(),"lastSyncedSeq":last_synced,"synced":unprocessed.is_empty()},
+            "sync":{"lag":total_pending_lag,"olderPending":older_pending_count,"lastSyncedSeq":last_synced,"synced":total_pending_lag == 0},
             "relationships":relationships,"threads":threads,"pathLength":path.len(),"episodes":episodes,
             "notes":notes.iter().map(|note|json!({"interactionId":note["interaction_id"],"seq":note["seq"],"summary":note["summary"]})).collect::<Vec<_>>(),
             "globalSettings":global_settings,"pinned":pinned.iter().take(12).map(|m|memory_view(m,knowledge.get(&s(m,"id")))).collect::<Vec<_>>(),"timeline":timeline.summary()}),

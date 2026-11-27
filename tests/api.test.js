@@ -21,7 +21,7 @@ const providerOverride = { effort: undefined };
 before(async () => {
   const file=path.join(dataDir,'mock-router.db');logDb=new DatabaseSync(file);logDb.exec('CREATE TABLE requestDetails(timestamp TEXT,provider TEXT,model TEXT,data TEXT)');
   router.set({onRequest:hit=>{const effort=providerOverride.omitControls?undefined:providerOverride.effort??hit.body.reasoning_effort??null;const off=hit.body.reasoning_effort==='none';logDb.prepare('INSERT INTO requestDetails VALUES(?,?,?,?)').run(new Date().toISOString(),'fake',hit.body.model,JSON.stringify({request:hit.body,providerRequest:{reasoning_effort:effort,output_config:{effort},thinking:off&&!providerOverride.omitControls?{type:hit.body.model.includes('sonnet')?'between_tools':'disabled'}:undefined,max_tokens:hit.body.max_tokens},tokens:{prompt_tokens:952,completion_tokens:20,reasoning_tokens:off?0:300,cached_tokens:800}}));}});
-  rustServer=await startRust({dataDir,upstream:router.url,routerDb:file});base=rustServer.base;
+  rustServer=await startRust({dataDir,upstream:router.url,routerDb:file,upstreamMaxConcurrent:4});base=rustServer.base;
   gen={isBusy:async id=>!!(await j('GET',`/api/chats/${id}`)).body.generation,get:async id=>{
     const chat=(await j('GET',`/api/chats/${id}`)).body;if(!chat.generation)return null;
     const db=new DatabaseSync(path.join(dataDir,'modularchat.db'),{readOnly:true});try{const v=db.prepare('SELECT content FROM versions WHERE generation_id=?').get(chat.generation.id);return {...chat.generation,buffer:v?.content||''};}finally{db.close();}

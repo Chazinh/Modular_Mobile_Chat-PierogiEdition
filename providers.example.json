@@ -4,7 +4,8 @@
     {
       "id": "9router",
       "baseUrl": "http://127.0.0.1:20128/v1",
-      "apiKeyEnv": "NINEROUTER_API_KEY"
+      "apiKeyEnv": "NINEROUTER_API_KEY",
+      "maxConcurrent": 1
     },
     {
       "id": "openrouter",

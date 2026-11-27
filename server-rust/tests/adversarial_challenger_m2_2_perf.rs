@@ -228,7 +228,7 @@ fn test_challenger_assembly_performance_and_budget_stability_at_scale() {
                 "[{model_name}] POV matrix header must exist in initial instructions at scale {turns}"
             );
             assert!(
-                initial_text.contains("1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa Nominativa Estrita):"),
+                initial_text.contains("1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa; dono explícito quando ambíguo):"),
                 "[{model_name}] POV Level 1 must exist at scale {turns}"
             );
             assert!(

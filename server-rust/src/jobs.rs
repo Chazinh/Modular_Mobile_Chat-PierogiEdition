@@ -8,12 +8,55 @@ use crate::{
     store::{EmbeddingItem, Request, Store},
 };
 use serde_json::{Value, json};
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 #[derive(Default)]
 struct State {
     running: bool,
     last_error: Option<String>,
+}
+
+#[derive(Default)]
+struct Cooldown {
+    unavailable_until: Option<tokio::time::Instant>,
+    unavailable_streak: u32,
+    unavailable_kind: Option<String>,
+}
+
+fn is_unavailable_code(err: &Error) -> bool {
+    matches!(
+        err.extra["code"].as_str(),
+        Some(
+            "LOCAL_UNAVAILABLE"
+                | "LOCAL_DOWNLOADING"
+                | "MEMORY_BACKEND_UNAVAILABLE"
+                | "PROVIDER_UNAVAILABLE"
+        )
+    )
+}
+
+fn compute_cooldown(streak: u32, kind: &str, retry_after_secs: Option<u64>) -> Duration {
+    if let Some(ra) = retry_after_secs {
+        return Duration::from_secs(ra.clamp(1, 900));
+    }
+    if kind == "auth_config" {
+        let schedule = [300u64, 600, 900];
+        let base = schedule[(streak.saturating_sub(1) as usize).min(schedule.len() - 1)];
+        let extra = ((base as f64) * rand::random_range(0.0..=0.10)).round() as u64;
+        return Duration::from_secs((base + extra).clamp(1, 900));
+    }
+    let schedule = [30u64, 60, 120, 300, 900];
+    let base = schedule[(streak.saturating_sub(1) as usize).min(schedule.len() - 1)];
+    let factor = rand::random_range(0.85f64..=1.15f64);
+    let ms = ((base as f64) * factor * 1000.0).round().max(1000.0) as u64;
+    Duration::from_millis(ms).min(Duration::from_secs(900))
 }
 
 /// Keep memory paused only while a sync request owns the guard. Concurrent
@@ -56,7 +99,7 @@ pub struct Runner {
     local: LocalModels,
     wake: Arc<Notify>,
     events: broadcast::Sender<Value>,
-    state: Arc<Mutex<State>>,
+    state: Arc<std::sync::Mutex<State>>,
     stop: watch::Sender<bool>,
     review: bool,
     providers: RuntimeProviders,
@@ -65,6 +108,8 @@ pub struct Runner {
     sync_pause: watch::Sender<tokio::time::Instant>,
     cycle_gate: Arc<Mutex<()>>,
     sync_users: Arc<std::sync::Mutex<usize>>,
+    cooldown: Arc<std::sync::Mutex<Cooldown>>,
+    config_epoch: Arc<AtomicU64>,
 }
 impl Runner {
     pub fn new(
@@ -98,6 +143,8 @@ impl Runner {
             sync_pause,
             cycle_gate: Arc::default(),
             sync_users: Arc::default(),
+            cooldown: Arc::default(),
+            config_epoch: Arc::default(),
         }
     }
     pub fn set_backends(
@@ -110,23 +157,90 @@ impl Runner {
         self.policy = policy;
         self.client = client;
     }
+    fn cooldown_until(&self) -> Option<tokio::time::Instant> {
+        let mut cd = self.cooldown.lock().unwrap();
+        match cd.unavailable_until {
+            Some(u) if u > tokio::time::Instant::now() => Some(u),
+            Some(_) => {
+                cd.unavailable_until = None;
+                None
+            }
+            None => None,
+        }
+    }
+    fn in_cooldown(&self) -> bool {
+        self.cooldown_until().is_some()
+    }
+    fn record_unavailable(&self, err: &Error) {
+        let kind = if err.extra["unavailableKind"].as_str() == Some("auth_config")
+            || err.extra["code"].as_str() == Some("PROVIDER_UNAVAILABLE")
+        {
+            "auth_config"
+        } else if matches!(
+            err.extra["code"].as_str(),
+            Some("LOCAL_UNAVAILABLE" | "LOCAL_DOWNLOADING")
+        ) {
+            "local"
+        } else {
+            "transient"
+        };
+        let retry_after = err.extra["retryAfterSeconds"].as_u64();
+        let mut cd = self.cooldown.lock().unwrap();
+        let streak = cd.unavailable_streak.saturating_add(1);
+        let delay = compute_cooldown(streak, kind, retry_after);
+        cd.unavailable_until = Some(tokio::time::Instant::now() + delay);
+        cd.unavailable_streak = streak;
+        cd.unavailable_kind = Some(kind.to_owned());
+    }
+    fn clear_cooldown(&self) {
+        let mut cd = self.cooldown.lock().unwrap();
+        cd.unavailable_until = None;
+        cd.unavailable_streak = 0;
+        cd.unavailable_kind = None;
+    }
+    pub fn reset_cooldown(&self) {
+        self.config_epoch.fetch_add(1, Ordering::AcqRel);
+        self.clear_cooldown();
+        self.state.lock().unwrap().last_error = None;
+        self.wake.notify_one();
+    }
     pub async fn state(&self) -> Value {
-        let s = self.state.lock().await;
-        json!({"running":s.running,"lastError":s.last_error,"policy":self.policy.read().unwrap().clone(),"concurrency":1,
-            "pausedForSync":*self.sync_pause.borrow() > tokio::time::Instant::now()})
+        let (running, last_error) = {
+            let s = self.state.lock().unwrap();
+            (s.running, s.last_error.clone())
+        };
+        let (cooldown_secs, streak, kind) = {
+            let mut cd = self.cooldown.lock().unwrap();
+            let now = tokio::time::Instant::now();
+            let rem = match cd.unavailable_until {
+                Some(u) if u > now => (u - now).as_secs().max(1),
+                Some(_) => {
+                    cd.unavailable_until = None;
+                    0
+                }
+                None => 0,
+            };
+            (rem, cd.unavailable_streak, cd.unavailable_kind.clone())
+        };
+        json!({"running":running,"lastError":last_error,"policy":self.policy.read().unwrap().clone(),"concurrency":1,
+            "pausedForSync":*self.sync_pause.borrow() > tokio::time::Instant::now(),
+            "cooldownRemainingSeconds":cooldown_secs,"unavailableStreak":streak,"unavailableKind":kind})
     }
     pub fn start(&self) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
         tokio::spawn(async move {
             if let Err(e) = this.store.call(Request::RequeueJobs).await {
-                this.state.lock().await.last_error = Some(e.message);
+                this.state.lock().unwrap().last_error = Some(e.message);
             }
             let mut stop = this.stop.subscribe();
             let mut pause = this.sync_pause.subscribe();
             let mut timer = tokio::time::interval(Duration::from_secs(30));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut run_immediately = false;
             loop {
                 let until = *pause.borrow_and_update();
                 if until > tokio::time::Instant::now() {
+                    run_immediately = false;
                     tokio::select! {
                         _=stop.wait_for(|s|*s)=>break,
                         _=pause.changed()=>{},
@@ -134,8 +248,27 @@ impl Runner {
                     }
                     continue;
                 }
-                tokio::select! {_=stop.wait_for(|s|*s)=>break,_=this.wake.notified()=>{},_=timer.tick()=>{},_=pause.changed()=>continue}
-                this.state.lock().await.running = true;
+                if let Some(cd_until) = this.cooldown_until() {
+                    run_immediately = false;
+                    tokio::select! {
+                        _=stop.wait_for(|s|*s)=>break,
+                        _=pause.changed()=>{},
+                        _=this.wake.notified()=>{
+                            if this.cooldown_until().is_none() {
+                                run_immediately = true;
+                            }
+                        },
+                        _=tokio::time::sleep_until(cd_until)=>{
+                            run_immediately = true;
+                        },
+                    }
+                    continue;
+                }
+                if !run_immediately {
+                    tokio::select! {_=stop.wait_for(|s|*s)=>break,_=this.wake.notified()=>{},_=timer.tick()=>{},_=pause.changed()=>continue}
+                }
+                run_immediately = false;
+                this.state.lock().unwrap().running = true;
                 loop {
                     if *stop.borrow() {
                         break;
@@ -146,14 +279,14 @@ impl Runner {
                         Ok(true) => {}
                         Ok(false) => break,
                         Err(e) => {
-                            this.state.lock().await.last_error = Some(e.message);
+                            this.state.lock().unwrap().last_error = Some(e.message);
                             break;
                         }
                     }
                 }
-                this.state.lock().await.running = false;
+                this.state.lock().unwrap().running = false;
             }
-            this.state.lock().await.running = false;
+            this.state.lock().unwrap().running = false;
         })
     }
     pub fn stop(&self) {
@@ -184,13 +317,29 @@ impl Runner {
         let _gate = self.cycle_gate.lock().await;
         let mut pause = self.sync_pause.subscribe();
         if *pause.borrow() > tokio::time::Instant::now() { return Ok(false); }
+        if self.in_cooldown() {
+            if self.local.embed_available() {
+                let _ = self.embeddings().await;
+            }
+            return Ok(false);
+        }
         self.cycle_work(&mut pause).await
     }
     async fn cycle_work(&self, pause: &mut watch::Receiver<tokio::time::Instant>) -> Result<bool> {
+        let epoch = self.config_epoch.load(Ordering::Acquire);
         let policy = self.policy.read().unwrap().clone();
-        let backend = match MemoryBackend::resolve(&self.local, &self.providers, &policy, &self.client).await? {
-            Some(b) => b,
-            None => return Ok(false),
+        let backend = match MemoryBackend::resolve(&self.local, &self.providers, &policy, &self.client).await {
+            Ok(Some(b)) => b,
+            Ok(None) => return Ok(false),
+            Err(e) => {
+                if self.config_epoch.load(Ordering::Acquire) != epoch {
+                    return Ok(true);
+                }
+                if is_unavailable_code(&e) {
+                    self.record_unavailable(&e);
+                }
+                return Err(e);
+            }
         };
         if !backend.available() {
             return Ok(false);
@@ -212,25 +361,48 @@ impl Runner {
             outcome=self.handle(&job, &backend)=>outcome,
         };
         let (status, error, continue_work) = match outcome {
-            Ok(status) => (status, None, true),
-            Err(e)
-                if matches!(
-                    e.extra["code"].as_str(),
-                    Some(
-                        "LOCAL_UNAVAILABLE"
-                            | "LOCAL_DOWNLOADING"
-                            | "MEMORY_BACKEND_UNAVAILABLE"
-                            | "PROVIDER_UNAVAILABLE"
-                    )
-                ) =>
-            {
-                self.state.lock().await.last_error = Some(e.message.clone());
-                self.store
-                    .call_retrying(|| Request::DeferJob {
-                        id: s(&job, "id"),
-                        error: e.message.clone(),
-                    })
-                    .await?;
+            Ok(status) => {
+                self.clear_cooldown();
+                self.state.lock().unwrap().last_error = None;
+                (status, None, true)
+            }
+            Err(e) if is_unavailable_code(&e) => {
+                if self.config_epoch.load(Ordering::Acquire) != epoch {
+                    self.store
+                        .call_retrying(|| Request::DeferJob {
+                            id: s(&job, "id"),
+                            error: "Configuração atualizada durante a execução; reagendando."
+                                .into(),
+                        })
+                        .await?;
+                    return Ok(true);
+                }
+                self.record_unavailable(&e);
+                self.state.lock().unwrap().last_error = Some(e.message.clone());
+                let is_auth_or_config = e.extra["unavailableKind"].as_str() == Some("auth_config")
+                    || e.extra["code"].as_str() == Some("PROVIDER_UNAVAILABLE");
+                if is_auth_or_config {
+                    let status = if job["attempts"].as_u64().unwrap_or(1) >= 3 {
+                        "failed"
+                    } else {
+                        "pending"
+                    };
+                    self.store
+                        .call_retrying(|| Request::FinishJob {
+                            id: s(&job, "id"),
+                            status: status.into(),
+                            error: Some(e.message.clone()),
+                        })
+                        .await?;
+                } else {
+                    self.store
+                        .call_retrying(|| Request::DeferUnavailableJob {
+                            id: s(&job, "id"),
+                            error: e.message.clone(),
+                            max_deferrals: 8,
+                        })
+                        .await?;
+                }
                 return Ok(false);
             }
             Err(e) => {
@@ -247,7 +419,7 @@ impl Runner {
                     next = status,
                     "tarefa de memória falhou"
                 );
-                self.state.lock().await.last_error = Some(e.message.clone());
+                self.state.lock().unwrap().last_error = Some(e.message.clone());
                 (status.into(), Some(e.message), true)
             }
         };
@@ -275,7 +447,7 @@ impl Runner {
             result=self.embeddings()=>result,
         };
         if let Err(e) = embeddings {
-            self.state.lock().await.last_error = Some(e.message);
+            self.state.lock().unwrap().last_error = Some(e.message);
         }
         Ok(continue_work)
     }
@@ -1655,5 +1827,490 @@ mod tests {
         assert!(p_compact.contains("Mira"));
         assert!(p_compact.contains("Atmosfera emocional"));
         assert!(p_compact.contains("Compromissos e âncoras"));
+    }
+}
+
+#[cfg(test)]
+mod m2_cooldown_tests {
+    use super::*;
+    use crate::{config::Config, providers::Providers};
+    use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::{get, post}};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn wait_for_real<F, Fut>(mut cond: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        for _ in 0..400 {
+            if cond().await {
+                return;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("condition did not become true in time");
+    }
+
+    fn test_config(dir: &std::path::Path) -> Config {
+        Config {
+            data_dir: dir.to_path_buf(),
+            dist: dir.join("dist"),
+            address: "127.0.0.1:0".parse().unwrap(),
+            require_pairing: false,
+            providers: None,
+            max_generations: 4,
+            production: false,
+            native_lib_dir: None,
+            review: false,
+        }
+    }
+
+    fn setup_runtime(url: &str) -> RuntimeProviders {
+        let providers = Providers::from_json(&json!({
+            "default": "mock",
+            "providers": [{
+                "id": "mock",
+                "baseUrl": url,
+                "apiKey": "test-key",
+                "models": ["custom/memory-model"]
+            }]
+        }))
+        .unwrap();
+        RuntimeProviders::with_default_concurrency(Some(Arc::new(providers)), 1)
+    }
+
+    #[tokio::test]
+    async fn runner_cooldown_respects_retry_after_suppresses_kick_and_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let store = Store::open_for_config(&config).unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let local = LocalModels::new(&config, client.clone()).unwrap();
+
+        let posts = Arc::new(AtomicUsize::new(0));
+        let posts_srv = posts.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route(
+                "/v1/models",
+                get(|| async { Json(json!({"data":[{"id":"custom/memory-model"}]})) }),
+            )
+            .route(
+                "/v1/chat/completions",
+                post(move || {
+                    let posts_srv = posts_srv.clone();
+                    async move {
+                        let attempt = posts_srv.fetch_add(1, Ordering::SeqCst) + 1;
+                        if attempt == 1 {
+                            (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                [("retry-after", "2")],
+                                r#"{"error":{"message":"rate limit exceeded"}}"#,
+                            )
+                                .into_response()
+                        } else {
+                            Json(json!({
+                                "choices": [{
+                                    "finish_reason": "stop",
+                                    "message": { "content": "{\"cast\":[]}" }
+                                }]
+                            }))
+                            .into_response()
+                        }
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let conv = store
+            .call(Request::CreateConversation(json!({
+                "routeId": "custom/memory-model",
+                "presetId": "generic",
+                "prompt": "Uma exploradora silenciosa."
+            })))
+            .await
+            .unwrap();
+        let job = store
+            .call(Request::EnqueueJob(json!({
+                "convId": conv["id"],
+                "kind": "cast"
+            })))
+            .await
+            .unwrap();
+
+        let (events, _) = broadcast::channel(8);
+        let mut runner = Runner::new(store.clone(), local, Arc::new(Notify::new()), events, false);
+        let policy = Arc::new(std::sync::RwLock::new(
+            MemoryPolicy::parse(&json!({
+                "mode": "api",
+                "api": {
+                    "provider": "mock",
+                    "model": "custom/memory-model",
+                    "historyConsent": true
+                }
+            }))
+            .unwrap(),
+        ));
+        runner.set_backends(setup_runtime(&url), policy, client);
+        let worker = runner.start();
+        runner.kick();
+
+        wait_for_real(|| async {
+            let input = store.call(Request::JobInput(s(&job, "id"))).await.unwrap();
+            posts.load(Ordering::SeqCst) == 1 && input["job"]["status"] == "pending"
+        })
+        .await;
+
+        let input = store.call(Request::JobInput(s(&job, "id"))).await.unwrap();
+        assert_eq!(input["job"]["attempts"], 0, "transient deferral must refund attempts");
+        assert_eq!(input["job"]["deferrals"], 1);
+        let st = runner.state().await;
+        assert_eq!(st["unavailableStreak"], 1);
+        assert!(st["cooldownRemainingSeconds"].as_u64().unwrap() >= 1);
+        assert!(st["lastError"].is_string());
+
+        // Normal kick() and cycle() during cooldown must NOT trigger upstream POST
+        runner.kick();
+        runner.kick();
+        assert!(!runner.cycle().await.unwrap());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(posts.load(Ordering::SeqCst), 1, "kick() and cycle() must be suppressed during cooldown");
+
+        // Wait past 2s Retry-After -> attempt 2 runs automatically and recovers
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        wait_for_real(|| async {
+            let input = store.call(Request::JobInput(s(&job, "id"))).await.unwrap();
+            input["job"]["status"] == "done"
+        })
+        .await;
+
+        assert_eq!(posts.load(Ordering::SeqCst), 2);
+        let st_after = runner.state().await;
+        assert_eq!(st_after["unavailableStreak"], 0);
+        assert_eq!(st_after["cooldownRemainingSeconds"], 0);
+        assert_eq!(st_after["lastError"], Value::Null);
+
+        runner.stop();
+        let _ = tokio::time::timeout(Duration::from_secs(1), worker).await;
+        server.abort();
+        store.call(Request::Close).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_auth_config_fails_in_3_attempts_and_reset_cooldown_wakes_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let store = Store::open_for_config(&config).unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let local = LocalModels::new(&config, client.clone()).unwrap();
+
+        let posts = Arc::new(AtomicUsize::new(0));
+        let posts_srv = posts.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route(
+                "/v1/models",
+                get(|| async { Json(json!({"data":[{"id":"custom/memory-model"}]})) }),
+            )
+            .route(
+                "/v1/chat/completions",
+                post(move || {
+                    let posts_srv = posts_srv.clone();
+                    async move {
+                        posts_srv.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            r#"{"error":{"message":"invalid api key"}}"#,
+                        )
+                            .into_response()
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let conv = store
+            .call(Request::CreateConversation(json!({
+                "routeId": "custom/memory-model",
+                "presetId": "generic",
+                "prompt": "Personagem de teste."
+            })))
+            .await
+            .unwrap();
+        let job_auth = store
+            .call(Request::EnqueueJob(json!({
+                "convId": conv["id"],
+                "kind": "cast"
+            })))
+            .await
+            .unwrap();
+
+        let (events, _) = broadcast::channel(8);
+        let mut runner = Runner::new(store.clone(), local, Arc::new(Notify::new()), events, false);
+        let policy = Arc::new(std::sync::RwLock::new(
+            MemoryPolicy::parse(&json!({
+                "mode": "api",
+                "api": {
+                    "provider": "mock",
+                    "model": "custom/memory-model",
+                    "historyConsent": true
+                }
+            }))
+            .unwrap(),
+        ));
+        runner.set_backends(setup_runtime(&url), policy, client);
+        let worker = runner.start();
+        runner.kick();
+
+        for expected_attempts in 1..=3i64 {
+            let expected_status = if expected_attempts < 3 {
+                "pending"
+            } else {
+                "failed"
+            };
+            wait_for_real(|| async {
+                let input = store.call(Request::JobInput(s(&job_auth, "id"))).await.unwrap();
+                input["job"]["attempts"].as_i64() == Some(expected_attempts)
+                    && input["job"]["status"] == expected_status
+            })
+            .await;
+            if expected_attempts < 3 {
+                let st = runner.state().await;
+                assert_eq!(st["unavailableKind"], "auth_config");
+                assert!(st["cooldownRemainingSeconds"].as_u64().unwrap() >= 295);
+                // Normal kick() is suppressed during 300s auth cooldown
+                runner.kick();
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                assert_eq!(posts.load(Ordering::SeqCst), expected_attempts as usize);
+                // Explicit remediation reset_cooldown() wakes immediately
+                runner.reset_cooldown();
+            }
+        }
+        let auth_done = store.call(Request::JobInput(s(&job_auth, "id"))).await.unwrap();
+        assert_eq!(auth_done["job"]["status"], "failed");
+        assert_eq!(auth_done["job"]["attempts"], 3);
+        assert_eq!(posts.load(Ordering::SeqCst), 3);
+
+        runner.stop();
+        let _ = tokio::time::timeout(Duration::from_secs(1), worker).await;
+        server.abort();
+        store.call(Request::Close).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cooldown_schedule_and_bounded_transient_deferrals() {
+        // Verify exponential backoff curves and Retry-After clamping
+        for streak in 1..=6 {
+            let d = compute_cooldown(streak, "transient", None).as_secs_f64();
+            let base = match streak {
+                1 => 30.0,
+                2 => 60.0,
+                3 => 120.0,
+                4 => 300.0,
+                _ => 900.0,
+            };
+            assert!(
+                d >= base * 0.85 - 0.1 && d <= (base * 1.15).min(900.0) + 0.1,
+                "transient streak {streak}: got {d}s"
+            );
+
+            let a = compute_cooldown(streak, "auth_config", None).as_secs_f64();
+            let auth_base = match streak {
+                1 => 300.0,
+                2 => 600.0,
+                _ => 900.0,
+            };
+            assert!(
+                a >= auth_base && a <= (auth_base * 1.10).min(900.0) + 1.0,
+                "auth_config streak {streak}: got {a}s"
+            );
+        }
+        assert_eq!(compute_cooldown(1, "transient", Some(0)), Duration::from_secs(1));
+        assert_eq!(compute_cooldown(1, "transient", Some(75)), Duration::from_secs(75));
+        assert_eq!(compute_cooldown(1, "transient", Some(5000)), Duration::from_secs(900));
+
+        // Verify DeferUnavailableJob refunds attempts and fails cleanly at max_deferrals=8
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let store = Store::open_for_config(&config).unwrap();
+        let conv = store
+            .call(Request::CreateConversation(json!({
+                "routeId": "custom/memory-model",
+                "presetId": "generic"
+            })))
+            .await
+            .unwrap();
+        let job = store
+            .call(Request::EnqueueJob(json!({
+                "convId": conv["id"],
+                "kind": "cast"
+            })))
+            .await
+            .unwrap();
+        let jid = s(&job, "id");
+        for def in 1..=8i64 {
+            let claimed = store.call(Request::ClaimJob).await.unwrap();
+            assert_eq!(claimed["id"], jid);
+            store
+                .call(Request::DeferUnavailableJob {
+                    id: jid.clone(),
+                    error: format!("Backend de memória indisponível #{def}"),
+                    max_deferrals: 8,
+                })
+                .await
+                .unwrap();
+            let row = store.call(Request::JobInput(jid.clone())).await.unwrap();
+            assert_eq!(row["job"]["deferrals"], def);
+            if def < 8 {
+                assert_eq!(row["job"]["status"], "pending");
+                assert_eq!(row["job"]["attempts"], 0);
+            } else {
+                assert_eq!(row["job"]["status"], "failed");
+            }
+        }
+        // RetryJobs resets attempts and deferrals back to 0
+        store
+            .call(Request::RetryJobs(s(&conv, "id")))
+            .await
+            .unwrap();
+        let reset = store.call(Request::JobInput(jid)).await.unwrap();
+        assert_eq!(reset["job"]["status"], "pending");
+        assert_eq!(reset["job"]["attempts"], 0);
+        assert_eq!(reset["job"]["deferrals"], 0);
+        store.call(Request::Close).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_last_error_clears_on_reset_and_ignores_stale_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let store = Store::open_for_config(&config).unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let local = LocalModels::new(&config, client.clone()).unwrap();
+
+        let (bad_started_tx, mut bad_started_rx) = tokio::sync::watch::channel(false);
+        let (bad_release_tx, bad_release_rx) = tokio::sync::watch::channel(false);
+        let bad_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bad_url = format!("http://{}/v1", bad_listener.local_addr().unwrap());
+        let bad_app = Router::new().route(
+            "/v1/models",
+            get(move || {
+                let bad_started_tx = bad_started_tx.clone();
+                let mut bad_release_rx = bad_release_rx.clone();
+                async move {
+                    let _ = bad_started_tx.send(true);
+                    let _ = bad_release_rx.wait_for(|v| *v).await;
+                    (StatusCode::SERVICE_UNAVAILABLE, "booting")
+                }
+            }),
+        );
+        let bad_srv = tokio::spawn(async move { axum::serve(bad_listener, bad_app).await.unwrap() });
+
+        let good_posts = Arc::new(AtomicUsize::new(0));
+        let good_posts_srv = good_posts.clone();
+        let good_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_url = format!("http://{}/v1", good_listener.local_addr().unwrap());
+        let good_app = Router::new()
+            .route(
+                "/v1/models",
+                get(|| async { Json(json!({"data":[{"id":"custom/memory-model"}]})) }),
+            )
+            .route(
+                "/v1/chat/completions",
+                post(move || {
+                    let good_posts_srv = good_posts_srv.clone();
+                    async move {
+                        good_posts_srv.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": { "content": "{\"cast\":[]}" }
+                            }]
+                        }))
+                    }
+                }),
+            );
+        let good_srv = tokio::spawn(async move { axum::serve(good_listener, good_app).await.unwrap() });
+
+        let conv = store
+            .call(Request::CreateConversation(json!({
+                "routeId": "custom/memory-model",
+                "presetId": "generic",
+                "prompt": "Uma exploradora silenciosa."
+            })))
+            .await
+            .unwrap();
+        let job = store
+            .call(Request::EnqueueJob(json!({
+                "convId": conv["id"],
+                "kind": "cast"
+            })))
+            .await
+            .unwrap();
+
+        let (events, _) = broadcast::channel(8);
+        let mut runner = Runner::new(store.clone(), local, Arc::new(Notify::new()), events, false);
+        let runtime = setup_runtime(&bad_url);
+        let policy = Arc::new(std::sync::RwLock::new(
+            MemoryPolicy::parse(&json!({
+                "mode": "api",
+                "api": {
+                    "provider": "mock",
+                    "model": "custom/memory-model",
+                    "historyConsent": true
+                }
+            }))
+            .unwrap(),
+        ));
+        runner.set_backends(runtime.clone(), policy, client);
+
+        // Synchronous reset_cooldown() must clear any previously recorded lastError immediately.
+        runner.state.lock().unwrap().last_error = Some("stale error".into());
+        assert!(runner.state().await["lastError"].is_string());
+        runner.reset_cooldown();
+        assert_eq!(runner.state().await["lastError"], Value::Null);
+
+        let worker = runner.start();
+        runner.kick();
+
+        tokio::time::timeout(Duration::from_secs(3), bad_started_rx.wait_for(|v| *v))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Switch to good provider while MemoryBackend::resolve is blocked on bad_url's /v1/models.
+        let good_providers = Providers::from_json(&json!({
+            "default": "mock",
+            "providers": [{
+                "id": "mock",
+                "baseUrl": good_url,
+                "apiKey": "test-key",
+                "models": ["custom/memory-model"]
+            }]
+        }))
+        .unwrap();
+        runtime.set(Some(Arc::new(good_providers)));
+        runner.reset_cooldown();
+        let _ = bad_release_tx.send(true);
+
+        wait_for_real(|| async {
+            let input = store.call(Request::JobInput(s(&job, "id"))).await.unwrap();
+            input["job"]["status"] == "done"
+        })
+        .await;
+
+        assert_eq!(good_posts.load(Ordering::SeqCst), 1);
+        let st = runner.state().await;
+        assert_eq!(st["unavailableStreak"], 0);
+        assert_eq!(st["cooldownRemainingSeconds"], 0);
+        assert_eq!(st["lastError"], Value::Null);
+
+        runner.stop();
+        let _ = tokio::time::timeout(Duration::from_secs(1), worker).await;
+        bad_srv.abort();
+        good_srv.abort();
+        store.call(Request::Close).await.unwrap();
     }
 }

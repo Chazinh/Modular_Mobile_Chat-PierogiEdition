@@ -159,7 +159,7 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
     api.globalSettingsCached().then((r) => setGs(r.settings)).catch(() => {});
   }, []);
 
-  const ctxPairs = chat.settings?.context?.preferredPairs ?? 30;
+  const ctxPairs = chat.settings?.context?.preferredPairs ?? 15;
 
   return (
     <div ref={rootRef} className="mc-drawer">
@@ -196,7 +196,7 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
                 <Row lead={<UserRound size={20} />} label={tr("Persona")} value={chat.persona || '—'} onClick={() => setPersonaOpen(true)} />
                 <Row lead={<FileText size={20} />} label={tr("Personalização (.txt)")} value={chat.prompt?.trim() ? tr("definida") : tr("vazia")} onClick={() => setPage('prompt')} />
                 <Row lead={<Users size={20} />} label={tr("Elenco")} value={tr("conferir e corrigir")} onClick={onOpenCast} />
-                <Row lead={<Layers size={20} />} label={tr("Contexto")} value={tr("{0} pares", [ctxPairs])} onClick={() => setPage('context')} />
+                <Row lead={<Layers size={20} />} label={tr("Contexto")} value={tr("{0} pares (~{1} msgs)", [ctxPairs, ctxPairs * 2])} onClick={() => setPage('context')} />
                 <Row lead={<SlidersHorizontal size={20} />} label={tr("Estilo e limites (global)")} value={gs ? tr('{0}% falas · {1} car.', [gs.dialoguePct, Number(gs.botChars).toLocaleString(currentLanguage())]) : '—'} onClick={() => setPage('style')} />
                 <Row lead={<History size={20} />} label={tr("Histórico")} value={tr("{0} msgs", [chat.history?.length || 0])} onClick={() => setPage('history')} />
 
@@ -232,14 +232,14 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
         {page === 'context' && (
           <SubPage title={tr("Contexto enviado ao modelo")} onBack={() => setPage(null)}>
             <div className="mc-bubble mx-[10px] space-y-3 rounded-[26px] px-4 py-4 text-sm text-textMuted">
-              <p>{tr("\n                A conversa inteira fica guardada no servidor de origem (PC ou aparelho). A cada resposta o modelo recebe: regras, personalização, persona, cena atual, quem sabe o quê, threads, até 8 memórias relevantes e os últimos ")}<b className="text-white">{ctxPairs}</b>{tr(" pares completos.\n              ")}</p>
+              <p>{tr("\n                A conversa inteira fica guardada no servidor de origem (PC ou aparelho). A cada resposta o modelo recebe: regras, personalização, persona, cena atual, quem sabe o quê, threads, até 8 memórias relevantes e os últimos ")}<b className="text-white">{ctxPairs}</b>{tr(" pares completos (~{0} msgs).\n              ", [ctxPairs * 2])}</p>
               <label className="block">
                 <span className="mb-1 flex justify-between">
                   <span>{tr("Pares recentes preferidos")}</span>
                   <span className="font-mono text-accentPurpleLight">{ctxPairs}</span>
                 </span>
                 <input
-                  type="range" min="20" max="50" step="1" value={ctxPairs}
+                  type="range" min="8" max="50" step="1" value={ctxPairs}
                   onChange={(e) => save({ settings: { context: { ...(chat.settings?.context || {}), preferredPairs: Number(e.target.value) } } })}
                   className="w-full accent-[#7c3aed]"
                 />
@@ -253,7 +253,7 @@ export default function SettingsDrawer({ hostStatus, chat, presets, busy, onClos
                   onChange={(e) => save({ settings: { rulesPlacement: e.target.checked ? 'first_turn' : null } })}
                 />
               </label>
-              <p>{tr("Orçamento orientativo: alvo de 96 mil tokens, redução gradual a partir de 110 mil e referência de 128 mil. Primeiro reduzo memórias e episódios; depois os pares recentes (mínimo 20), sem cortar mensagens. Conteúdo obrigatório não é bloqueado por esse orçamento; o limite real é o da janela de contexto do provedor.")}</p>
+              <p>{tr("Orçamento orientativo: padrão de 15 pares (~30 msgs), alvo de ~24 mil tokens, redução gradual a partir de ~27 mil e referência de 32 mil. Primeiro condenso a linha do tempo e reduzo pares recentes (mínimo 8) preservando as memórias recuperadas; turnos muito antigos ainda não processados além do limite não são reinjetados na íntegra.")}</p>
             </div>
           </SubPage>
         )}

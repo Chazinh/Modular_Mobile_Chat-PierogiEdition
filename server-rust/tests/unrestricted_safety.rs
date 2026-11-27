@@ -86,6 +86,7 @@ fn provider_chat_request_strips_safety_settings_for_openai_wire_compliance() {
         reasoning_format: ReasoningFormat::Omit,
         context_window: 128000,
         max_output: 8000,
+        max_concurrent: None,
     };
 
     // Even if incoming body contains safetySettings, safety_settings, or unrestrictedSafety

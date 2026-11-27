@@ -259,6 +259,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   kind TEXT NOT NULL,             -- review | extract | episode | embed | cast
   status TEXT NOT NULL DEFAULT 'pending', -- pending | running | done | failed | blocked | skipped
   attempts INTEGER NOT NULL DEFAULT 0,
+  deferrals INTEGER NOT NULL DEFAULT 0,
   error TEXT,
   payload_json TEXT,
   created_at TEXT NOT NULL,

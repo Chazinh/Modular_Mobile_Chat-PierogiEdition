@@ -5,14 +5,18 @@ import { rustExe } from './rust-target.js';
 // The Rust executable serves HTTP itself; Node only owns the isolated fixture.
 // review: automatic review of replies (the server ships with it OFF by default; the review
 // tests turn it on explicitly).
-export async function startRust({ dataDir, upstream, routerDb, localUrl, maxGenerations=4, review=true }) {
+export async function startRust({ dataDir, upstream, routerDb, localUrl, maxGenerations=4, review=true, upstreamMaxConcurrent }={}) {
   const exe=process.env.MC_SERVER_EXE || rustExe('modularchat-server');
-  const child=spawn(exe,[],{windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...process.env,
+  const env={...process.env,
     DATA_DIR:dataDir,PORT:'0',HOST:'127.0.0.1',MC_RUST_MODE:'experimental',REQUIRE_PAIRING:'1',
     MC_RUST_UPSTREAM_ENABLED:'1',NINEROUTER_URL:upstream,NINEROUTER_API_KEY:'sk-test-key',NINEROUTER_DB:routerDb || path.join(dataDir,'absent-router.db'),
     MC_LOCAL_MODELS_ENABLED:'0',MC_TEST_LOCAL_URL:localUrl || '',LOCAL_CHAT_PORT:'20591',LOCAL_EMBED_PORT:'20592',MC_MAX_GENERATIONS:String(maxGenerations),
     MC_REVIEW:review?'1':'0',
-  }});
+  };
+  if (upstreamMaxConcurrent !== undefined) {
+    env.MC_UPSTREAM_MAX_CONCURRENT = String(upstreamMaxConcurrent);
+  }
+  const child=spawn(exe,[],{windowsHide:true,stdio:['ignore','pipe','pipe'],env});
   let log='';child.stderr.on('data',c=>log=(log+c.toString()).slice(-10000));
   let pairingCode;
   const base=await new Promise((resolve,reject)=>{

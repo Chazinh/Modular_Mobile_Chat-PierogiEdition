@@ -241,6 +241,11 @@ pub enum Request {
         id: String,
         error: String,
     },
+    DeferUnavailableJob {
+        id: String,
+        error: String,
+        max_deferrals: i64,
+    },
     RequeueJobs,
     ReleaseLegacyReview,
     RetryJobs(String),
@@ -347,6 +352,7 @@ impl Request {
             | Self::ClaimJob
             | Self::FinishJob { .. }
             | Self::DeferJob { .. }
+            | Self::DeferUnavailableJob { .. }
             | Self::RequeueJobs
             | Self::SaveEmbedding { .. }
             | Self::SaveEmbeddings(_)
@@ -650,6 +656,15 @@ impl Database {
             {
                 this.db.execute_batch(
                     "ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
+                )?;
+            }
+            if !this
+                .rows("PRAGMA table_info(jobs)", &[])?
+                .iter()
+                .any(|r| r["name"] == "deferrals")
+            {
+                this.db.execute_batch(
+                    "ALTER TABLE jobs ADD COLUMN deferrals INTEGER NOT NULL DEFAULT 0;",
                 )?;
             }
             if this
@@ -1031,13 +1046,18 @@ impl Database {
                 self.finish_job(&id, &status, error.as_deref())
             }
             Request::DeferJob { id, error } => self.defer_job(&id, &error),
+            Request::DeferUnavailableJob {
+                id,
+                error,
+                max_deferrals,
+            } => self.defer_unavailable_job(&id, &error, max_deferrals),
             Request::RequeueJobs => {
                 let n = self.exec(
                     "UPDATE jobs SET status='pending',updated_at=? WHERE status='running'",
                     &[json!(now())],
                 )?;
                 self.exec(
-                    "UPDATE jobs SET status='pending',attempts=0,error=NULL,updated_at=? WHERE status='failed' AND (error LIKE '%excedeu o orçamento%' OR error LIKE '%orçamento%' OR error LIKE '%response_format%' OR error LIKE '%schema%' OR error LIKE '%incompleto%' OR error LIKE '%502%' OR error LIKE '%Backend de memória indisponível%' OR error LIKE '%credits%' OR error LIKE '%quota%')",
+                    "UPDATE jobs SET status='pending',attempts=0,deferrals=0,error=NULL,updated_at=? WHERE status='failed' AND (error LIKE '%excedeu o orçamento%' OR error LIKE '%orçamento%' OR error LIKE '%response_format%' OR error LIKE '%schema%' OR error LIKE '%incompleto%' OR error LIKE '%502%' OR error LIKE '%Backend de memória indisponível%' OR error LIKE '%credits%' OR error LIKE '%quota%')",
                     &[json!(now())],
                 )?;
                 Ok(json!(n))
@@ -1057,7 +1077,7 @@ impl Database {
             }
             Request::RetryJobs(c) => {
                 self.conv(&c, false)?;
-                Ok(json!(self.exec("UPDATE jobs SET status='pending',attempts=0,error=NULL,updated_at=? WHERE conv_id=? AND status='failed'",&[json!(now()),json!(c)])?))
+                Ok(json!(self.exec("UPDATE jobs SET status='pending',attempts=0,deferrals=0,error=NULL,updated_at=? WHERE conv_id=? AND status='failed'",&[json!(now()),json!(c)])?))
             }
             Request::JobInput(j) => self.job_input(&j),
             Request::ApplyExtraction(p) => self.apply_extraction(&p),

@@ -5,6 +5,7 @@ param(
     [string]$Local = (Join-Path $env:USERPROFILE 'ModularChat-local'),
     [ValidatePattern('^[A-Za-z0-9_.:-]+$')][string]$Serial = '',
     [switch]$NoInstall,
+    [switch]$SkipLlama,
     [string]$PrivateBuildProperties = '',
     [string]$SigningProperties = ''
 )
@@ -22,6 +23,9 @@ $logs = Join-Path $build 'logs'
 $tmp = Join-Path $build 'tmp'
 $sdk = Join-Path $Local 'android-sdk'
 $tools = Join-Path $sdk 'build-tools\36.0.0'
+if (-not (Test-Path -LiteralPath $tools -PathType Container)) {
+    $tools = (Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
+}
 $adb = Join-Path $sdk 'platform-tools\adb.exe'
 $readelf = Join-Path $sdk 'ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-readelf.exe'
 $jdk = Get-ChildItem -LiteralPath (Join-Path $Local 'jdk') -Directory |
@@ -195,8 +199,12 @@ try {
     $shell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     [void](Invoke-ReleaseTool $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         (Join-Path $PSScriptRoot 'build-android-autohost.ps1'), '-Local', $Local) 'rust-arm64' -TimeoutSeconds 900)
-    [void](Invoke-ReleaseTool $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        (Join-Path $PSScriptRoot 'build-android-llama.ps1'), '-Local', $Local) 'llama-arm64' -TimeoutSeconds 1500)
+    if (-not $SkipLlama) {
+        [void](Invoke-ReleaseTool $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            (Join-Path $PSScriptRoot 'build-android-llama.ps1'), '-Local', $Local) 'llama-arm64' -TimeoutSeconds 1500)
+    } elseif (-not (Test-Path -LiteralPath (Join-Path $android 'app\src\main\jniLibs\arm64-v8a\libllama_server.so') -PathType Leaf)) {
+        throw 'libllama_server.so missing while -SkipLlama was requested.'
+    }
     Assert-SourceSnapshot
     [void](Invoke-ReleaseTool (Get-Command npm.cmd -CommandType Application -All | Select-Object -First 1).Source @('run', 'build') 'vite-build' $client 240)
     [void](Invoke-ReleaseTool (Get-Command npx.cmd -CommandType Application -All | Select-Object -First 1).Source @('--no-install', 'cap', 'sync', 'android') 'capacitor-sync' $client 180)
@@ -267,7 +275,8 @@ try {
                     if ($elf -notmatch "\bJava_io_github_modularchat_pierogiedition_NativeHost_$symbol\b") { throw "JNI export missing: $symbol" }
                 }
             } else {
-                $pinned = Get-Content -LiteralPath (Join-Path $Local 'build-isolated\android-autohost\llama-build-manifest.json') -Raw | ConvertFrom-Json
+                $manifestPath = Join-Path $Local 'build-isolated\android-autohost\llama-build-manifest.json'
+                $pinned = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json } else { $null }
                 $source = Join-Path $android 'app\src\main\jniLibs\arm64-v8a\libllama_server.so'
                 # AGP applies --strip-unneeded even to a stripped PIE. Reproduce its exact output;
                 # comparing only the original hash would reject a valid current release.
@@ -275,7 +284,8 @@ try {
                 $strip = Join-Path (Split-Path -Parent $readelf) 'llvm-strip.exe'
                 [void](Invoke-ReleaseTool $strip @('--strip-unneeded', '-o', $expected, $source) 'llama-release-strip')
                 if ($hash -ne (Get-FileHash -LiteralPath $expected -Algorithm SHA256).Hash -or
-                    $pinned.source.commit -ne '318a471a6295e53bfce7ca96ae0cf26071cbdd6e' -or
+                    ($pinned -and $pinned.source.commit -ne '318a471a6295e53bfce7ca96ae0cf26071cbdd6e') -or
+                    (-not $SkipLlama -and -not $pinned) -or
                     $elf -notmatch 'Entry point address:\s+0x[1-9a-f][0-9a-f]*' -or $elf -notmatch 'INTERP\s' -or
                     @($needed | Where-Object { $_ -notin @('libc.so', 'libdl.so', 'libm.so') }).Count) { throw 'The pinned real llama PIE executable is required.' }
             }

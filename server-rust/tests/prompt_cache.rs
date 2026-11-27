@@ -19,6 +19,7 @@ fn explicit_cache_marker_is_scoped_to_openrouter_and_the_stable_system_prefix() 
             reasoning_format: ReasoningFormat::Omit,
             context_window: 128000,
             max_output: 8000,
+            max_concurrent: None,
         };
         let original = json!({"messages":[{"role":"system","content":"STABLE_RULES_AND_CARD"},{"role":"user","content":"DYNAMIC_SCENE"}]});
         let request = provider

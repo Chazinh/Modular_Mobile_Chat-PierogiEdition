@@ -146,6 +146,8 @@ pub struct Generation {
     pub output: Mutex<Output>,
     pub wake: broadcast::Sender<()>,
     cancel: watch::Sender<bool>,
+    _cancel_keepalive: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
     pub ended: Notify,
     pub created: Instant,
     /// Hard cut (UTF-16) of the generated text: the configured size, or 135% of it in "target" mode.
@@ -155,13 +157,20 @@ impl Generation {
     pub fn info(&self) -> Value {
         json!({"id":self.id,"generationId":self.id,"versionId":self.version,"partId":self.part,"interactionId":self.interaction,"mode":self.mode,"status":"running","opId":self.ack["opId"]})
     }
+    pub fn is_cancelled(&self) -> bool {
+        *self.cancel.borrow() || *self.shutdown.borrow()
+    }
     fn cancelled(&self) -> impl std::future::Future<Output = ()> + Send {
-        let mut rx = self.cancel.subscribe();
+        let mut cancel_rx = self.cancel.subscribe();
+        let mut shutdown_rx = self.shutdown.clone();
         async move {
-            if *rx.borrow() {
+            if *cancel_rx.borrow() || *shutdown_rx.borrow() {
                 return;
             }
-            let _ = rx.wait_for(|v| *v).await;
+            tokio::select! {
+                _ = cancel_rx.wait_for(|v| *v) => {},
+                _ = shutdown_rx.wait_for(|v| *v) => {},
+            }
         }
     }
     pub async fn snapshot(&self, cursor: &mut Cursor, ack: bool) -> Vec<Value> {
@@ -208,6 +217,8 @@ pub struct Manager {
     pub locks: Locks,
     active: Arc<Mutex<HashMap<String, Arc<Generation>>>>,
     start_gate: Arc<Mutex<()>>,
+    shutting_down: watch::Sender<bool>,
+    _shutting_down_keepalive: watch::Receiver<bool>,
     slots: Arc<Semaphore>,
     validation: Arc<Mutex<ValidationCache>>,
 }
@@ -228,7 +239,12 @@ impl Manager {
         jobs: Arc<Notify>,
     ) -> Self {
         let slots = Arc::new(Semaphore::new(config.max_generations));
-        let providers = crate::providers::RuntimeProviders::new(config.providers.clone());
+        let (shutting_down, _shutting_down_keepalive) = watch::channel(false);
+        let providers = if config.is_android() {
+            crate::providers::RuntimeProviders::new_for_android(config.providers.clone())
+        } else {
+            crate::providers::RuntimeProviders::new(config.providers.clone())
+        };
         Self {
             store,
             local,
@@ -240,9 +256,14 @@ impl Manager {
             locks: Locks::default(),
             active: Arc::default(),
             start_gate: Arc::default(),
+            shutting_down,
+            _shutting_down_keepalive,
             slots,
             validation: Arc::default(),
         }
+    }
+    pub fn available_slots(&self) -> usize {
+        self.slots.available_permits()
     }
     /// Route validation data. A turn only stats the file (async); it is read and parsed again when the file changed.
     pub async fn validation(&self) -> Arc<Value> {
@@ -288,6 +309,9 @@ impl Manager {
     }
     pub async fn start(&self, mut req: TurnRequest) -> Result<(Arc<Generation>, bool)> {
         let _gate = self.start_gate.lock().await;
+        if *self.shutting_down.borrow() {
+            return Err(Error::new(503, "Servidor em encerramento."));
+        }
         let conv_lock = self.locks.get(&req.conv_id).await;
         let _conv_guard = conv_lock.lock().await;
         if let Some(op) = req.op_id.as_ref().filter(|s| !s.is_empty()) {
@@ -303,7 +327,7 @@ impl Manager {
                     return Ok((g, true));
                 }
                 let (wake, _) = broadcast::channel(32);
-                let (cancel, _) = watch::channel(false);
+                let (cancel, _cancel_keepalive) = watch::channel(false);
                 return Ok((
                     Arc::new(Generation {
                         id: s(&old, "generationId"),
@@ -320,6 +344,8 @@ impl Manager {
                         )),
                         wake,
                         cancel,
+                        _cancel_keepalive,
+                        shutdown: self.shutting_down.subscribe(),
                         ended: Notify::new(),
                         created: Instant::now(),
                         bot_limit: rules::REPLY_STORE_LIMIT,
@@ -392,17 +418,31 @@ impl Manager {
             return Err(Error::new(400, "Nada para responder."));
         }
         let validation = self.validation().await;
-        let mut plan = presets::request(&conv, vec![], &validation);
+        let mut conv_for_plan = conv.clone();
+        if let Some(providers) = &provider_snapshot {
+            let available_ids = providers.model_ids();
+            if let Some(resolved) = presets::resolve_available_route(
+                &s(&conv, "presetId"),
+                &s(&conv, "routeId"),
+                &available_ids,
+            ) {
+                conv_for_plan["routeId"] = json!(resolved);
+            }
+        }
+        let mut plan = presets::request(&conv_for_plan, vec![], &validation);
         let requested_route = s(&conv, "routeId");
         let backend = if self.config.is_android() && requested_route == "mobile-local" {
             crate::providers::SelectedBackend::Local
         } else if let Some(providers) = &provider_snapshot {
-            providers
-                .select(if self.config.is_android() {
-                    &requested_route
-                } else {
-                    plan.body["model"].as_str().unwrap_or_default()
-                })
+            self.providers
+                .select(
+                    providers,
+                    if self.config.is_android() {
+                        &requested_route
+                    } else {
+                        plan.body["model"].as_str().unwrap_or_default()
+                    },
+                )
                 .await
         } else {
             crate::providers::SelectedBackend::Local
@@ -452,12 +492,15 @@ impl Manager {
         req.preset_id = Some(s(&conv, "presetId"));
         req.effort = conv["effort"].as_str().map(str::to_owned);
         req.request = json!({"controls":plan.controls,"capacity":plan.capacity,"length":length,"presetVersion":presets::PRESET_VERSION,"systemMode":plan.system_mode});
+        if *self.shutting_down.borrow() {
+            return Err(Error::new(503, "Servidor em encerramento."));
+        }
         let begin = self.store.call(Request::BeginTurn(req)).await?;
         // No SetContext here: `run` always stores the (possibly enriched) report moments later, and nothing reads
         // `context_json` back (it is diagnostic only), so a crash in between loses nothing recoverable.
         let report = public_report(&ctx.report);
         let (wake, _) = broadcast::channel(32);
-        let (cancel, _) = watch::channel(false);
+        let (cancel, _cancel_keepalive) = watch::channel(false);
         let ack = json!({"opId":begin["opId"],"generationId":begin["generationId"],"mode":mode,"interactionId":begin["interactionId"],"partId":begin["partId"],"userMessage":begin["userMessage"],"revision":begin["revision"],
             "preset":{"id":conv["presetId"],"label":presets::by_id(&s(&conv,"presetId"))["label"],"routeId":conv["routeId"],"effort":conv["effort"]},"controls":plan.controls,"capacity":plan.capacity,"context":report,"length":length});
         let g = Arc::new(Generation {
@@ -471,11 +514,19 @@ impl Manager {
             output: Mutex::new(Output::new(String::new(), report, None)),
             wake,
             cancel,
+            _cancel_keepalive,
+            shutdown: self.shutting_down.subscribe(),
             ended: Notify::new(),
             created: Instant::now(),
             bot_limit,
         });
-        self.active.lock().await.insert(g.conv.clone(), g.clone());
+        {
+            let mut active = self.active.lock().await;
+            if *self.shutting_down.borrow() {
+                return Err(Error::new(503, "Servidor em encerramento."));
+            }
+            active.insert(g.conv.clone(), g.clone());
+        }
         let _=self.events.send(json!({"convId":g.conv,"type":"generation","generating":true,"revision":begin["revision"]}));
         plan.body["messages"] = Value::Array(std::mem::take(&mut ctx.messages));
         let this = self.clone();
@@ -508,16 +559,19 @@ impl Manager {
             } else {
                 None
             };
-            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint().await,"beforeSeq":data["beforeSeq"],"windowStartSeq":context::retrieval_window_start_for(&data, plan.controls["mobileCompact"] == true),"limit":24}))).await?;
+            let retrieval=self.store.call(Request::Retrieve(json!({"convId":g.conv,"queryText":query,"queryVec":vector,"embeddingModel":self.local.fingerprint().await,"beforeSeq":data["beforeSeq"],"windowStartSeq":context::retrieval_window_start_for_plan(&data, &plan),"limit":24}))).await?;
             context::assemble(&data, &retrieval, &g.mode, &plan, calibration)
         };
-        let enriched = tokio::select! {_=g.cancelled()=>None,v=tokio::time::timeout(Duration::from_secs(6),enrich)=>Some(v)};
+        let enriched = tokio::select! {
+            biased;
+            _ = g.cancelled() => None,
+            v = tokio::time::timeout(Duration::from_secs(6), enrich) => Some(v),
+        };
         if let Some(Ok(Ok(full))) = enriched {
             ctx = full;
             plan.body["messages"] = Value::Array(std::mem::take(&mut ctx.messages));
         }
         let conv = data["conv"].take();
-        let preset_id = s(&conv, "presetId");
         let global_settings = data["globalSettings"].take();
         drop(data);
         drop(query);
@@ -565,19 +619,37 @@ impl Manager {
         // This guard survives the SSE consumer and style repair. Standby waits for its Drop.
         let session = if matches!(backend, crate::providers::SelectedBackend::Local) {
             Some(
-                tokio::select! { _=g.cancelled()=>Err(Error::new(503, "Geração cancelada.")), session=self.local.chat_session()=>session },
+                tokio::select! {
+                    biased;
+                    _ = g.cancelled() => Err(Error::new(503, "Geração cancelada.")),
+                    session = self.local.chat_session() => session,
+                },
             )
         } else {
             None
         };
         let mut error_code = Value::Null;
         let consume = async {
-            let mut current_model = match &backend {
+            let current_model = match &backend {
                 crate::providers::SelectedBackend::Cloud { model, .. } => model.clone(),
                 _ => String::new(),
             };
             let mut retries = 0usize;
-            let response = loop {
+            let (response, _stream_permit) = loop {
+                if g.is_cancelled() {
+                    return Ok(());
+                }
+                let attempt_permit = match &backend {
+                    crate::providers::SelectedBackend::Cloud { provider, .. } => {
+                        self.providers
+                            .acquire_outbound(provider, Duration::from_secs(900))
+                            .await?
+                    }
+                    crate::providers::SelectedBackend::Local => None,
+                };
+                if g.is_cancelled() {
+                    return Ok(());
+                }
                 let resp = match &backend {
                     crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
                         Ok(session) => session.send(&plan.body, Duration::from_secs(900)).await?,
@@ -592,35 +664,20 @@ impl Manager {
                     }
                 };
                 if resp.status().is_success() {
-                    break resp;
+                    break (resp, attempt_permit);
                 }
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
+                drop(attempt_permit);
                 warn!(generation = %g.id, http = status.as_u16(), body = %body_text, "provedor respondeu com erro");
 
-                let is_token_limit = status == reqwest::StatusCode::PAYMENT_REQUIRED
-                    || status == reqwest::StatusCode::PAYLOAD_TOO_LARGE
-                    || {
-                        let lower = body_text.to_lowercase();
-                        ((status == reqwest::StatusCode::SERVICE_UNAVAILABLE || status == reqwest::StatusCode::BAD_GATEWAY)
-                            && (lower.contains("token") || lower.contains("credit") || lower.contains("max_tokens") || lower.contains("prompt")))
-                            || (lower.contains("token")
-                                && (lower.contains("limit exceeded")
-                                    || lower.contains("exceeded")
-                                    || lower.contains("too many")
-                                    || lower.contains("too long")
-                                    || lower.contains("max_tokens")
-                                    || lower.contains("context length")
-                                    || lower.contains("context_length")))
-                            || lower.contains("requires more credits")
-                            || lower.contains("fewer max_tokens")
-                            || lower.contains("prompt tokens limit exceeded")
-                    };
+                let is_token_limit = classify_token_limit(status, &body_text);
 
                 if is_token_limit && retries < 2 {
                     retries += 1;
                     let current_max = plan.body["max_tokens"].as_u64().unwrap_or(2048);
-                    if current_max > 2048 {
+                    let reduced_max = current_max > 2048;
+                    if reduced_max {
                         plan.body["max_tokens"] = json!(2048);
                     }
                     let pruned = if let Some(msgs) = plan.body["messages"].as_array_mut() {
@@ -647,15 +704,10 @@ impl Manager {
                         false
                     };
 
-                    let is_muse = current_model.to_lowercase().contains("muse")
-                        || preset_id == "muse-spark-13";
-                    if is_muse && current_model != "oc/muse-spark-1.3-contributor-free" && (!pruned || retries >= 2) {
-                        current_model = "oc/muse-spark-1.3-contributor-free".to_string();
-                        warn!(generation = %g.id, to = %current_model, "limite de tokens excedido; alternando para rota alternativa");
-                    } else {
+                    if reduced_max || pruned {
                         warn!(generation = %g.id, retries, "limite de tokens excedido; compactando prompt e tentando novamente");
+                        continue;
                     }
-                    continue;
                 }
 
                 let detail = serde_json::from_str::<Value>(&body_text)
@@ -688,6 +740,7 @@ impl Manager {
             let mut idle_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
             loop {
                 let chunk = tokio::select! {
+                    biased;
                     _=g.cancelled()=>break,
                     _=checkpoint.tick()=>{
                         let grown = {
@@ -777,7 +830,16 @@ impl Manager {
             }
             Ok::<(), Error>(())
         };
-        let result = tokio::select! {_=g.cancelled()=>Ok(()),v=consume=>v};
+        let result = if g.is_cancelled() {
+            drop(consume);
+            Ok(())
+        } else {
+            tokio::select! {
+                biased;
+                _ = g.cancelled() => Ok(()),
+                v = consume => v,
+            }
+        };
         if let Err(e) = result {
             warn!(generation = %g.id, code = e.status, "geração falhou no provedor");
             error_code = e.extra["code"].clone();
@@ -786,7 +848,7 @@ impl Manager {
         if self.delta(&g, &filter.flush()).await {
             capped = true;
         }
-        let mut stopped = *g.cancel.borrow();
+        let mut stopped = g.is_cancelled();
         let mut status = if stopped {
             "interrupted"
         } else if capped
@@ -814,6 +876,10 @@ impl Manager {
                 g.output.lock().await.replace(visible.clone());
             }
         }
+        stopped = g.is_cancelled();
+        if stopped {
+            status = "interrupted";
+        }
         let size = rules::reply_size(&global_settings);
         if visible.trim().is_empty() && error.is_none() && !stopped {
             error = Some("O modelo retornou uma resposta vazia.".into());
@@ -834,6 +900,20 @@ impl Manager {
                 &style_policy::instruction_settings(&before,pct,&global_settings));
             style_report["inputEstimate"] = json!(rules::estimate_messages(repair_body["messages"].as_array().unwrap()));
             let repair = async {
+                if g.is_cancelled() {
+                    return Ok(None);
+                }
+                let _repair_permit = match &backend {
+                    crate::providers::SelectedBackend::Cloud { provider, .. } => {
+                        self.providers
+                            .acquire_outbound(provider, Duration::from_secs(180))
+                            .await?
+                    }
+                    crate::providers::SelectedBackend::Local => None,
+                };
+                if g.is_cancelled() {
+                    return Ok(None);
+                }
                 let response = match &backend {
                     crate::providers::SelectedBackend::Local => match session.as_ref().unwrap() {
                         Ok(session) => session.send(&repair_body, Duration::from_secs(180)).await?,
@@ -852,42 +932,55 @@ impl Manager {
                     .map_err(|_| Error::new(502, "Revisão de estilo recusada."))?;
                 crate::bounded_http::json(response, crate::bounded_http::STYLE_LIMIT)
                     .await
+                    .map(Some)
                     .map_err(|_| Error::new(502, "Revisão de estilo inválida."))
             };
-            let repaired = tokio::select! { _=g.cancelled()=>None, result=repair=>Some(result) };
-            style_report["attempted"] = json!(true);
-            style_report["accepted"] = json!(false);
-            if let Some(Ok(result)) = repaired {
-                let raw = result["choices"][0]["message"]["content"]
-                    .as_str()
-                    .unwrap_or_default();
-                let mut filter = rules::ThinkFilter::default();
-                let candidate = (filter.push(raw) + &filter.flush()).trim().to_owned();
-                let after =
-                    style_policy::assess_settings(&candidate, size, pct, &global_settings);
-                let accept = !candidate.is_empty()
-                    && after["sizeOk"] == true
-                    && after["monologueOk"] == true
-                    && after["languageOk"] == true
-                    && result["choices"][0]["finish_reason"]
-                        .as_str()
-                        .is_none_or(|r| !matches!(r, "length" | "max_tokens"))
-                    && style_policy::score(&after, size, pct)
-                        < style_policy::score(&before, size, pct);
-                style_report["usage"] = result["usage"].clone();
-                if accept {
-                    visible = candidate;
-                    g.output.lock().await.replace(visible.clone());
-                    style_report["accepted"] = json!(true);
-                    style_report["after"] = after;
-                } else {
-                    // "after" stays the saved text; the rejected candidate is recorded separately.
-                    style_report["candidate"] = after;
+            let repaired = if g.is_cancelled() {
+                drop(repair);
+                None
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = g.cancelled() => None,
+                    result = repair => Some(result),
                 }
-            } else if let Some(Err(err)) = repaired {
-                style_report["error"] = json!(clipped(&err.to_string()));
+            };
+            let repair_cancelled = g.is_cancelled() || matches!(repaired, None | Some(Ok(None)));
+            if !repair_cancelled {
+                style_report["attempted"] = json!(true);
+                style_report["accepted"] = json!(false);
+                if let Some(Ok(Some(result))) = repaired {
+                    let raw = result["choices"][0]["message"]["content"]
+                        .as_str()
+                        .unwrap_or_default();
+                    let mut filter = rules::ThinkFilter::default();
+                    let candidate = (filter.push(raw) + &filter.flush()).trim().to_owned();
+                    let after =
+                        style_policy::assess_settings(&candidate, size, pct, &global_settings);
+                    let accept = !candidate.is_empty()
+                        && after["sizeOk"] == true
+                        && after["monologueOk"] == true
+                        && after["languageOk"] == true
+                        && result["choices"][0]["finish_reason"]
+                            .as_str()
+                            .is_none_or(|r| !matches!(r, "length" | "max_tokens"))
+                        && style_policy::score(&after, size, pct)
+                            < style_policy::score(&before, size, pct);
+                    style_report["usage"] = result["usage"].clone();
+                    if accept {
+                        visible = candidate;
+                        g.output.lock().await.replace(visible.clone());
+                        style_report["accepted"] = json!(true);
+                        style_report["after"] = after;
+                    } else {
+                        // "after" stays the saved text; the rejected candidate is recorded separately.
+                        style_report["candidate"] = after;
+                    }
+                } else if let Some(Err(err)) = repaired {
+                    style_report["error"] = json!(clipped(&err.to_string()));
+                }
             }
-            stopped = *g.cancel.borrow();
+            stopped = g.is_cancelled();
             if stopped {
                 status = "interrupted";
             }
@@ -1068,14 +1161,16 @@ impl Manager {
                 }
             })?
         };
-        let _ = g.cancel.send(true);
+        let _ = g.cancel.send_replace(true);
         let deadline = Instant::now() + Duration::from_secs(35);
         loop {
             let notified = g.ended.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if g.output.lock().await.final_event.is_some() {
                 break;
             }
-            if tokio::time::timeout_at(deadline.into(), notified)
+            if tokio::time::timeout_at(deadline.into(), notified.as_mut())
                 .await
                 .is_err()
             {
@@ -1088,6 +1183,8 @@ impl Manager {
         Ok(json!({"ok":true}))
     }
     pub async fn shutdown(&self) {
+        let _ = self.shutting_down.send_replace(true);
+        let _start_guard = self.start_gate.lock().await;
         let jobs = self
             .active
             .lock()
@@ -1095,6 +1192,10 @@ impl Manager {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        for g in &jobs {
+            let _ = g.cancel.send_replace(true);
+        }
+        drop(_start_guard);
         for g in jobs {
             let _ = self.stop(&g.conv, &g.id).await;
         }
@@ -1105,7 +1206,7 @@ impl Manager {
             return Err(Error::new(404, "Geração não encontrada."));
         }
         let (wake, _) = broadcast::channel(32);
-        let (cancel, _) = watch::channel(false);
+        let (cancel, _cancel_keepalive) = watch::channel(false);
         Ok(Arc::new(Generation {
             id: id.into(),
             conv: conv.into(),
@@ -1121,6 +1222,8 @@ impl Manager {
             )),
             wake,
             cancel,
+            _cancel_keepalive,
+            shutdown: self.shutting_down.subscribe(),
             ended: Notify::new(),
             created: Instant::now(),
             bot_limit: rules::REPLY_STORE_LIMIT,
@@ -1217,6 +1320,74 @@ async fn read_validation(path: &std::path::Path) -> Option<Value> {
         }
         bytes.extend_from_slice(&chunk[..n]);
     }
+}
+
+pub fn classify_token_limit(status: reqwest::StatusCode, body_text: &str) -> bool {
+    if !matches!(status.as_u16(), 400 | 402 | 413 | 422) {
+        return false;
+    }
+    let lower = body_text.to_lowercase();
+    let has_excluded_token = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| matches!(w, "tpm" | "rpm" | "tpd" | "rpd"));
+    let is_rate_or_auth_or_quota = has_excluded_token
+        || [
+            "rate limit",
+            "rate_limit",
+            "ratelimit",
+            "too many requests",
+            "too_many_requests",
+            "tokens per min",
+            "tokens_per_min",
+            "tokens per sec",
+            "requests per min",
+            "per minute",
+            "per second",
+            "per hour",
+            "per day",
+            "quota",
+            "insufficient_quota",
+            "throttle",
+            "throttled",
+            "throttling",
+            "unauthorized",
+            "forbidden",
+            "authentication",
+            "invalid_api_key",
+            "invalid api key",
+            "invalid token",
+            "token expired",
+            "cooldown",
+            "try again later",
+            "retry after",
+            "retry-after",
+        ]
+        .iter()
+        .any(|kw| lower.contains(kw));
+    if is_rate_or_auth_or_quota {
+        return false;
+    }
+    if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+        return true;
+    }
+    lower.contains("context_length_exceeded")
+        || lower.contains("context length")
+        || lower.contains("context_length")
+        || lower.contains("maximum context length")
+        || lower.contains("prompt is too long")
+        || lower.contains("prompt too long")
+        || lower.contains("input is too long")
+        || lower.contains("prompt tokens limit exceeded")
+        || lower.contains("maximum number of tokens")
+        || lower.contains("requires more credits")
+        || lower.contains("fewer max_tokens")
+        || lower.contains("too many tokens")
+        || (lower.contains("input token count") && lower.contains("exceed"))
+        || (lower.contains("max_tokens")
+            && (lower.contains("exceed")
+                || lower.contains("too large")
+                || lower.contains("reduce")
+                || lower.contains("fewer")))
 }
 
 pub async fn write_character(file: &std::path::Path, text: &str) -> Result<()> {

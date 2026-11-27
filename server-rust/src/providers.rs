@@ -27,12 +27,63 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, VecDeque},
     path::Path,
     path::PathBuf,
-    sync::{Arc, RwLock},
-    time::Duration,
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+fn canonical_base_url(raw: &str, unify_loopback: bool) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let Ok(mut url) = reqwest::Url::parse(trimmed) else {
+        return trimmed.to_ascii_lowercase();
+    };
+    if unify_loopback && let Some(host) = url.host_str() {
+        let is_loopback_alias = host.eq_ignore_ascii_case("localhost")
+            || host == "127.0.0.1"
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| match ip {
+                    std::net::IpAddr::V4(v4) => v4 == std::net::Ipv4Addr::LOCALHOST,
+                    std::net::IpAddr::V6(v6) => {
+                        v6.is_loopback()
+                            || v6
+                                .to_ipv4_mapped()
+                                .is_some_and(|v4| v4 == std::net::Ipv4Addr::LOCALHOST)
+                    }
+                });
+        if is_loopback_alias && host != "127.0.0.1" {
+            let _ = url.set_host(Some("127.0.0.1"));
+        }
+    }
+    let clean_path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(&clean_path);
+    url.as_str().trim_end_matches('/').to_owned()
+}
+
+pub fn normalize_base_url(raw: &str) -> String {
+    canonical_base_url(raw, true)
+}
+
+fn normalize_preflight_base_url(raw: &str) -> String {
+    canonical_base_url(raw, false)
+}
+
+pub fn upstream_max_concurrent_from_env() -> usize {
+    match std::env::var("MC_UPSTREAM_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+    {
+        Some(0) => 0,
+        Some(n) => n.clamp(1, 32),
+        None => 1,
+    }
+}
 
 #[derive(Clone)]
 pub struct Provider {
@@ -47,6 +98,7 @@ pub struct Provider {
     pub reasoning_format: ReasoningFormat,
     pub context_window: u64,
     pub max_output: u64,
+    pub max_concurrent: Option<usize>,
 }
 
 impl std::fmt::Debug for Provider {
@@ -115,6 +167,8 @@ pub struct MobileProvider {
     pub context_window: u64,
     #[serde(default = "default_output")]
     pub max_output: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<usize>,
 }
 fn default_context() -> u64 {
     8192
@@ -225,6 +279,7 @@ impl MobileProviders {
                 || !(1024..=262144).contains(&p.context_window)
                 || !(256..=8192).contains(&p.max_output)
                 || p.max_output >= p.context_window
+                || p.max_concurrent.is_some_and(|n| n > 32)
             {
                 return Err(config_error());
             }
@@ -282,6 +337,7 @@ impl MobileProviders {
                     reasoning_format: p.reasoning_format,
                     context_window: p.context_window,
                     max_output: p.max_output,
+                    max_concurrent: p.max_concurrent,
                 })
                 .collect(),
             default: self
@@ -293,6 +349,7 @@ impl MobileProviders {
             fallbacks: self.fallbacks.clone(),
             mobile: true,
             discovered: None,
+            preflight_cache: PreflightCache::default(),
         }
     }
     pub fn runtime(&self) -> Result<Option<Arc<Providers>>> {
@@ -311,32 +368,377 @@ impl MobileProviders {
         Ok((!runtime.list.is_empty()).then(|| Arc::new(runtime)))
     }
     pub fn redacted(&self) -> Value {
-        serde_json::json!({"default":self.default,"providers":self.providers.iter().map(|p| serde_json::json!({
-            "id":p.id,"baseUrl":p.base_url,"models":p.models,"hasApiKey":p.api_key.is_some(),
-            "allowLoopback":p.allow_loopback,"protocol":"openai-compatible","reasoningFormat":p.reasoning_format,
-            "contextWindow":p.context_window,"maxOutput":p.max_output
-        })).collect::<Vec<_>>(),"aliases":self.aliases,"fallbacks":self.fallbacks})
+        serde_json::json!({"default":self.default,"providers":self.providers.iter().map(|p| {
+            let mut item = serde_json::json!({
+                "id":p.id,"baseUrl":p.base_url,"models":p.models,"hasApiKey":p.api_key.is_some(),
+                "allowLoopback":p.allow_loopback,"protocol":"openai-compatible","reasoningFormat":p.reasoning_format,
+                "contextWindow":p.context_window,"maxOutput":p.max_output
+            });
+            if let Some(mc) = p.max_concurrent {
+                item["maxConcurrent"] = serde_json::json!(mc);
+            }
+            item
+        }).collect::<Vec<_>>(),"aliases":self.aliases,"fallbacks":self.fallbacks})
+    }
+}
+
+const PREFLIGHT_TTL: Duration = Duration::from_secs(5);
+const PREFLIGHT_CACHE_MAX: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PreflightKey {
+    base_url: String,
+    key_hash: Option<String>,
+    model: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PreflightEntry {
+    at: Instant,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct PreflightCache {
+    entries: Arc<RwLock<HashMap<PreflightKey, PreflightEntry>>>,
+    epoch: Arc<AtomicU64>,
+}
+
+impl PreflightCache {
+    pub fn clear(&self) {
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut guard) = self.entries.write() {
+            guard.clear();
+        }
+    }
+
+    fn key_for(provider: &Provider, model: &str) -> PreflightKey {
+        PreflightKey {
+            base_url: normalize_preflight_base_url(&provider.base_url),
+            key_hash: provider.api_key.as_deref().map(crate::rules::hash),
+            model: model.to_ascii_lowercase(),
+        }
+    }
+
+    fn is_hit(&self, key: &PreflightKey) -> bool {
+        let Ok(guard) = self.entries.read() else {
+            return false;
+        };
+        guard
+            .get(key)
+            .is_some_and(|entry| entry.at.elapsed() < PREFLIGHT_TTL)
+    }
+
+    fn record_hit(&self, key: PreflightKey, observed_epoch: u64) {
+        if self.epoch.load(Ordering::Acquire) != observed_epoch {
+            return;
+        }
+        let Ok(mut guard) = self.entries.write() else {
+            return;
+        };
+        if self.epoch.load(Ordering::Acquire) != observed_epoch {
+            return;
+        }
+        guard.retain(|_, v| v.at.elapsed() < PREFLIGHT_TTL);
+        if guard.len() >= PREFLIGHT_CACHE_MAX
+            && let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, v)| v.at)
+                .map(|(k, _)| k.clone())
+        {
+            guard.remove(&oldest_key);
+        }
+        guard.insert(key, PreflightEntry { at: Instant::now() });
+    }
+}
+
+fn clamp_concurrency_limit(limit: usize) -> usize {
+    if limit == 0 {
+        0
+    } else {
+        limit.clamp(1, 32)
+    }
+}
+
+pub struct OutboundPermit {
+    gate: Arc<OutboundGate>,
+}
+
+impl Drop for OutboundPermit {
+    fn drop(&mut self) {
+        {
+            let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.in_flight = state.in_flight.saturating_sub(1);
+        }
+        self.gate.notify.notify_waiters();
+    }
+}
+
+struct QueueGuard {
+    gate: Arc<OutboundGate>,
+    ticket: Option<u64>,
+}
+
+impl QueueGuard {
+    fn disarm(&mut self) {
+        self.ticket = None;
+    }
+}
+
+impl Drop for QueueGuard {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            {
+                let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.queue.retain(|&t| t != ticket);
+            }
+            self.gate.notify.notify_waiters();
+        }
+    }
+}
+
+struct OutboundGateState {
+    in_flight: usize,
+    limit: usize,
+    next_ticket: u64,
+    queue: VecDeque<u64>,
+}
+
+struct OutboundGate {
+    state: Mutex<OutboundGateState>,
+    notify: tokio::sync::Notify,
+}
+
+impl OutboundGate {
+    fn new(limit: usize) -> Self {
+        Self {
+            state: Mutex::new(OutboundGateState {
+                in_flight: 0,
+                limit,
+                next_ticket: 0,
+                queue: VecDeque::new(),
+            }),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn set_limit(&self, new_limit: usize) {
+        let should_notify = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let old_limit = state.limit;
+            if old_limit == new_limit {
+                false
+            } else {
+                state.limit = new_limit;
+                !state.queue.is_empty() && (new_limit == 0 || new_limit > old_limit)
+            }
+        };
+        if should_notify {
+            self.notify.notify_waiters();
+        }
+    }
+
+    async fn acquire(self: &Arc<Self>, wait_timeout: Duration) -> Result<OutboundPermit> {
+        let mut guard = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.limit == 0 || (state.queue.is_empty() && state.in_flight < state.limit) {
+                state.in_flight += 1;
+                return Ok(OutboundPermit { gate: self.clone() });
+            }
+            let ticket = state.next_ticket;
+            state.next_ticket += 1;
+            state.queue.push_back(ticket);
+            QueueGuard {
+                gate: self.clone(),
+                ticket: Some(ticket),
+            }
+        };
+        let ticket = guard.ticket.expect("ticket assigned");
+        tokio::time::timeout(wait_timeout, async move {
+            loop {
+                let notified = self.notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                {
+                    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    let can_enter = if state.limit == 0 {
+                        state.queue.retain(|&t| t != ticket);
+                        true
+                    } else if state.queue.front() == Some(&ticket) && state.in_flight < state.limit {
+                        state.queue.pop_front();
+                        true
+                    } else {
+                        false
+                    };
+                    if can_enter {
+                        state.in_flight += 1;
+                        let wake_next = !state.queue.is_empty()
+                            && (state.limit == 0 || state.in_flight < state.limit);
+                        guard.disarm();
+                        drop(state);
+                        if wake_next {
+                            self.notify.notify_waiters();
+                        }
+                        return OutboundPermit { gate: self.clone() };
+                    }
+                }
+                notified.as_mut().await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            Error::new(504, "Fila do provedor excedeu o tempo limite.")
+                .extra("code", "UPSTREAM_QUEUE_TIMEOUT")
+        })
     }
 }
 
 /// Every operation holds its own Arc snapshot; changes never reroute an accepted POST.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RuntimeProviders {
     providers: Arc<RwLock<Option<Arc<Providers>>>>,
-    format_cache: Arc<RwLock<std::collections::HashMap<String, u8>>>,
+    format_cache: Arc<RwLock<HashMap<String, u8>>>,
+    outbound_gates: Arc<RwLock<HashMap<String, Arc<OutboundGate>>>>,
+    preflight_cache: PreflightCache,
+    default_max_concurrent: usize,
+}
+impl Default for RuntimeProviders {
+    fn default() -> Self {
+        Self::with_default_concurrency(None, 1)
+    }
 }
 impl RuntimeProviders {
     pub fn new(providers: Option<Arc<Providers>>) -> Self {
-        Self {
+        Self::with_default_concurrency(providers, upstream_max_concurrent_from_env())
+    }
+    pub fn new_for_android(providers: Option<Arc<Providers>>) -> Self {
+        Self::with_default_concurrency(providers, 1)
+    }
+    pub fn with_default_concurrency(
+        providers: Option<Arc<Providers>>,
+        default_max_concurrent: usize,
+    ) -> Self {
+        let rt = Self {
             providers: Arc::new(RwLock::new(providers)),
-            format_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        }
+            format_cache: Arc::new(RwLock::new(HashMap::new())),
+            outbound_gates: Arc::new(RwLock::new(HashMap::new())),
+            preflight_cache: PreflightCache::default(),
+            default_max_concurrent: clamp_concurrency_limit(default_max_concurrent),
+        };
+        let guard = rt.providers.read().unwrap();
+        rt.reconcile_gates_locked(guard.as_deref());
+        drop(guard);
+        rt
     }
     pub fn snapshot(&self) -> Option<Arc<Providers>> {
         self.providers.read().unwrap().clone()
     }
     pub fn set(&self, providers: Option<Arc<Providers>>) {
-        *self.providers.write().unwrap() = providers;
+        let mut guard = self.providers.write().unwrap();
+        *guard = providers;
+        self.preflight_cache.clear();
+        self.reconcile_gates_locked(guard.as_deref());
+    }
+    fn effective_limit_from_snapshot(
+        snapshot: Option<&Providers>,
+        default_max_concurrent: usize,
+        normalized_key: &str,
+        provider_limit: Option<usize>,
+    ) -> (usize, bool) {
+        let mut min_positive: Option<usize> = None;
+        let mut found_in_snapshot = false;
+        if let Some(snap) = snapshot {
+            for p in &snap.list {
+                if normalize_base_url(&p.base_url) == normalized_key {
+                    found_in_snapshot = true;
+                    let resolved = clamp_concurrency_limit(
+                        p.max_concurrent.unwrap_or(default_max_concurrent),
+                    );
+                    if resolved > 0 {
+                        min_positive = Some(min_positive.map_or(resolved, |m| m.min(resolved)));
+                    }
+                }
+            }
+        }
+        if found_in_snapshot {
+            (min_positive.unwrap_or(0), true)
+        } else {
+            (
+                clamp_concurrency_limit(provider_limit.unwrap_or(default_max_concurrent)),
+                false,
+            )
+        }
+    }
+    fn reconcile_gates_locked(&self, snapshot: Option<&Providers>) {
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let mut new_limits = HashMap::new();
+        for p in &snapshot.list {
+            let key = normalize_base_url(&p.base_url);
+            new_limits.entry(key.clone()).or_insert_with(|| {
+                Self::effective_limit_from_snapshot(
+                    Some(snapshot),
+                    self.default_max_concurrent,
+                    &key,
+                    None,
+                )
+                .0
+            });
+        }
+        let mut gates = self.outbound_gates.write().unwrap();
+        for (key, limit_new) in new_limits {
+            if let Some(existing) = gates.get(&key) {
+                existing.set_limit(limit_new);
+            } else {
+                gates.insert(key, Arc::new(OutboundGate::new(limit_new)));
+            }
+        }
+    }
+    pub async fn acquire_outbound(
+        &self,
+        provider: &Provider,
+        wait_timeout: Duration,
+    ) -> Result<Option<OutboundPermit>> {
+        let key = normalize_base_url(&provider.base_url);
+        let gate = {
+            let providers_guard = self.providers.read().unwrap();
+            let (limit, in_snapshot) = Self::effective_limit_from_snapshot(
+                providers_guard.as_deref(),
+                self.default_max_concurrent,
+                &key,
+                provider.max_concurrent,
+            );
+            let read_gates = self.outbound_gates.read().unwrap();
+            if let Some(existing) = read_gates.get(&key) {
+                let gate = existing.clone();
+                drop(read_gates);
+                if !in_snapshot {
+                    gate.set_limit(limit);
+                }
+                gate
+            } else {
+                drop(read_gates);
+                let mut write_gates = self.outbound_gates.write().unwrap();
+                let gate = write_gates
+                    .entry(key)
+                    .or_insert_with(|| Arc::new(OutboundGate::new(limit)))
+                    .clone();
+                gate.set_limit(limit);
+                gate
+            }
+        };
+        let permit = gate.acquire(wait_timeout).await?;
+        Ok(Some(permit))
+    }
+    pub async fn select(&self, snapshot: &Providers, route: &str) -> SelectedBackend {
+        snapshot
+            .select_with_cache(route, Some(&self.preflight_cache))
+            .await
+    }
+    pub async fn preflight(&self, provider: &Provider, model: &str) -> bool {
+        provider
+            .preflight_cached(&self.preflight_cache, model, Duration::from_millis(3000))
+            .await
     }
     pub fn get_format(&self, provider: &str, model: &str) -> Option<u8> {
         self.format_cache.read().ok()?.get(&format!("{provider}:{model}")).copied()
@@ -383,6 +785,7 @@ pub struct Providers {
     mobile: bool,
     /// This provider requires a full mobile-api route; legacy names never opt in.
     discovered: Option<String>,
+    preflight_cache: PreflightCache,
 }
 
 fn env(name: &str) -> Option<String> {
@@ -446,12 +849,14 @@ impl Providers {
                 reasoning_format: ReasoningFormat::Omit,
                 context_window: 128000,
                 max_output: 8192,
+                max_concurrent: None,
             }],
             default: 0,
             aliases: BTreeMap::new(),
             fallbacks: BTreeMap::new(),
             mobile: false,
             discovered: None,
+            preflight_cache: PreflightCache::default(),
         }))
     }
 
@@ -474,6 +879,22 @@ impl Providers {
                 .as_str()
                 .map(str::to_owned)
                 .or_else(|| p["apiKeyEnv"].as_str().and_then(env));
+            let max_concurrent = match p.get("maxConcurrent") {
+                None | Some(Value::Null) => None,
+                Some(Value::Number(num)) => {
+                    let Some(n) = num.as_u64() else {
+                        return Err(Error::new(400, "Invalid maxConcurrent in providers file."));
+                    };
+                    if n == 0 {
+                        Some(0)
+                    } else {
+                        Some(n.clamp(1, 32) as usize)
+                    }
+                }
+                Some(_) => {
+                    return Err(Error::new(400, "Invalid maxConcurrent in providers file."));
+                }
+            };
             list.push(Provider {
                 id: id.to_owned(),
                 base_url: base_url.to_owned(),
@@ -488,6 +909,7 @@ impl Providers {
                 reasoning_format: ReasoningFormat::Omit,
                 context_window: 128000,
                 max_output: 8192,
+                max_concurrent,
             });
         }
         if list.is_empty() {
@@ -521,6 +943,7 @@ impl Providers {
             fallbacks,
             mobile: false,
             discovered: None,
+            preflight_cache: PreflightCache::default(),
         };
         if providers
             .aliases
@@ -628,7 +1051,17 @@ impl Providers {
             .any(|m| m == route)
             .then(|| (provider.clone(), route.to_owned()))
     }
+    pub fn model_ids(&self) -> Vec<String> {
+        self.list.iter().flat_map(|p| p.models.iter().cloned()).collect()
+    }
     pub async fn select(&self, route: &str) -> SelectedBackend {
+        self.select_with_cache(route, None).await
+    }
+    pub async fn select_with_cache(
+        &self,
+        route: &str,
+        cache: Option<&PreflightCache>,
+    ) -> SelectedBackend {
         let target = if self.mobile {
             self.mobile_resolve(route)
         } else {
@@ -643,9 +1076,10 @@ impl Providers {
         } else {
             Duration::from_millis(3000)
         };
+        let cache = cache.unwrap_or(&self.preflight_cache);
         if provider.is_loopback()
             && (self.mobile || self.fallbacks.contains_key(route))
-            && !provider.preflight_with_timeout(&model, timeout).await
+            && !provider.preflight_cached(cache, &model, timeout).await
         {
             if let Some(target) = self.fallbacks.get(route)
                 && let Ok((provider, model)) = self.target(target)
@@ -673,6 +1107,26 @@ impl Provider {
     pub async fn preflight(&self, model: &str) -> bool {
         self.preflight_with_timeout(model, Duration::from_millis(3000))
             .await
+    }
+    pub async fn preflight_cached(
+        &self,
+        cache: &PreflightCache,
+        model: &str,
+        timeout: Duration,
+    ) -> bool {
+        if desktop_url(&self.base_url).is_err() {
+            return false;
+        }
+        let key = PreflightCache::key_for(self, model);
+        if cache.is_hit(&key) {
+            return true;
+        }
+        let epoch = cache.epoch.load(Ordering::Acquire);
+        let ok = self.preflight_with_timeout(model, timeout).await;
+        if ok {
+            cache.record_hit(key, epoch);
+        }
+        ok
     }
     pub async fn preflight_with_timeout(&self, model: &str, timeout: Duration) -> bool {
         if desktop_url(&self.base_url).is_err() {
@@ -1144,5 +1598,158 @@ mod tests {
         }
     }
 
+    #[test]
+    fn effective_limit_from_snapshot_resolves_omitted_and_zero_correctly() {
+        let p_zero_and_omitted = Providers::from_json(&json!({
+            "providers": [
+                { "id": "p1", "baseUrl": "http://127.0.0.1:20128/v1", "maxConcurrent": 0 },
+                { "id": "p2", "baseUrl": "http://127.0.0.1:20128/v1/" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            RuntimeProviders::effective_limit_from_snapshot(
+                Some(&p_zero_and_omitted),
+                1,
+                "http://127.0.0.1:20128/v1",
+                None
+            ),
+            (1, true)
+        );
+        assert_eq!(
+            RuntimeProviders::effective_limit_from_snapshot(
+                Some(&p_zero_and_omitted),
+                4,
+                "http://127.0.0.1:20128/v1",
+                None
+            ),
+            (4, true)
+        );
+
+        let p_one_zero_omitted = Providers::from_json(&json!({
+            "providers": [
+                { "id": "p1", "baseUrl": "http://127.0.0.1:20128/v1", "maxConcurrent": 1 },
+                { "id": "p2", "baseUrl": "http://127.0.0.1:20128/v1", "maxConcurrent": 0 },
+                { "id": "p3", "baseUrl": "http://127.0.0.1:20128/v1" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            RuntimeProviders::effective_limit_from_snapshot(
+                Some(&p_one_zero_omitted),
+                4,
+                "http://127.0.0.1:20128/v1",
+                None
+            ),
+            (1, true)
+        );
+
+        let p_zero_only = Providers::from_json(&json!({
+            "providers": [
+                { "id": "p1", "baseUrl": "http://127.0.0.1:20128/v1", "maxConcurrent": 0 }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            RuntimeProviders::effective_limit_from_snapshot(
+                Some(&p_zero_only),
+                1,
+                "http://127.0.0.1:20128/v1",
+                None
+            ),
+            (0, true)
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_unifies_loopback_aliases_without_mutating_provider_base_url() {
+        for raw in [
+            "http://127.0.0.1:20128/v1/",
+            "HTTP://LOCALHOST:20128/v1",
+            "http://localhost:20128/v1/",
+            "http://[::1]:20128/v1/",
+            "http://[::ffff:127.0.0.1]:20128/v1",
+        ] {
+            assert_eq!(
+                normalize_base_url(raw),
+                "http://127.0.0.1:20128/v1",
+                "failed for {raw}"
+            );
+        }
+        assert_eq!(
+            normalize_base_url("http://127.0.0.2:20128/v1/"),
+            "http://127.0.0.2:20128/v1"
+        );
+        assert_eq!(
+            normalize_base_url("https://localhost.evil/v1/"),
+            "https://localhost.evil/v1"
+        );
+        let p = Providers::from_json(&json!({
+            "providers": [{ "id": "local", "baseUrl": "http://localhost:20128/v1/" }]
+        }))
+        .unwrap();
+        assert_eq!(p.default_provider().base_url, "http://localhost:20128/v1");
+    }
+
+    #[test]
+    fn normalize_preflight_base_url_preserves_loopback_host_literals_and_canonicalizes_casing_ports() {
+        let v4 = normalize_preflight_base_url("http://127.0.0.1:20128/v1/");
+        let host = normalize_preflight_base_url("HTTP://LOCALHOST:20128/v1/");
+        let v6 = normalize_preflight_base_url("http://[::1]:20128/v1/");
+        let v4_mapped = normalize_preflight_base_url("http://[::ffff:127.0.0.1]:20128/v1/");
+
+        assert_eq!(v4, "http://127.0.0.1:20128/v1");
+        assert_eq!(host, "http://localhost:20128/v1");
+        assert_eq!(v6, "http://[::1]:20128/v1");
+        assert_eq!(v4_mapped, "http://[::ffff:7f00:1]:20128/v1");
+        let unique: std::collections::HashSet<&str> =
+            [v4.as_str(), host.as_str(), v6.as_str(), v4_mapped.as_str()]
+                .into_iter()
+                .collect();
+        assert_eq!(unique.len(), 4);
+
+        assert_eq!(
+            normalize_preflight_base_url("HTTP://LOCALHOST:80/v1/"),
+            "http://localhost/v1"
+        );
+        assert_eq!(
+            normalize_preflight_base_url("https://OpenRouter.AI:443/api/v1/"),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            normalize_preflight_base_url("http://[0:0:0:0:0:0:0:1]:20128/v1/"),
+            "http://[::1]:20128/v1"
+        );
+        assert_eq!(
+            normalize_preflight_base_url("http://[::FFFF:127.0.0.1]:20128/v1/"),
+            v4_mapped
+        );
+        assert_ne!(
+            normalize_preflight_base_url("http://127.0.0.1:20128/V1"),
+            "http://127.0.0.1:20128/v1"
+        );
+
+        let make_provider = |id: &str, base_url: &str| Provider {
+            id: id.into(),
+            base_url: base_url.into(),
+            api_key: Some("k".into()),
+            models: vec![],
+            request_log: None,
+            reasoning_format: ReasoningFormat::Omit,
+            context_window: 128000,
+            max_output: 8192,
+            max_concurrent: Some(1),
+        };
+        let keys: std::collections::HashSet<PreflightKey> = [
+            make_provider("v4", "http://127.0.0.1:20128/v1"),
+            make_provider("host", "http://localhost:20128/v1"),
+            make_provider("v6", "http://[::1]:20128/v1"),
+            make_provider("v4m", "http://[::ffff:127.0.0.1]:20128/v1"),
+        ]
+        .iter()
+        .map(|p| PreflightCache::key_for(p, "custom/model"))
+        .collect();
+        assert_eq!(keys.len(), 4);
+    }
 
 }

@@ -104,7 +104,7 @@ fn probe_1_tail_prompt_eliminates_negative_rule_and_enforces_positive_4level_pov
         sys.contains("[MATRIZ DE PONTO DE VISTA (POV) E DESAMBIGUAÇÃO DE POSSE — LEI DE PERSPECTIVA]"),
         "System prompt must contain the formal POV matrix block:\n{sys}"
     );
-    assert!(sys.contains("1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa Nominativa Estrita)"));
+    assert!(sys.contains("1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa; dono explícito quando ambíguo)"));
     assert!(sys.contains("2. NÍVEL 2 — PERSONAGEM FALANDO COM Alex (2ª Pessoa Direta)"));
     assert!(sys.contains("3. NÍVEL 3 — DIÁLOGO ENTRE PERSONAGENS (NPC falando com outro NPC / Dinâmica Coral)"));
     assert!(sys.contains("4. NÍVEL 4 — AUTORREFERÊNCIA DO FALANTE (1ª Pessoa do Personagem)"));

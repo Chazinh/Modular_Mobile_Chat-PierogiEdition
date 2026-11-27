@@ -95,8 +95,64 @@ impl MemoryPolicy {
     }
 }
 fn unavailable() -> Error {
-    Error::new(503, "Backend de memória indisponível; tarefa adiada.")
+    unavailable_transient(None, None)
+}
+
+pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let raw = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(secs.clamp(1, 900));
+    }
+    let target = chrono::DateTime::parse_from_rfc2822(raw)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(raw, "%A, %d-%b-%y %H:%M:%S GMT")
+                .map(|ndt| ndt.and_utc())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(raw, "%a %b %e %H:%M:%S %Y")
+                .map(|ndt| ndt.and_utc())
+        })
+        .ok()?;
+    let secs = (target - chrono::Utc::now()).num_seconds().max(1) as u64;
+    Some(secs.clamp(1, 900))
+}
+
+fn unavailable_transient(status: Option<u16>, retry_after: Option<u64>) -> Error {
+    let msg = match status {
+        Some(code) => format!("Backend de memória indisponível (HTTP {code}); tarefa adiada."),
+        None => "Backend de memória indisponível; tarefa adiada.".to_owned(),
+    };
+    let mut err = Error::new(503, msg)
         .extra("code", "MEMORY_BACKEND_UNAVAILABLE")
+        .extra("unavailableKind", "transient");
+    if let Some(code) = status {
+        err = err.extra("upstreamStatus", code);
+    }
+    if let Some(secs) = retry_after {
+        err = err.extra("retryAfterSeconds", secs);
+    }
+    err
+}
+
+fn unavailable_auth_config(status: Option<u16>) -> Error {
+    let msg = match status {
+        Some(code) => {
+            format!("Backend de memória indisponível por configuração/autenticação (HTTP {code}).")
+        }
+        None => "Backend de memória indisponível por configuração/autenticação.".to_owned(),
+    };
+    let mut err = Error::new(503, msg)
+        .extra("code", "MEMORY_BACKEND_UNAVAILABLE")
+        .extra("unavailableKind", "auth_config");
+    if let Some(code) = status {
+        err = err.extra("upstreamStatus", code);
+    }
+    err
 }
 
 pub enum MemoryBackend {
@@ -166,19 +222,19 @@ impl MemoryBackend {
         policy: &MemoryPolicy,
         client: &reqwest::Client,
     ) -> Result<Option<Self>> {
-        let api = policy.api.clone().ok_or_else(unavailable)?;
+        let api = policy.api.clone().ok_or_else(|| unavailable_auth_config(None))?;
         if !api.history_consent {
-            return Err(unavailable());
+            return Err(unavailable_auth_config(None));
         }
         let (provider, _) = runtime
             .snapshot()
-            .ok_or_else(unavailable)?
+            .ok_or_else(|| unavailable_auth_config(None))?
             .target(&RouteTarget {
                 provider: api.provider.clone(),
                 model: api.model.clone(),
             })?;
-        if provider.is_loopback() && !provider.preflight(&api.model).await {
-            return Err(unavailable());
+        if provider.is_loopback() && !runtime.preflight(&provider, &api.model).await {
+            return Err(unavailable_transient(None, None));
         }
         let cached_format = runtime.get_format(&provider.id, &api.model).unwrap_or(0);
         Ok(Some(Self::Api {
@@ -208,20 +264,20 @@ impl MemoryBackend {
             })),
             MemoryMode::Local => Ok(None),
             MemoryMode::Api => {
-                let api = policy.api.clone().ok_or_else(unavailable)?;
+                let api = policy.api.clone().ok_or_else(|| unavailable_auth_config(None))?;
                 if !api.history_consent {
-                    return Err(unavailable());
+                    return Err(unavailable_auth_config(None));
                 }
                 let (provider, _) =
                     runtime
                         .snapshot()
-                        .ok_or_else(unavailable)?
+                        .ok_or_else(|| unavailable_auth_config(None))?
                         .target(&RouteTarget {
                             provider: api.provider.clone(),
                             model: api.model.clone(),
                         })?;
-                if provider.is_loopback() && !provider.preflight(&api.model).await {
-                    return Err(unavailable());
+                if provider.is_loopback() && !runtime.preflight(&provider, &api.model).await {
+                    return Err(unavailable_transient(None, None));
                 }
                 let cached_format = runtime.get_format(&provider.id, &api.model).unwrap_or(0);
                 Ok(Some(Self::Api {
@@ -322,22 +378,34 @@ impl MemoryBackend {
                     {
                         return Err(Error::new(502, "Entrada de memória excedeu o orçamento configurado; retry reduzido necessário."));
                     }
+                    let attempt_permit = match runtime {
+                        Some(rt) => rt
+                            .acquire_outbound(
+                                provider,
+                                Duration::from_secs(api.timeout_seconds.max(60)),
+                            )
+                            .await
+                            .map_err(|_| unavailable_transient(None, None))?,
+                        None => None,
+                    };
                     let response = provider
                         .chat_request(client, &api.model, &body, Duration::from_secs(api.timeout_seconds))
                         .send()
                         .await
-                        .map_err(|_| unavailable())?;
+                        .map_err(|_| unavailable_transient(None, None))?;
                     let status = response.status();
+                    let retry_after = parse_retry_after(response.headers());
                     if status.as_u16() == 400 {
                         let mut bytes = Vec::new();
                         let mut stream = response.bytes_stream();
                         while let Some(chunk) = stream.next().await {
-                            let chunk = chunk.map_err(|_| unavailable())?;
+                            let chunk = chunk.map_err(|_| unavailable_transient(None, None))?;
                             if bytes.len() + chunk.len() > 1024 * 1024 {
                                 return Err(Error::new(502, "Resposta de memória excedeu o limite."));
                             }
                             bytes.extend_from_slice(&chunk);
                         }
+                        drop(attempt_permit);
                         let error = String::from_utf8_lossy(&bytes).to_lowercase();
                         let preview: String = String::from_utf8_lossy(&bytes)
                             .chars()
@@ -365,7 +433,9 @@ impl MemoryBackend {
                             tracing::warn!(fallback = format, "API de memória rejeitou formato estruturado; schema mantido nas instruções");
                             continue;
                         }
-                        let provider_rejected = error.contains("channel verification")
+                        let is_rate_limited =
+                            error.contains("rate limit") || error.contains("rate_limit");
+                        let is_auth_or_config = error.contains("channel verification")
                             || error.contains("request illegal")
                             || error.contains("no active credentials")
                             || error.contains("missing authentication")
@@ -375,15 +445,20 @@ impl MemoryBackend {
                             || error.contains("fewer max_tokens")
                             || error.contains("can only afford")
                             || error.contains("quota")
-                            || error.contains("credits")
-                            || error.contains("rate limit")
-                            || error.contains("rate_limit");
-                        if provider_rejected {
+                            || error.contains("credits");
+                        if is_rate_limited {
+                            tracing::warn!(
+                                upstream = %preview_trimmed,
+                                "API de memória recusou requisição por rate limit (HTTP 400); adiando tarefa"
+                            );
+                            return Err(unavailable_transient(Some(400), retry_after));
+                        }
+                        if is_auth_or_config {
                             tracing::warn!(
                                 upstream = %preview_trimmed,
                                 "API de memória recusou requisição por erro de canal/provedor (HTTP 400); adiando tarefa"
                             );
-                            return Err(unavailable());
+                            return Err(unavailable_auth_config(Some(400)));
                         }
                         let sample = if preview_trimmed.is_empty() {
                             String::new()
@@ -393,11 +468,11 @@ impl MemoryBackend {
                         tracing::warn!(upstream = %preview_trimmed, "API de memória recusou requisição (HTTP 400)");
                         return Err(Error::new(502, format!("API de memória recusou o schema ou a entrada (HTTP 400){sample}.")));
                     }
-                    if matches!(status.as_u16(), 401 | 402 | 403 | 404 | 408 | 429)
-                        || status.is_server_error()
-                        || status.is_redirection()
-                    {
-                        return Err(unavailable());
+                    if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
+                        return Err(unavailable_transient(Some(status.as_u16()), retry_after));
+                    }
+                    if matches!(status.as_u16(), 401 | 402 | 403 | 404) || status.is_redirection() {
+                        return Err(unavailable_auth_config(Some(status.as_u16())));
                     }
                     if !status.is_success() {
                         tracing::warn!(status = status.as_u16(), "API de memória recusou requisição");
@@ -409,12 +484,13 @@ impl MemoryBackend {
                     let mut stream = response.bytes_stream();
                     let mut bytes = Vec::new();
                     while let Some(chunk) = stream.next().await {
-                        let chunk = chunk.map_err(|_| unavailable())?;
+                        let chunk = chunk.map_err(|_| unavailable_transient(None, None))?;
                         if bytes.len() + chunk.len() > 1024 * 1024 {
                             return Err(Error::new(502, "Resposta de memória excedeu o limite."));
                         }
                         bytes.extend_from_slice(&chunk);
                     }
+                    drop(attempt_permit);
                     // OpenRouter can wrap a provider's pre-generation schema rejection in HTTP 200.
                     let envelope: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
                     let message = envelope["error"]["message"].as_str().unwrap_or_default().to_lowercase();

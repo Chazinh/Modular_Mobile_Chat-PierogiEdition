@@ -105,7 +105,7 @@ test('Rust: snapshot SQLite consistente preserva IDs e não sobrescreve destino'
 test('Rust: jobs indisponíveis sobrevivem ao reinício sem repetir upstream',async t=>{
   const f=await fixture(t);const c=await f.chat();f.upstream.set({chunks:['Lia: A chave fica no porão.']});
   const r=await fetch(`${f.runtime.base}/api/chats/${c.id}/message`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'send',content:'Onde está a chave?',opId:'recover-job'})});await r.text();
-  const pending=await wait(async()=>{const m=(await f.j('GET',`/api/chats/${c.id}/memory`)).body;return f.jobs(c.id).some(j=>j.status==='pending'&&j.error?.includes('indisponível'))?m:null;});
+  const pending=await wait(async()=>{const m=(await f.j('GET',`/api/chats/${c.id}/memory`)).body;return f.jobs(c.id).some(j=>j.status==='pending'&&j.attempts===0)?m:null;});
   assert.equal(pending.memories.length,0);assert.equal(f.localRequests.length,0);const count=f.upstream.requests.length;
   await f.restart();await wait(async()=>{const m=(await f.j('GET',`/api/chats/${c.id}/memory`)).body;return m.sync?.synced&&m.memories?.length;});assert.equal(f.upstream.requests.length,count);
   const replay=await fetch(`${f.runtime.base}/api/chats/${c.id}/message`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'send',content:'Onde está a chave?',opId:'recover-job'})});const replayText=await replay.text();assert.ok(replayText.includes('"replay":true'));assert.ok(replayText.includes('Lia: A chave fica no porão.'));assert.equal(f.upstream.requests.length,count);

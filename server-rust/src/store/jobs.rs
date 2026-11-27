@@ -166,11 +166,13 @@ impl Database {
         if !["pending", "running", "done", "failed", "blocked", "skipped"].contains(&status) {
             return Err(Error::new(400, "Estado de trabalho inválido."));
         }
+        let reset_deferrals = if matches!(status, "done" | "skipped") { 1 } else { 0 };
         self.exec(
-            "UPDATE jobs SET status=?,error=?,updated_at=? WHERE id=? AND status!='skipped'",
+            "UPDATE jobs SET status=?,error=?,deferrals=CASE WHEN ?=1 THEN 0 ELSE deferrals END,updated_at=? WHERE id=? AND status!='skipped'",
             &[
                 json!(status),
                 json!(error.map(|e| crate::rules::clip(e, 500))),
+                json!(reset_deferrals),
                 json!(now()),
                 json!(jid),
             ],
@@ -184,6 +186,25 @@ impl Database {
         self.exec(
             "UPDATE jobs SET status=CASE WHEN attempts >= 5 THEN 'failed' ELSE 'pending' END,attempts=CASE WHEN attempts >= 5 THEN attempts ELSE MAX(attempts-1,0) END,error=?,updated_at=? WHERE id=? AND status='running'",
             &[
+                json!(crate::rules::clip(error, 500)),
+                json!(now()),
+                json!(jid),
+            ],
+        )?;
+        Ok(json!(true))
+    }
+    pub(super) fn defer_unavailable_job(
+        &self,
+        jid: &str,
+        error: &str,
+        max_deferrals: i64,
+    ) -> Result<Value> {
+        let limit = max_deferrals.max(1);
+        self.exec(
+            "UPDATE jobs SET status=CASE WHEN deferrals+1 >= ? THEN 'failed' ELSE 'pending' END,attempts=CASE WHEN deferrals+1 >= ? THEN attempts ELSE MAX(attempts-1,0) END,deferrals=deferrals+1,error=?,updated_at=? WHERE id=? AND status='running'",
+            &[
+                json!(limit),
+                json!(limit),
                 json!(crate::rules::clip(error, 500)),
                 json!(now()),
                 json!(jid),

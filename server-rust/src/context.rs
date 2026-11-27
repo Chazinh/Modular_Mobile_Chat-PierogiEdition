@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 pub const CONTINUE: &str = "Continue a cena exatamente de onde parou, no mesmo formato, sem repetir o que já foi escrito e sem agir por mim.";
+pub const MAX_INLINE_UNPROCESSED: usize = 2;
 pub struct Context {
     pub messages: Vec<Value>,
     pub report: Value,
@@ -285,19 +286,19 @@ pub fn pair_limits(conv: &Value) -> (usize, usize, usize) {
     let maximum = settings["maxPairs"].as_u64().unwrap_or(50).clamp(8, 50) as usize;
     let minimum = settings["minPairs"]
         .as_u64()
-        .unwrap_or(20)
+        .unwrap_or(8)
         .clamp(8, maximum as u64) as usize;
     let preferred = settings["preferredPairs"]
         .as_u64()
-        .unwrap_or(30)
+        .unwrap_or(15)
         .clamp(minimum as u64, maximum as u64) as usize;
     (minimum, maximum, preferred)
 }
 /// How many recent pairs the store must load: the `assemble` ladder never goes past the preferred value, and
-/// retrieval expands to the smallest coverage-checked window. Loading 50 by default only multiplied the exchanged JSON.
+/// retrieval expands to the smallest coverage-checked window.
 pub fn pairs_to_load(conv: &Value) -> usize {
     let (_, maximum, preferred) = pair_limits(conv);
-    preferred.max(30).min(maximum)
+    preferred.min(maximum)
 }
 
 /// Retrieval window start aligned strictly with the active history window cutoff.
@@ -306,34 +307,102 @@ pub fn pairs_to_load(conv: &Value) -> usize {
 pub fn retrieval_window_start(data: &Value) -> i64 {
     retrieval_window_start_for(data, false)
 }
-/// `compact` must mirror `assemble`: the phone's local model keeps only 6 pairs. Using the full 30-pair ladder
-/// here excluded turns 7..30 from retrieval while `assemble` left them out of the history too, so they vanished.
-pub fn retrieval_window_start_for(data: &Value, compact: bool) -> i64 {
-    let pairs = array(&data["pairs"]);
-    let (minimum, maximum, preferred) = if compact { (0, 6, 6) } else { pair_limits(&data["conv"]) };
-    let settings = &data["conv"]["settings"]["context"];
-    let preset = crate::presets::by_id(&crate::s(&data["conv"], "presetId"));
-    let preset_capacity = preset["contextWindow"].as_u64().unwrap_or(128000);
-    let hard = settings["hardLimit"].as_u64().unwrap_or(preset_capacity) as usize;
-    let soft = settings["softLimit"]
-        .as_u64()
-        .unwrap_or_else(|| ((hard as f64) * 0.85) as u64)
-        .clamp(1, hard as u64) as usize;
+pub fn default_context_hard_limit() -> u64 {
+    static LIMIT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("MC_DEFAULT_CONTEXT_HARD_LIMIT")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(32_000)
+    })
+}
 
-    let available = &pairs[pairs.len().saturating_sub(maximum)..];
+fn history_ladder(
+    data: &Value,
+    available: &[Value],
+    minimum: usize,
+    preferred: usize,
+    compact: bool,
+    settings: &Value,
+) -> Vec<usize> {
     let mut ladder = vec![
         preferred,
         preferred.saturating_sub(2).max(minimum),
         preferred.saturating_sub(5).max(minimum),
+        ((preferred * 2) / 3).max(minimum),
+        (preferred / 2).max(minimum),
         minimum,
     ];
-    if settings["adaptiveHistory"] != false {
+    if !compact && settings["adaptiveHistory"] != false {
         let summarized = [16, 12, 10, 8]
             .into_iter()
             .filter(|take| *take < minimum && summarized_before(data, available, *take));
         ladder.extend(summarized);
     }
+    ladder.sort_unstable_by(|a, b| b.cmp(a));
     ladder.dedup();
+    ladder
+}
+
+pub fn effective_context_limits(
+    conv: &Value,
+    context_window_override: Option<u64>,
+    max_tokens: u64,
+    compact: bool,
+) -> (usize, usize) {
+    let settings = &conv["settings"]["context"];
+    let context_window = context_window_override.unwrap_or_else(|| {
+        let preset = crate::presets::by_id(&crate::s(conv, "presetId"));
+        preset["contextWindow"].as_u64().unwrap_or(128_000)
+    });
+    let input_capacity = context_window
+        .saturating_sub(max_tokens.saturating_add(64))
+        .max(1);
+    let hard_cap = if compact {
+        input_capacity
+    } else {
+        input_capacity.max(128_000)
+    };
+    let hard = settings["hardLimit"]
+        .as_u64()
+        .unwrap_or_else(|| input_capacity.min(default_context_hard_limit()).max(1))
+        .clamp(1, hard_cap) as usize;
+    let soft = settings["softLimit"]
+        .as_u64()
+        .unwrap_or_else(|| ((hard as f64) * 0.85) as u64)
+        .clamp(1, hard as u64) as usize;
+    (hard, soft)
+}
+
+/// `compact` must mirror `assemble`: the phone's local model keeps only 6 pairs. Using the full 30-pair ladder
+/// here excluded turns 7..30 from retrieval while `assemble` left them out of the history too, so they vanished.
+pub fn retrieval_window_start_for(data: &Value, compact: bool) -> i64 {
+    retrieval_window_start_with_limits(data, compact, None, 0)
+}
+
+pub fn retrieval_window_start_for_plan(data: &Value, plan: &Plan) -> i64 {
+    retrieval_window_start_with_limits(
+        data,
+        plan.controls["mobileCompact"] == true,
+        plan.capacity["contextWindow"].as_u64(),
+        plan.body["max_tokens"].as_u64().unwrap_or(0),
+    )
+}
+
+pub fn retrieval_window_start_with_limits(
+    data: &Value,
+    compact: bool,
+    context_window_override: Option<u64>,
+    max_tokens: u64,
+) -> i64 {
+    let pairs = array(&data["pairs"]);
+    let (minimum, maximum, preferred) = if compact { (0, 6, 6) } else { pair_limits(&data["conv"]) };
+    let settings = &data["conv"]["settings"]["context"];
+    let (_hard, soft) = effective_context_limits(&data["conv"], context_window_override, max_tokens, compact);
+
+    let available = &pairs[pairs.len().saturating_sub(maximum)..];
+    let ladder = history_ladder(data, available, minimum, preferred, compact, settings);
 
     let mut selected_take = ladder.last().copied().unwrap_or(minimum).min(available.len());
     for &step in &ladder {
@@ -377,24 +446,12 @@ pub fn assemble(
     } else {
         pair_limits(conv)
     };
-    let input_capacity = plan.capacity["contextWindow"]
-        .as_u64()
-        .unwrap_or(128000)
-        .saturating_sub(plan.body["max_tokens"].as_u64().unwrap_or(0) + 64)
-        .max(1);
-    let hard_cap = if compact {
-        input_capacity
-    } else {
-        input_capacity.max(128000)
-    };
-    let hard = settings["hardLimit"]
-        .as_u64()
-        .unwrap_or(hard_cap)
-        .clamp(1, hard_cap) as usize;
-    let soft = settings["softLimit"]
-        .as_u64()
-        .unwrap_or_else(|| ((hard as f64) * 0.85) as u64)
-        .clamp(1, hard as u64) as usize;
+    let (hard, soft) = effective_context_limits(
+        conv,
+        plan.capacity["contextWindow"].as_u64(),
+        plan.body["max_tokens"].as_u64().unwrap_or(0),
+        compact,
+    );
     let target = settings["targetTokens"]
         .as_u64()
         .unwrap_or_else(|| ((soft as f64) * 0.87) as u64)
@@ -402,19 +459,7 @@ pub fn assemble(
     // The ladder below repeats up to ~10 times: everything it reads from `data`/`retrieval` is borrowed, not cloned.
     let pairs = array(&data["pairs"]);
     let available = &pairs[pairs.len().saturating_sub(maximum)..];
-    let mut ladder = vec![
-        preferred,
-        preferred.saturating_sub(2).max(minimum),
-        preferred.saturating_sub(5).max(minimum),
-        minimum,
-    ];
-    if !compact && settings["adaptiveHistory"] != false {
-        let summarized = [16, 12, 10, 8]
-            .into_iter()
-            .filter(|take| *take < minimum && summarized_before(data, available, *take));
-        ladder.extend(summarized);
-    }
-    ladder.dedup();
+    let ladder = history_ladder(data, available, minimum, preferred, compact, settings);
     // global settings (character limit, dialogue × narration ratio, content text): same text as the former Node server
     let gs = &data["globalSettings"];
     let dialogue = gs["dialoguePct"].as_i64().unwrap_or(65).clamp(0, 100);
@@ -457,7 +502,7 @@ pub fn assemble(
     let size_target = if rules::target_mode(gs) {
         let (minimum, stretch, hard) = rules::reply_bounds(gs);
         format!(
-            "Tamanho alvo: em torno de {} unidades UTF-16 (faixa aceitável de {} a {}). É um alvo aproximado, não um teto: desenvolva a cena até concluí-la, sem enchimento, terminando numa frase completa. Nunca passe de {} unidades.",
+            "Tamanho alvo: em torno de {} unidades UTF-16 (faixa aceitável de {} a {}). É um alvo aproximado, não um teto: desenvolva a cena até concluí-la, sem enchimento nem recapitulação do que já aconteceu, terminando numa frase completa. Nunca passe de {} unidades.",
             thousands(bot_chars),
             thousands(minimum as i64),
             thousands(stretch as i64),
@@ -552,7 +597,7 @@ pub fn assemble(
         "; obedeça à ficha de personalização"
     };
     let tail = format!(
-        "[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}{global_anchor}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem e NUNCA agem sobre o que foi dito ou ocorrido fora de sua presença (só passam a saber se forem expressamente informados em cena); desambiguação de posse e parentesco: siga a matriz de POV — pertences e familiares pertencem estritamente ao respectivo dono; use 'sua/seu' apenas ao falar com o dono, 'meu/minha' para si mesmo e nomes explícitos entre terceiros e na narração.]"
+        "[Lembrete: pt-BR; {format_short}; {where_to}; não escreva nada por {persona}{global_anchor}; sem metagaming: personagens ausentes nos turnos anteriores NÃO sabem e NUNCA agem sobre o que foi dito ou ocorrido fora de sua presença (só passam a saber se forem expressamente informados em cena); desambiguação de posse e parentesco: siga a matriz de POV — pertences e familiares pertencem estritamente ao respectivo dono; use 'sua/seu' apenas ao falar com o dono, 'meu/minha' para si mesmo e nomes explícitos entre terceiros e na narração; sem recapitular nem parafrasear o que acabou de acontecer: avance a cena.]"
     );
     let mut pinned_ids = HashSet::new();
     let pinned = array(&data["pinned"])
@@ -570,10 +615,26 @@ pub fn assemble(
             .first()
             .map(|p| n(p, "seq"))
             .unwrap_or(n(current, "seq"));
-        let uncovered = array(&data["unprocessed"])
+        let recent_floor_seq = available
+            .get(available.len().saturating_sub(preferred.min(available.len())))
+            .map(|p| n(p, "seq"))
+            .unwrap_or(window);
+        let cutoff_for_uncovered = window.min(recent_floor_seq);
+        let all_uncovered = array(&data["unprocessed"])
             .iter()
-            .filter(|p| n(p, "seq") < window)
+            .filter(|p| n(p, "seq") < cutoff_for_uncovered)
             .collect::<Vec<&Value>>();
+        let older_lag = data["sync"]["olderPending"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or(all_uncovered.len())
+            .max(all_uncovered.len());
+        let uncovered = if older_lag <= MAX_INLINE_UNPROCESSED {
+            all_uncovered
+        } else {
+            Vec::new()
+        };
+        let pending_omitted = older_lag.saturating_sub(uncovered.len());
         let mut knowledge_ids = pinned_ids.clone();
         let memories = array(&retrieval["candidates"])
             .iter()
@@ -620,10 +681,16 @@ pub fn assemble(
         );
         timeline.sort_by_key(|t| t.0.as_i64().unwrap_or_default());
         let timeline_total = timeline.len();
-        if !summarized_history && timeline_mode == 2 && timeline.len() > 8 {
-            timeline = std::iter::once(timeline[0])
-                .chain(timeline[timeline.len() - 6..].iter().copied())
-                .collect();
+        if !summarized_history {
+            if timeline_mode == 2 && timeline.len() > 8 {
+                timeline = std::iter::once(timeline[0])
+                    .chain(timeline[timeline.len() - 6..].iter().copied())
+                    .collect();
+            } else if timeline.len() > 12 {
+                timeline = std::iter::once(timeline[0])
+                    .chain(timeline[timeline.len() - 11..].iter().copied())
+                    .collect();
+            }
         }
         if !timeline.is_empty() {
             live.push(format!(
@@ -893,37 +960,10 @@ pub fn assemble(
         }
         let raw_estimate = rules::estimate_messages(&merged);
         let total = rules::budget_raw(raw_estimate, calibration);
-        if total > target {
-            if quota > 6 {
-                quota = 6;
-                compression.push("recuperação reduzida para 6 memórias".into());
-                continue;
-            }
-            if quota > 4 {
-                quota = 4;
-                compression.push("recuperação reduzida para 4 memórias".into());
-                continue;
-            }
-            if timeline_mode == 0 {
-                timeline_mode = 1;
-                compression.push("linha do tempo condensada".into());
-                continue;
-            }
-            if secondary {
-                secondary = false;
-                compression.push("informações secundárias removidas".into());
-                continue;
-            }
-            if quota > 3 {
-                quota = 3;
-                compression.push("recuperação reduzida para 3 memórias".into());
-                continue;
-            }
-            if timeline_mode == 1 {
-                timeline_mode = 2;
-                compression.push("linha do tempo reduzida".into());
-                continue;
-            }
+        if total > target && timeline_mode == 0 {
+            timeline_mode = 1;
+            compression.push("linha do tempo condensada".into());
+            continue;
         }
         if total > soft && level + 1 < ladder.len() && ladder[level + 1].min(available.len()) < take
         {
@@ -942,7 +982,34 @@ pub fn assemble(
             }
             continue;
         }
-        let report = json!({"tokens":{"total":total,"system":rules::budget(&system,calibration),"live":rules::budget(&live,calibration),"history":total.saturating_sub(rules::budget(&system,calibration)+rules::budget(&live,calibration)),"method":if calibration.is_some(){"calibrated_estimate"}else{"estimated"},"calibrated":calibration.is_some()},"limits":{"target":target,"soft":soft,"hard":hard},"pairsIncluded":take,"pairsAvailable":data["totalPairs"],"memoriesIncluded":memories.iter().map(|m|m["id"].clone()).collect::<Vec<_>>(),"episodesIncluded":episodes.iter().map(|e|e["id"].clone()).collect::<Vec<_>>(),"timelineItems":timeline_total,"pinnedIncluded":pinned.len(),"rawIncluded":raw.len(),"compression":compression,"pendingTurnsPreserved":uncovered.len(),"retrievalMethod":retrieval["method"].as_str().unwrap_or("none"),"embeddingModel":retrieval["embeddingModel"],"sync":data["sync"]});
+        if total > target {
+            if timeline_mode == 1 {
+                timeline_mode = 2;
+                compression.push("linha do tempo reduzida".into());
+                continue;
+            }
+            if secondary {
+                secondary = false;
+                compression.push("informações secundárias removidas".into());
+                continue;
+            }
+            if quota > 6 {
+                quota = 6;
+                compression.push("recuperação reduzida para 6 memórias".into());
+                continue;
+            }
+            if quota > 4 {
+                quota = 4;
+                compression.push("recuperação reduzida para 4 memórias".into());
+                continue;
+            }
+            if quota > 3 {
+                quota = 3;
+                compression.push("recuperação reduzida para 3 memórias".into());
+                continue;
+            }
+        }
+        let report = json!({"tokens":{"total":total,"system":rules::budget(&system,calibration),"live":rules::budget(&live,calibration),"history":total.saturating_sub(rules::budget(&system,calibration)+rules::budget(&live,calibration)),"method":if calibration.is_some(){"calibrated_estimate"}else{"estimated"},"calibrated":calibration.is_some()},"limits":{"target":target,"soft":soft,"hard":hard},"pairsIncluded":take,"pairsAvailable":data["totalPairs"],"memoriesIncluded":memories.iter().map(|m|m["id"].clone()).collect::<Vec<_>>(),"episodesIncluded":episodes.iter().map(|e|e["id"].clone()).collect::<Vec<_>>(),"timelineItems":timeline_total,"pinnedIncluded":pinned.len(),"rawIncluded":raw.len(),"compression":compression,"pendingTurnsPreserved":uncovered.len(),"pendingTurnsOmitted":pending_omitted,"retrievalMethod":retrieval["method"].as_str().unwrap_or("none"),"embeddingModel":retrieval["embeddingModel"],"sync":data["sync"]});
         let reserve = plan.body["max_tokens"].as_u64().unwrap_or(0) as usize;
         let capacity = plan.capacity["contextWindow"].as_u64().unwrap_or(128000) as usize;
         // Heuristic budgets describe the prompt; the provider enforces its actual window.
@@ -1211,9 +1278,9 @@ pub fn build_pov_matrix(persona: &str) -> String {
 r#"[MATRIZ DE PONTO DE VISTA (POV) E DESAMBIGUAÇÃO DE POSSE — LEI DE PERSPECTIVA]
 Esta matriz governa rigorosamente o uso de pronomes possessivos e a atribuição de parentesco e pertences em todas as falas e narrações:
 
-1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa Nominativa Estrita):
-   - O narrador DEVE usar nomes próprios explícitos para atribuir posse e parentesco: "a mãe de {persona}", "o carro de Lia", "a espada de Kael".
-   - NUNCA use possessivos ambíguos ("seu/sua/dele/dela") na narração entre *asteriscos* quando houver dúvida sobre quem é o dono. Escreva sempre a quem pertence de forma nominativa: "o casaco de {persona}", "a própria espada".
+1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa; dono explícito quando ambíguo):
+   - Quando um possessivo puder ser lido como de mais de uma pessoa, nomeie o dono: "a mãe de {persona}", "o carro de Lia", "a espada de Kael".
+   - Quando o dono for óbvio pela frase, escreva com naturalidade ("ela veste o próprio casaco", "Lia guarda a carta no bolso"). Não repita o nome do dono a cada menção.
 
 2. NÍVEL 2 — PERSONAGEM FALANDO COM {persona} (2ª Pessoa Direta):
    - Ao se referir aos pertences ou familiares de {persona}: use 2ª pessoa direta ("você", "seu/sua", "sua mãe", "seu carro").

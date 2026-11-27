@@ -529,7 +529,7 @@ impl Database {
                 "generations" => {
                     !["request_json", "context_json", "usage_json", "error"].contains(&k.as_str())
                 }
-                "jobs" => k != "error",
+                "jobs" => !["error", "deferrals"].contains(&k.as_str()),
                 _ => true,
             })
             .collect())
@@ -538,7 +538,7 @@ impl Database {
         let mut row = raw.clone();
         for k in match table {
             "generations" => &["request_json", "context_json", "usage_json", "error"][..],
-            "jobs" => &["error"][..],
+            "jobs" => &["error", "deferrals"][..],
             _ => &[],
         } {
             row.as_object_mut().unwrap().remove(*k);
@@ -631,12 +631,19 @@ impl Database {
             };
             let mut rows = BTreeMap::new();
             if matches!(table, "jobs" | "operations" | "review_flags") {
+                let cols = self.sync_columns(table)?;
                 for r in self.rows(
                     "SELECT row_json FROM sync_retained WHERE table_name=? AND conv_id=?",
                     &[json!(table), json!(c)],
                 )? {
                     let r = parsed(&r, "row_json", Value::Null);
-                    rows.insert(key(&r, keys), self.sync_project(table, &r)?);
+                    let mut proj = self.sync_project(table, &r)?;
+                    if let Some(obj) = proj.as_object_mut() {
+                        for col in &cols {
+                            obj.entry(col.clone()).or_insert(Value::Null);
+                        }
+                    }
+                    rows.insert(key(&proj, keys), proj);
                 }
             }
             let source = if table == "embeddings" {
@@ -971,8 +978,27 @@ impl Database {
             let mut seen = HashSet::new();
             for row in rows {
                 object_keys(row, &allowed)?;
-                if row.as_object().unwrap().len() != allowed.len() {
-                    return Err(invalid("Snapshot parcial de registro não é permitido."));
+                let obj = row.as_object().unwrap();
+                if obj.len() != allowed.len() {
+                    let missing: Vec<&str> = allowed
+                        .iter()
+                        .copied()
+                        .filter(|k| !obj.contains_key(*k))
+                        .collect();
+                    let required_missing = missing.iter().any(|k| {
+                        *k == "source_hash"
+                            || pk.contains(k)
+                            || columns
+                                .iter()
+                                .find(|c| s(c, "name") == *k)
+                                .is_some_and(|c| n(c, "notnull") != 0)
+                    });
+                    if required_missing {
+                        return Err(invalid(&format!(
+                            "Snapshot parcial de registro não é permitido ({table}: faltando {}).",
+                            missing.join(", ")
+                        )));
+                    }
                 }
                 if !seen.insert(key(row, pk)) {
                     return Err(invalid("Chave primária duplicada."));
@@ -2207,7 +2233,7 @@ fn row_map(data: Option<&Value>, table: &str, pk: &[&str]) -> BTreeMap<String, V
 fn merge_job_runtime(ours: &Value, theirs: &Value) -> Option<Value> {
     let mut a = ours.clone();
     let mut b = theirs.clone();
-    for k in ["status", "attempts", "updated_at", "error"] {
+    for k in ["status", "attempts", "updated_at", "error", "deferrals"] {
         a.as_object_mut()?.remove(k);
         b.as_object_mut()?.remove(k);
     }
@@ -2228,6 +2254,7 @@ fn merge_job_runtime(ours: &Value, theirs: &Value) -> Option<Value> {
     }
     if let Some(obj) = merged.as_object_mut() {
         obj.remove("error");
+        obj.remove("deferrals");
     }
     merged["attempts"] = json!(n(ours, "attempts").max(n(theirs, "attempts")));
     merged["updated_at"] = json!(s(ours, "updated_at").max(s(theirs, "updated_at")));
@@ -3107,5 +3134,33 @@ mod tests {
         let after = count(&db, "PRAGMA page_count");
         assert!(after * 2 < before, "before={before} after={after}");
         assert_eq!(count(&db, "SELECT count(*) FROM sync_batches"), KEEP_BATCHES_PER_PEER);
+    }
+
+    #[test]
+    fn validate_snapshot_allows_missing_nullable_but_rejects_missing_required() {
+        let (_dir, db) = scratch_db();
+        let conv = db.create(&json!({"routeId":"r","presetId":"generic","name":"teste"})).unwrap();
+        let id = s(&conv, "id");
+        let mut snap = db.sync_snapshot(&id).unwrap();
+        snap["conversation"].as_object_mut().unwrap().remove("deleted_at");
+        db.sync_validate(&snap).unwrap();
+        snap["conversation"].as_object_mut().unwrap().remove("route_id");
+        let err = db.sync_validate(&snap).unwrap_err();
+        assert!(err.message.contains("Snapshot parcial de registro não é permitido"), "{}", err.message);
+    }
+
+    #[test]
+    fn jobs_deferrals_excluded_from_sync_wire_format() {
+        let (_dir, db) = scratch_db();
+        let conv = db.create(&json!({"routeId":"r","presetId":"generic","name":"teste"})).unwrap();
+        let id = s(&conv, "id");
+        db.db.execute(
+            "INSERT INTO jobs(id,conv_id,interaction_id,kind,status,attempts,deferrals,payload_json,created_at,updated_at) VALUES('j1',?,NULL,'turn','pending',0,3,'{}','2026-11-23T00:00:00.000Z','2026-11-23T00:00:00.000Z')",
+            [&id],
+        ).unwrap();
+        let snap = db.sync_snapshot(&id).unwrap();
+        let job = &snap["jobs"].as_array().unwrap()[0];
+        assert!(job.get("deferrals").is_none(), "deferrals must not enter sync wire format: {job}");
+        db.sync_validate(&snap).unwrap();
     }
 }

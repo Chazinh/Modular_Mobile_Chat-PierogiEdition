@@ -311,6 +311,36 @@
     "thinkingOffShape": "omit"
   },
   {
+    "id": "gpt-6-2-sol",
+    "groupRoute": "Gpt-sol-6.2",
+    "thinkingCanDisable": true,
+    "selectable": true,
+    "label": "Gpt-sol-6.2",
+    "family": "openai",
+    "match": [
+      "gpt-6\\.2-sol",
+      "gpt-sol-6\\.2"
+    ],
+    "preferredRoutes": [
+      "Gpt-sol-6.2",
+      "cx/gpt-6.2-sol",
+      "cx/gpt-6.2-sol(high)",
+      "cx/gpt-6.2-sol[1m]"
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "defaultEffort": "high",
+    "thinking": "enabled",
+    "sampling": "default",
+    "providerReserve": 32768,
+    "contextWindow": 1050000,
+    "maxOutput": 128000,
+    "capacitySource": "documented"
+  },
+  {
     "id": "minimax-m31",
     "groupRoute": "MiniMaxM3.1",
     "label": "MiniMax M3.1",

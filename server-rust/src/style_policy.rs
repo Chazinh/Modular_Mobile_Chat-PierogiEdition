@@ -187,7 +187,7 @@ pub fn turn_instruction(settings: &Value) -> String {
             "Ritmo livre: desenvolva a cena conforme necessário, sempre parando antes de uma escolha ou ação do usuário."
         }
         _ => {
-            "Ritmo interativo: cada personagem relevante reage de forma natural à entrada atual, permitindo apartes, comentários paralelos e interações cruzadas breves entre si sem monopolizar a cena nem encadear acontecimentos excessivos antes da resposta do usuário. Termine numa pausa natural, sem forçar uma pergunta, e devolva a vez."
+            "Ritmo interativo: só reage quem tem motivo para reagir à entrada atual; apartes e interações cruzadas breves entre personagens são bem-vindos quando surgirem naturalmente, sem que todos comentem a mesma coisa nem encadeiem acontecimentos excessivos antes da resposta do usuário. Termine numa pausa natural, sem forçar uma pergunta nem resumir a cena, e devolva a vez."
         }
     };
     format!(
@@ -215,7 +215,7 @@ pub fn instruction(before: &Value, pct: f64) -> String {
         )
     };
     format!(
-        "[AJUSTE DA RESPOSTA ANTERIOR — devolva somente a narrativa final]\nReescreva a resposta anterior preservando os acontecimentos, autoria, personalidade, conhecimento e agência do usuário. Não repita a entrada do usuário nem invente escolhas por ele. Escreva integralmente em português do Brasil (pt-BR), sem alternar idiomas. {size} O volume de texto deve conter aproximadamente {pct}% falas e {}% narração. {format} A versão anterior tem {} caracteres e {}% falas. Ajuste o volume dos blocos, não só a quantidade de parágrafos. Não mostre explicações nem comentários sobre esta revisão.",
+        "[AJUSTE DA RESPOSTA ANTERIOR — devolva somente a narrativa final]\nReescreva a resposta anterior preservando os acontecimentos, autoria, personalidade, conhecimento e agência do usuário. Não repita a entrada do usuário nem invente escolhas por ele. Escreva integralmente em português do Brasil (pt-BR), sem alternar idiomas. {size} O volume de texto deve conter aproximadamente {pct}% falas e {}% narração. {format} A versão anterior tem {} caracteres e {}% falas. Ajuste o volume dos blocos, não só a quantidade de parágrafos. Para alongar, desenvolva o mesmo momento com reações ou detalhes novos; nunca preencha com recapitulação do que já aconteceu. Não mostre explicações nem comentários sobre esta revisão.",
         100.0 - pct,
         before["characters"],
         before["dialoguePct"]

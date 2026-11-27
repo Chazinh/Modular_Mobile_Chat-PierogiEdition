@@ -351,7 +351,7 @@ fn test_m1_m2_invariant_preservation_under_m3_adaptive_ladder() {
             "Initial instructions must contain POV matrix regardless of ladder level"
         );
         assert!(
-            initial_text.contains("1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa Nominativa Estrita):"),
+            initial_text.contains("1. NÍVEL 1 — NARRAÇÃO E AÇÕES (3ª Pessoa; dono explícito quando ambíguo):"),
             "POV Level 1 must be present"
         );
         assert!(

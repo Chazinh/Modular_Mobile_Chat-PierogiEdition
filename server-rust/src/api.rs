@@ -101,11 +101,11 @@ impl AppState {
         } else {
             crate::providers::MobileProviders::default()
         };
-        let providers = crate::providers::RuntimeProviders::new(if config.is_android() {
-            mobile_providers.runtime()?
+        let providers = if config.is_android() {
+            crate::providers::RuntimeProviders::new_for_android(mobile_providers.runtime()?)
         } else {
-            config.providers.clone()
-        });
+            crate::providers::RuntimeProviders::new(config.providers.clone())
+        };
         let memory_policy = if store.encrypted {
             match store.call(Request::LoadMobilePolicy).await {
                 Ok(value) if !value.is_null() => {
@@ -336,7 +336,7 @@ impl AppState {
         self.providers.set(runtime);
         *old = next;
         *self.models_cache.lock().unwrap() = None;
-        self.runner.kick();
+        self.runner.reset_cooldown();
         Ok(old.redacted())
     }
     async fn update_policy(&self, body: &Value) -> Result<Value> {
@@ -349,7 +349,7 @@ impl AppState {
                 .await?;
         }
         *self.policy.write().unwrap() = policy.clone();
-        self.runner.kick();
+        self.runner.reset_cooldown();
         Ok(json!({"memoryPolicy":policy,"concurrency":1}))
     }
     fn changed(&self, c: &str, kind: &str, value: &Value) {
@@ -721,7 +721,7 @@ async fn dispatch(
         ["local", "activate"] if post => {
             status = 202;
             let out = state.local.activate().await?;
-            state.runner.kick();
+            state.runner.reset_cooldown();
             out
         }
         ["local", "standby"] if post => state.local.standby().await?,
@@ -734,7 +734,7 @@ async fn dispatch(
             status = 202;
             if kind == "all" {
                 let out = state.local.activate().await?;
-                state.runner.kick();
+                state.runner.reset_cooldown();
                 out
             } else {
                 state.local.download_model(kind).await?
@@ -1273,7 +1273,9 @@ async fn dispatch(
                         .await?
                 }
                 ["jobs", "retry"] if post => {
-                    state.store.call(Request::RetryJobs(c.clone())).await?
+                    let out = state.store.call(Request::RetryJobs(c.clone())).await?;
+                    state.runner.reset_cooldown();
+                    out
                 }
                 ["export"] if get => {
                     let data = state.store.call(Request::Export(Some(c.clone()))).await?;

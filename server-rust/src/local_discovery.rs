@@ -83,6 +83,7 @@ impl Snapshot {
                 reasoning_format: ReasoningFormat::Omit,
                 context_window: 8192,
                 max_output: 2048,
+                max_concurrent: None,
             },
         )
     }

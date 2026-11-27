@@ -129,6 +129,23 @@ pub fn effort_for(preset: &Value, route: &str, requested: &Value) -> Value {
         preset["defaultEffort"].clone()
     }
 }
+pub fn resolve_available_route(preset_id: &str, route: &str, available_ids: &[String]) -> Option<String> {
+    if available_ids.is_empty() || available_ids.iter().any(|id| id == route) {
+        return None;
+    }
+    let preset = by_id(preset_id);
+    if preset["groupRoute"].as_str() != Some(route) {
+        return None;
+    }
+    preset["preferredRoutes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .find(|r| available_ids.iter().any(|id| id == r))
+        .map(str::to_string)
+}
+
 pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
     let ids: Vec<String> = ids.iter().filter(|id| narrative_route_visible(id)).cloned().collect();
     let has_server_routes = ids.iter().any(|id| id != "mobile-local" && !id.starts_with("mobile-api:"));
@@ -158,8 +175,6 @@ pub fn public(ids: &[String], validation: &Value) -> Vec<Value> {
                 if let Some(pos) = route_ids.iter().position(|r| r == grp) {
                     let item = route_ids.remove(pos);
                     route_ids.insert(0, item);
-                } else if !route_ids.is_empty() {
-                    route_ids.insert(0, grp.to_string());
                 }
             }
             let routes: Vec<_> = route_ids
@@ -428,5 +443,63 @@ pub fn request(conv: &Value, messages: Vec<Value>, validation: &Value) -> Plan {
             }
             .into()
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_route_not_injected_when_absent_from_models() {
+        let ids = vec!["cc/claude-sonnet-5-5".to_string()];
+        let out = public(&ids, &json!({}));
+        let sonnet = out
+            .iter()
+            .find(|p| p["id"] == "claude-sonnet-5-5")
+            .unwrap();
+        let routes: Vec<&str> = sonnet["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(routes, vec!["cc/claude-sonnet-5-5"]);
+    }
+
+    #[test]
+    fn resolve_available_route_falls_back_from_missing_group_route() {
+        let ids = vec!["cc/claude-sonnet-5-5".to_string()];
+        assert_eq!(
+            resolve_available_route("claude-sonnet-5-5", "Sonnet", &ids).as_deref(),
+            Some("cc/claude-sonnet-5-5")
+        );
+        let with_group = vec!["Sonnet".to_string(), "cc/claude-sonnet-5-5".to_string()];
+        assert_eq!(
+            resolve_available_route("claude-sonnet-5-5", "Sonnet", &with_group),
+            None
+        );
+    }
+
+    #[test]
+    fn gpt_sol_62_resolves_with_low_medium_high_efforts() {
+        for route in ["Gpt-sol-6.2", "cx/gpt-6.2-sol", "cx/gpt-6.2-sol(high)"] {
+            let preset = for_route(route);
+            assert_eq!(preset["id"], "gpt-6-2-sol", "route {route} should match gpt-6-2-sol");
+            for effort in ["low", "medium", "high"] {
+                let resolved = resolve(
+                    &json!({"presetId": "gpt-6-2-sol", "routeId": route, "effort": effort}),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(resolved["effort"], effort);
+                let plan = request(
+                    &json!({"presetId": "gpt-6-2-sol", "routeId": route, "effort": effort}),
+                    vec![],
+                    &json!({}),
+                );
+                assert_eq!(plan.body["reasoning_effort"], effort);
+            }
+        }
     }
 }
